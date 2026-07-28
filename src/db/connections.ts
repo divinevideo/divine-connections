@@ -224,18 +224,21 @@ export async function markConnectionNeedsReauth(db: D1Database, id: string, now:
   await runPrepared(db, "UPDATE connections SET status = 'needs_reauth', updated_at = ? WHERE id = ?", now, id)
 }
 
+export function disconnectConnectionStatement(
+  db: D1Database,
+  input: { id: string; pubkey: string; now: number },
+): D1PreparedStatement {
+  return db
+    .prepare("UPDATE connections SET status = 'disconnected', updated_at = ? WHERE id = ? AND pubkey = ?")
+    .bind(input.now, input.id, input.pubkey)
+}
+
 export async function disconnectConnection(
   db: D1Database,
   id: string,
   pubkey: string,
   now: number,
 ): Promise<boolean> {
-  const result = await runPrepared(
-    db,
-    "UPDATE connections SET status = 'disconnected', updated_at = ? WHERE id = ? AND pubkey = ?",
-    now,
-    id,
-    pubkey,
-  )
+  const result = await disconnectConnectionStatement(db, { id, pubkey, now }).run()
   return changes(result) > 0 && (await getById(db, id)) !== null
 }

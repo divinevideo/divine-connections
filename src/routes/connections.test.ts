@@ -4,7 +4,7 @@ import { listConnections, upsertConnection } from '../db/connections'
 import { createOAuthAttempt, getOAuthAttempt } from '../db/oauth-attempts'
 import { createOAuthState } from '../db/oauth-states'
 import { getPreferences, setPreference } from '../db/preferences'
-import { findLiveVerification } from '../db/verifications'
+import { findLiveVerification, upsertOauthVerificationStatement } from '../db/verifications'
 import { applyMigrations, connection, PUBKEY_A } from '../db/test-helpers'
 import { decryptToken } from '../utils/crypto'
 import { transitionAttempt } from '../services/connections'
@@ -866,5 +866,42 @@ describe('connection routes', () => {
     await expect(getPreferences(db, PUBKEY_A)).resolves.toMatchObject([
       { platform: 'tiktok', connectionId: null, mode: 'disabled', automaticEnabledAt: null },
     ])
+  })
+
+  it('revokes verifications atomically on explicit disconnect', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x' }))
+    await upsertConnection(db, connection({ id: 'conn_2', externalAccountId: 'external-account-2' }))
+    await setPreference(db, {
+      pubkey: PUBKEY_A,
+      platform: 'x',
+      connectionId: 'conn_1',
+      mode: 'automatic',
+      automaticEnabledAt: 1_500,
+      createdAt: 1_000,
+      updatedAt: 1_500,
+    })
+    await db.batch([
+      upsertOauthVerificationStatement(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'alice', connectionId: 'conn_1', verifiedAt: 1_000 }),
+      upsertOauthVerificationStatement(db, { pubkey: PUBKEY_A, platform: 'tiktok', identity: 'alice.t', connectionId: 'conn_2', verifiedAt: 1_000 }),
+    ])
+    fetchMock.mockResolvedValueOnce(authResponse())
+
+    const response = await app.request(
+      '/connections/x/conn_1',
+      { method: 'DELETE', headers: { authorization: 'Bearer keycast-token' } },
+      testEnv(db),
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ disconnected: true })
+    await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([
+      { id: 'conn_1', status: 'disconnected' },
+      { id: 'conn_2', status: 'connected' },
+    ])
+    await expect(getPreferences(db, PUBKEY_A)).resolves.toMatchObject([
+      { platform: 'x', connectionId: null, mode: 'disabled', automaticEnabledAt: null },
+    ])
+    await expect(findLiveVerification(db, PUBKEY_A, 'x', 'alice')).resolves.toBeNull()
+    await expect(findLiveVerification(db, PUBKEY_A, 'tiktok', 'alice.t')).resolves.toMatchObject({ revokedAt: null })
   })
 })
