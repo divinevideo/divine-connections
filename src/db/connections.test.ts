@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
+  completeConnectionSetup,
   disconnectConnection,
   getActiveConnectionForPlatform,
   getConnection,
@@ -7,6 +8,7 @@ import {
   markConnectionNeedsReauth,
   upsertConnection,
 } from './connections'
+import { findLiveVerification } from './verifications'
 import { applyMigrations, connection, PUBKEY_A, PUBKEY_B } from './test-helpers'
 
 describe('connection repository', () => {
@@ -38,6 +40,31 @@ describe('connection repository', () => {
     await expect(getConnection(db, 'conn_tiktok', PUBKEY_A)).resolves.toMatchObject({ id: 'conn_tiktok' })
     await expect(getConnection(db, 'conn_tiktok', PUBKEY_B)).resolves.toBeNull()
     await expect(getActiveConnectionForPlatform(db, PUBKEY_A, 'tiktok')).resolves.toMatchObject({ id: 'conn_tiktok' })
+  })
+
+  it('writes the oauth verification row inside the connection setup batch', async () => {
+    await completeConnectionSetup(db, {
+      connection: connection({ id: 'conn_1', platform: 'x' }),
+      preference: {
+        pubkey: PUBKEY_A,
+        platform: 'x',
+        connectionId: 'conn_1',
+        mode: 'manual',
+        automaticEnabledAt: null,
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      },
+      attemptId: null,
+      now: 1_500,
+      verificationIdentity: 'alice',
+    })
+
+    await expect(findLiveVerification(db, PUBKEY_A, 'x', 'alice')).resolves.toMatchObject({
+      method: 'oauth',
+      connectionId: 'conn_1',
+      verifiedAt: 1_500,
+      revokedAt: null,
+    })
   })
 
   it('marks reauth and disconnects owned connections', async () => {

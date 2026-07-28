@@ -382,6 +382,7 @@ export async function completeConnectionCallback(
       },
       attemptId,
       now,
+      verificationIdentity: verificationIdentityForConnection(connectionInput),
     })
     if (attemptId) {
       logAttemptTransition(attemptId, platform, 'connected', null)
@@ -390,6 +391,14 @@ export async function completeConnectionCallback(
   } catch (error) {
     return failureRedirect(env, state, platform, 'storage_failed', error)
   }
+}
+
+// Verification identity per platform: YouTube proves the channel (UC… id);
+// the other OAuth providers prove the human handle stored as the account name.
+export function verificationIdentityForConnection(connection: ConnectionRecord): string {
+  return connection.platform === 'youtube'
+    ? connection.externalAccountId
+    : connection.externalAccountName
 }
 
 export async function listConnectionSummaries(request: Request, env: Env): Promise<ConnectionSummary[]> {

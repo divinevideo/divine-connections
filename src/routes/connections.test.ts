@@ -4,6 +4,7 @@ import { listConnections, upsertConnection } from '../db/connections'
 import { createOAuthAttempt, getOAuthAttempt } from '../db/oauth-attempts'
 import { createOAuthState } from '../db/oauth-states'
 import { getPreferences, setPreference } from '../db/preferences'
+import { findLiveVerification } from '../db/verifications'
 import { applyMigrations, connection, PUBKEY_A } from '../db/test-helpers'
 import { decryptToken } from '../utils/crypto'
 import { transitionAttempt } from '../services/connections'
@@ -551,6 +552,62 @@ describe('connection routes', () => {
     )
 
     expect(response.headers.get('location')).toContain('connection=connected')
+  })
+
+  it('writes a live oauth verification row after a successful X callback', async () => {
+    await createTrackedState(db, { attemptId: 'oauth_attempt_verify_x', stateId: 'private-state-verify-x' })
+    mockSuccessfulXCallback(fetchMock)
+
+    const response = await app.request(
+      '/connections/x/callback?code=private-auth-code&state=private-state-verify-x',
+      {},
+      testEnv(db),
+    )
+
+    expect(response.headers.get('location')).toContain('connection=connected')
+    const [stored] = await listConnections(db, PUBKEY_A)
+    await expect(findLiveVerification(db, PUBKEY_A, 'x', 'divine')).resolves.toMatchObject({
+      method: 'oauth',
+      connectionId: stored.id,
+      revokedAt: null,
+    })
+  })
+
+  it('verifies YouTube by channel id, not channel title', async () => {
+    await createTrackedState(db, {
+      attemptId: 'oauth_attempt_verify_youtube',
+      stateId: 'private-state-verify-youtube',
+      platform: 'youtube',
+    })
+    fetchMock
+      .mockResolvedValueOnce(
+        Response.json({
+          access_token: 'google-access-token',
+          refresh_token: 'google-refresh-token',
+          expires_in: 3_600,
+          scope: 'https://www.googleapis.com/auth/youtube.upload',
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ items: [{ id: 'UCdivinechannel123', snippet: { title: 'Divine Channel' } }] }),
+      )
+
+    const response = await app.request(
+      '/connections/youtube/callback?code=private-auth-code&state=private-state-verify-youtube',
+      {},
+      testEnv(db, {
+        ENABLE_YOUTUBE: 'true',
+        GOOGLE_CLIENT_ID: 'google-client',
+        GOOGLE_CLIENT_SECRET: 'google-secret',
+      }),
+    )
+
+    expect(response.headers.get('location')).toContain('connection=connected')
+    await expect(findLiveVerification(db, PUBKEY_A, 'youtube', 'UCdivinechannel123')).resolves.toMatchObject({
+      method: 'oauth',
+      revokedAt: null,
+    })
+    await expect(findLiveVerification(db, PUBKEY_A, 'youtube', 'Divine Channel')).resolves.toBeNull()
   })
 
   it.each([
