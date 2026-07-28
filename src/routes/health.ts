@@ -1285,4 +1285,4 @@ function renderHome(env: Env): string {
 }
 
 health.get('/', (c) => htmlResponse(renderHome(c.env)))
-health.get('/health', (c) => c.json({ ok: true, service: 'divine-crossposter' }))
+health.get('/health', (c) => c.json({ ok: true, service: 'divine-connections' }))
