@@ -1025,8 +1025,8 @@ git commit -m "feat(landing): port self-service verification page onto connectio
    - D1 `DB` binding → **same** `database_name`/`database_id` as divine-crossposter (multi-worker binding; no data migration).
    - `CACHE_KV` binding with the real namespace id (created at scaffold: `npx wrangler kv namespace create divine-connections-cache`; if no CF auth in this environment, leave `__CACHE_KV_ID__` placeholder + README instruction and flag to Rabble).
    - Vars: existing crossposter vars + `DISCORD_VERIFY_CHANNEL_ID = "1484771306179133582"`.
-   - Custom-domain `routes`: **absent** (domains move at cutover — rollout step 4). Keep a comment with the two hostnames and a `TODO(#cutover)` marker.
-   - `[[queues.consumers]]` and `[triggers] crons`: **absent/commented** with the same `TODO(#cutover)` marker (one consumer per queue; double-cron against the shared D1 would double-fire ops alerts). Producers stay bound.
+   - Custom-domain `routes`: **absent** (domains move at cutover — rollout step 4). Keep a comment with the two hostnames and a `TODO(#2)` marker.
+   - `[[queues.consumers]]` and `[triggers] crons`: **absent/commented** with the same `TODO(#2)` marker (one consumer per queue; double-cron against the shared D1 would double-fire ops alerts). Producers stay bound.
 2. CI: copy of crossposter's `ci-deploy.yml` with smoke tests adjusted for the fallback host: `/health` contains `"status":"ok"`, `/verified/<64hex-of-zeros>` returns `{"pubkey":...,"verifications":[]}`, `/platforms` returns verifier shape, `/api/providers` returns instagram+x. Keep the `npx wrangler d1 migrations apply divine-crossposter --remote` step (shared DB; migration 0004 lands there).
 3. README: new repo name; secrets list gains `GITHUB_TOKEN`, `YOUTUBE_API_KEY`, `DISCORD_BOT_TOKEN`; document the two hostnames, the cutover TODOs, and that Bluesky OAuth is deliberately deferred (link the tracking issue once the GitHub repo exists).
 4. Typecheck + full suite green.
@@ -1067,4 +1067,4 @@ git commit -m "test: document workers.dev e2e results" --allow-empty
 - Proof-post recheck cron; user-facing proof-post revoke.
 - `/auth/*` legacy routes (twitter/youtube/tiktok/bluesky handlers, nostr login, oauth revoke, status) — all retired.
 - Crosspost setup UI in this worker; LinkedIn; Facebook.
-- Domain cutover, queue-consumer move, cron re-enable, old-worker retirement (rollout steps 4–5; the `TODO(#cutover)` markers).
+- Domain cutover, queue-consumer move, cron re-enable, old-worker retirement (rollout steps 4–5; the `TODO(#2)` markers).

@@ -1,7 +1,7 @@
 name = "divine-connections"
 main = "src/index.ts"
 compatibility_date = "2025-09-06"
-# TODO(#cutover): custom domains move here at rollout step 4, once the new
+# TODO(#2): custom domains move here at rollout step 4, once the new
 # worker is verified on workers.dev. Until then this worker must not claim
 # either domain from the live services.
 # routes = [
@@ -34,7 +34,7 @@ migrations_dir = "migrations"
 
 # One KV namespace shared by negative verify results, NIP-05 results, and
 # rate-limit windows. D1 owns success state; KV never holds successes.
-# TODO(#infra): create the namespace (`wrangler kv namespace create
+# TODO(#3): create the namespace (`wrangler kv namespace create
 # divine-connections-cache`) and fill in the real id before Task 7 lands.
 # [[kv_namespaces]]
 # binding = "CACHE_KV"
@@ -48,7 +48,7 @@ queue = "divine-crossposter-jobs"
 binding = "CROSSPOST_DLQ"
 queue = "divine-crossposter-jobs-dlq"
 
-# TODO(#cutover): queues allow exactly one consumer — enabling this before the
+# TODO(#2): queues allow exactly one consumer — enabling this before the
 # domain cutover steals job consumption from the live crossposter worker.
 # [[queues.consumers]]
 # queue = "divine-crossposter-jobs"
@@ -57,7 +57,7 @@ queue = "divine-crossposter-jobs-dlq"
 # max_retries = 5
 # dead_letter_queue = "divine-crossposter-jobs-dlq"
 
-# TODO(#cutover): re-enable at cutover. Running the reconciler cron in both
+# TODO(#2): re-enable at cutover. Running the reconciler cron in both
 # workers against the shared D1 is claim-fenced but double-fires ops alerts.
 # [triggers]
 # crons = ["* * * * *"]
