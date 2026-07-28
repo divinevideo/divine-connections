@@ -1,0 +1,63 @@
+name = "divine-connections"
+main = "src/index.ts"
+compatibility_date = "2025-09-06"
+# TODO(#cutover): custom domains move here at rollout step 4, once the new
+# worker is verified on workers.dev. Until then this worker must not claim
+# either domain from the live services.
+# routes = [
+#   { pattern = "verifier.divine.video", custom_domain = true },
+#   { pattern = "crossposter.divine.video", custom_domain = true }
+# ]
+
+[vars]
+KEYCAST_URL = "https://login.divine.video"
+FUNNELCAKE_URL = "https://api.divine.video"
+OAUTH_REDIRECT_BASE = "https://crossposter.divine.video"
+ENABLE_INSTAGRAM = "true"
+# Instagram App ID from the Instagram business login product ("divine-IG"),
+# not the Facebook App ID — see docs/instagram-setup.md.
+INSTAGRAM_CLIENT_ID = "1495112838545237"
+ENABLE_TIKTOK = "false"
+ENABLE_X = "true"
+ENABLE_YOUTUBE = "false"
+# Discord channel whose messages count as verification proof posts.
+DISCORD_VERIFY_CHANNEL_ID = "1484771306179133582"
+
+# Multi-worker binding on the existing crossposter database: live connections
+# carry over, no data migration. Migrations (incl. the verifications table)
+# land on this shared database.
+[[d1_databases]]
+binding = "DB"
+database_name = "divine-crossposter"
+database_id = "8e84ca74-0dab-40cc-a8d7-b5cf03f32287"
+migrations_dir = "migrations"
+
+# One KV namespace shared by negative verify results, NIP-05 results, and
+# rate-limit windows. D1 owns success state; KV never holds successes.
+# TODO(#infra): create the namespace (`wrangler kv namespace create
+# divine-connections-cache`) and fill in the real id before Task 7 lands.
+# [[kv_namespaces]]
+# binding = "CACHE_KV"
+# id = "__CACHE_KV_ID__"
+
+[[queues.producers]]
+binding = "CROSSPOST_QUEUE"
+queue = "divine-crossposter-jobs"
+
+[[queues.producers]]
+binding = "CROSSPOST_DLQ"
+queue = "divine-crossposter-jobs-dlq"
+
+# TODO(#cutover): queues allow exactly one consumer — enabling this before the
+# domain cutover steals job consumption from the live crossposter worker.
+# [[queues.consumers]]
+# queue = "divine-crossposter-jobs"
+# max_batch_size = 10
+# max_batch_timeout = 30
+# max_retries = 5
+# dead_letter_queue = "divine-crossposter-jobs-dlq"
+
+# TODO(#cutover): re-enable at cutover. Running the reconciler cron in both
+# workers against the shared D1 is claim-fenced but double-fires ops alerts.
+# [triggers]
+# crons = ["* * * * *"]
