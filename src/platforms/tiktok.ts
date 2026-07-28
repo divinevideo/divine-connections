@@ -97,14 +97,14 @@ export function createTikTokAdapter(config: TikTokConfig): PlatformAdapter {
       return tokenSetFromResponse(asRecord(await expectProviderOk('tiktok', response)))
     },
     async fetchAccount({ accessToken }) {
-      const response = await fetch(`${API_BASE}/user/info/?fields=open_id,display_name,avatar_url`, {
+      const response = await fetch(`${API_BASE}/user/info/?fields=open_id,username,display_name,avatar_url`, {
         headers: { authorization: `Bearer ${accessToken}` },
       })
       const body = asRecord(await expectProviderOk('tiktok', response))
       const user = asRecord(asRecord(body.data).user)
       return {
         id: String(user.open_id ?? ''),
-        name: String(user.display_name ?? 'TikTok account'),
+        name: String(user.username ?? user.display_name ?? 'TikTok account'),
         metadata: body,
       }
     },
