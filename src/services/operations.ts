@@ -8,7 +8,7 @@ import type { Env } from '../types'
 const OVERDUE_GRACE_SECONDS = 15 * 60
 
 export type OperationalIssue = {
-  service: 'divine-crossposter'
+  service: 'divine-connections'
   observedAt: number
   issue: 'primary_jobs_overdue' | 'dlq_nonempty' | 'notification_test'
   backlogCount: number
@@ -23,7 +23,7 @@ function issue(
   overdueJobCount: number,
 ): OperationalIssue {
   return {
-    service: 'divine-crossposter',
+    service: 'divine-connections',
     observedAt,
     issue: code,
     backlogCount: metrics.backlogCount,

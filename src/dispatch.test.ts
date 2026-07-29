@@ -125,13 +125,13 @@ describe('host dispatch', () => {
   })
 
   describe('crossposter.divine.video', () => {
-    it('serves its own home, health, and platforms shapes unchanged', async () => {
+    it('serves its own home, health, and platforms shapes', async () => {
       const home = await hostRequest(`${CROSSPOSTER}/`, {}, dispatchEnv())
       const html = await home.text()
       expect(html).toContain('<title>Divine Crossposter</title>')
 
       const healthRes = await hostRequest(`${CROSSPOSTER}/health`, {}, dispatchEnv())
-      await expect(healthRes.json()).resolves.toEqual({ ok: true, service: 'divine-crossposter' })
+      await expect(healthRes.json()).resolves.toEqual({ ok: true, service: 'divine-connections' })
 
       const platformsRes = await hostRequest(`${CROSSPOSTER}/platforms?format=json`, {}, dispatchEnv())
       const body = (await platformsRes.json()) as { platforms: Array<{ platform: string; enabled: boolean }> }

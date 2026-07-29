@@ -66,7 +66,7 @@ describe('health route', () => {
     const res = await crossposterRequest('/health', env())
 
     expect(res.status).toBe(200)
-    await expect(res.json()).resolves.toEqual({ ok: true, service: 'divine-crossposter' })
+    await expect(res.json()).resolves.toEqual({ ok: true, service: 'divine-connections' })
   })
 })
 
@@ -180,7 +180,7 @@ describe('scheduled handler', () => {
     expect(body).not.toContain('private-request-id')
     expect(JSON.parse(body)).toEqual([
       {
-        service: 'divine-crossposter',
+        service: 'divine-connections',
         observedAt: expect.any(Number),
         issue: 'notification_test',
         backlogCount: 0,
