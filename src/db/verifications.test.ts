@@ -1,7 +1,7 @@
 // ABOUTME: Tests for the verifications table migration and its D1 access helpers.
 // ABOUTME: Uses real miniflare D1 via applyMigrations; no mocks.
-import { env } from 'cloudflare:test'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { applyD1Migrations, env, type D1Migration } from 'cloudflare:test'
+import { beforeEach, describe, expect, inject, it } from 'vitest'
 import { applyMigrations, PUBKEY_A, PUBKEY_B } from './test-helpers'
 import {
   findLiveVerification,
@@ -201,5 +201,58 @@ describe('proof-post over an existing oauth verification', () => {
       revokeVerificationsForConnectionStatement(env.DB, { connectionId: 'conn_1', pubkey: PUBKEY_A, now: 3000 }),
     ])
     expect(await findLiveVerification(env.DB, PUBKEY_A, 'x', 'alice')).toBeNull()
+  })
+})
+
+// 0004 shipped to production before this fix, so 0005 has to upgrade a table that
+// may already hold the case-variant duplicates the new unique index forbids.
+// A fresh test database never exercises that path; this applies the migrations in
+// two stages to cover it.
+describe('0005 migration on an existing 0004 table', () => {
+  const upTo0004 = (all: D1Migration[]) => all.filter((m) => m.name < '0005')
+  const only0005 = (all: D1Migration[]) => all.filter((m) => m.name >= '0005')
+
+  it('collapses case-variant duplicates, keeps the newest, and backfills identity_key', async () => {
+    const migrations = inject('migrations') as D1Migration[]
+    await applyD1Migrations(env.DB, upTo0004(migrations))
+
+    // Two rows that only 0004's case-sensitive primary key allowed to coexist,
+    // plus a youtube pair whose casing genuinely distinguishes two channels.
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO verifications (pubkey, platform, identity, method, proof_url, verified_at)
+         VALUES (?, 'github', 'Alice', 'proof-post', 'gist-old', 1000)`,
+      ).bind(PUBKEY_A),
+      env.DB.prepare(
+        `INSERT INTO verifications (pubkey, platform, identity, method, proof_url, verified_at)
+         VALUES (?, 'github', 'alice', 'proof-post', 'gist-new', 2000)`,
+      ).bind(PUBKEY_A),
+      env.DB.prepare(
+        `INSERT INTO verifications (pubkey, platform, identity, method, connection_id, verified_at)
+         VALUES (?, 'youtube', 'UCabcdefghijklmnopqrstuv', 'oauth', 'conn_1', 1000)`,
+      ).bind(PUBKEY_B),
+      env.DB.prepare(
+        `INSERT INTO verifications (pubkey, platform, identity, method, connection_id, verified_at)
+         VALUES (?, 'youtube', 'UCABCDEFGHIJKLMNOPQRSTUV', 'oauth', 'conn_2', 1000)`,
+      ).bind(PUBKEY_B),
+    ])
+
+    await applyD1Migrations(env.DB, only0005(migrations))
+
+    const github = await listVerificationsByPubkey(env.DB, PUBKEY_A)
+    expect(github).toHaveLength(1)
+    expect(github[0]).toMatchObject({ identity: 'alice', proofUrl: 'gist-new', verifiedAt: 2000 })
+
+    // Case-significant youtube channels must both survive the collapse.
+    expect(await listVerificationsByPubkey(env.DB, PUBKEY_B)).toHaveLength(2)
+
+    const keys = await env.DB.prepare(
+      `SELECT platform, identity, identity_key FROM verifications ORDER BY platform, identity_key`,
+    ).all<{ platform: string; identity: string; identity_key: string }>()
+    expect(keys.results).toEqual([
+      { platform: 'github', identity: 'alice', identity_key: 'alice' },
+      { platform: 'youtube', identity: 'UCABCDEFGHIJKLMNOPQRSTUV', identity_key: 'UCABCDEFGHIJKLMNOPQRSTUV' },
+      { platform: 'youtube', identity: 'UCabcdefghijklmnopqrstuv', identity_key: 'UCabcdefghijklmnopqrstuv' },
+    ])
   })
 })
