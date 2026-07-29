@@ -20,14 +20,15 @@ function validateClaim(claim: VerifyClaim, index: number): { index: number; erro
   if (!claim.pubkey || !HEX_PUBKEY_RE.test(claim.pubkey)) {
     return { index, error: 'Invalid pubkey: must be 64-character hex' }
   }
-  if (!claim.platform || !normalizeVerifyPlatform(claim.platform)) {
+  const platform = claim.platform ? normalizeVerifyPlatform(claim.platform) : null
+  if (!platform) {
     return { index, error: `Invalid platform: must be one of ${VALID_PLATFORM_LIST}` }
   }
   if (!claim.identity || !isValidIdentity(claim.identity)) {
     return { index, error: 'Invalid identity' }
   }
   // Bluesky can verify via identity-link records without a proof post ID.
-  if (claim.platform === 'bluesky' && (!claim.proof || claim.proof.trim() === '')) {
+  if (platform === 'bluesky' && (!claim.proof || claim.proof.trim() === '')) {
     return null
   }
   if (!claim.proof || !isValidProof(claim.proof)) {
@@ -89,7 +90,8 @@ verify.post('/single', async (c) => {
     return c.json({ error: 'Invalid JSON body' }, 400)
   }
 
-  if (!body.platform || !normalizeVerifyPlatform(body.platform)) {
+  const platform = body.platform ? normalizeVerifyPlatform(body.platform) : null
+  if (!platform) {
     return c.json({ error: 'Invalid or missing platform' }, 400)
   }
   if (!body.pubkey || !HEX_PUBKEY_RE.test(body.pubkey)) {
@@ -99,7 +101,7 @@ verify.post('/single', async (c) => {
     return c.json({ error: 'Invalid or missing identity' }, 400)
   }
   const proof = body.proof || ''
-  if (body.platform !== 'bluesky') {
+  if (platform !== 'bluesky') {
     if (!proof || !isValidProof(proof)) {
       return c.json({ error: 'Invalid or missing proof' }, 400)
     }
@@ -108,7 +110,7 @@ verify.post('/single', async (c) => {
   }
 
   const claim: VerifyClaim = {
-    platform: body.platform,
+    platform,
     identity: body.identity,
     proof,
     pubkey: body.pubkey,
