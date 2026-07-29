@@ -132,8 +132,20 @@ describe('verify routes', () => {
     expect(response.headers.get('content-type')).toContain('text/html')
     const html = await response.text()
     expect(html).toContain('Divine Identity Verification')
-    expect(html).toContain('octocat')
-    expect(html).toContain('Verified')
+    expect(html).toContain('octocat is verified on GitHub')
+    expect(html).not.toContain('octocat is not verified on GitHub')
+  })
+
+  it('GET /verify/:platform/* renders the failed HTML page when the proof does not match', async () => {
+    fetchMock.mockResolvedValueOnce(gistResponse('octocat', 'npub1someoneelse'))
+
+    const response = await app.request(`/verify/github/octocat/gist-html-fail?pubkey=${PUBKEY_A}`, {
+      headers: { accept: 'text/html' },
+    }, env)
+
+    expect(response.status).toBe(200)
+    const html = await response.text()
+    expect(html).toContain('octocat is not verified on GitHub')
   })
 
   it('GET /verify/:platform/* rejects a missing or invalid pubkey', async () => {
