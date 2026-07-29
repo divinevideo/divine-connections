@@ -67,7 +67,9 @@ export function createTikTokAdapter(config: TikTokConfig): PlatformAdapter {
       url.searchParams.set('redirect_uri', redirectUri)
       url.searchParams.set('state', state)
       url.searchParams.set('response_type', 'code')
-      url.searchParams.set('scope', 'user.info.basic,video.publish')
+      // user.info.profile gates the `username` field fetchAccount requests; without it
+      // TikTok fails the whole user/info call with scope_not_authorized.
+      url.searchParams.set('scope', 'user.info.basic,user.info.profile,video.publish')
       if (codeChallenge) {
         url.searchParams.set('code_challenge', codeChallenge)
         url.searchParams.set('code_challenge_method', 'S256')
