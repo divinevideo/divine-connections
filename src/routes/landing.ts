@@ -23,6 +23,12 @@ export function renderLandingPage(env: Env, origin: string): string {
     .filter((platform) => oauthEnabled.has(platform))
     .map((platform) => `<option value="${platform}">${OAUTH_OPTION_LABELS[platform]}</option>`)
     .join('')
+  const oauthConnectControls = oauthPlatformOptions
+    ? `<select id="oauth-platform-select" class="field-select">
+            ${oauthPlatformOptions}
+          </select>
+          <button id="oauth-start-btn" class="verify-btn verify-btn-primary" type="button">Continue to secure sign-in</button>`
+    : `<p class="field-help">No connection providers are configured on this deployment yet. Use the advanced section below to verify by post/link proof instead.</p>`
   const proofPlatformOptions = `<option value="github">GitHub</option><option value="twitter">Twitter / X</option><option value="bluesky">Bluesky</option><option value="mastodon">Mastodon</option><option value="telegram">Telegram</option><option value="discord">Discord</option>${hasYouTubeProof ? '<option value="youtube">YouTube</option>' : ''}<option value="tiktok">TikTok</option>`
 
   return `<!DOCTYPE html>
@@ -504,10 +510,10 @@ export function renderLandingPage(env: Env, origin: string): string {
       <div class="verify-step-grid">
         <div class="verify-card">
           <span class="step-pill">Step 1</span>
-          <h3 style="margin-top:0;">Sign in with your Nostr account</h3>
+          <h3 style="margin-top:0;">Sign in to your Divine account</h3>
           <p>Use your browser signer, login.divine.video session, bunker URL, or Nostr Connect. Any of these lets us publish the final verification tag into your Nostr identity event (NIP-39).</p>
           <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.6rem;">
-            <button id="connect-nostr-btn" class="verify-btn verify-btn-primary" type="button">Login with Nostr</button>
+            <button id="connect-nostr-btn" class="verify-btn verify-btn-primary" type="button">Use browser signer (NIP-07)</button>
             <button id="connect-keycast-btn" class="verify-btn" type="button">Use login.divine.video</button>
             <a href="${divineLoginUrl}" target="_blank" rel="noopener noreferrer" class="verify-btn">Open login.divine.video</a>
           </div>
@@ -546,10 +552,7 @@ export function renderLandingPage(env: Env, origin: string): string {
           <h3 style="margin-top:0;">Quick Connect (no posting)</h3>
           <p>Sign in with the platform account you want to link.</p>
           <label for="oauth-platform-select" class="field-label">Platform</label>
-          <select id="oauth-platform-select" class="field-select">
-            ${oauthPlatformOptions}
-          </select>
-          <button id="oauth-start-btn" class="verify-btn verify-btn-primary" type="button">Continue to secure sign-in</button>
+          ${oauthConnectControls}
           <div id="oauth-status" class="status-row"></div>
         </div>
       </div>
@@ -582,7 +585,7 @@ export function renderLandingPage(env: Env, origin: string): string {
     <!-- MANAGE LINKED VERIFICATIONS -->
     <section id="manage" style="box-shadow: 6px 6px 0 var(--violet);">
       <h2>Manage verified links</h2>
-      <p>View and remove your linked identity verifications. Requires a signer session.</p>
+      <p>View and remove your linked identity verifications. Paste your account or sign in to load.</p>
       <button id="load-links-btn" class="verify-btn verify-btn-primary" type="button" onclick="loadLinkedVerifications()">Load my links</button>
       <div id="manage-links-container" style="margin-top:1rem;"></div>
       <div id="manage-status" class="status-row"></div>
@@ -1427,6 +1430,7 @@ Authorization: Bearer &lt;keycast token&gt;
           await connectBrowserSigner();
           return;
         }
+        setStatus('verify-login-status', 'No browser signer found — opening login.divine.video instead...', 'loading');
         await connectKeycastSigner();
       } catch (e) {
         setStatus('verify-login-status', e.message || 'Could not sign in with Nostr.', 'error');
@@ -1445,7 +1449,7 @@ Authorization: Bearer &lt;keycast token&gt;
         return parsed;
       }
       if (signerPubkeyHex) return signerPubkeyHex;
-      throw new Error('Please sign in with Nostr first, or paste your account.');
+      throw new Error('Sign in above, or paste your account (alice@divine.video, npub, or 64-char key) first.');
     }
 
     function setButtonLoading(buttonId, isLoading, loadingText) {
@@ -2146,6 +2150,7 @@ Authorization: Bearer &lt;keycast token&gt;
 
         renderLinkedVerifications(verifications, container);
       } catch (e) {
+        container.textContent = '';
         setStatus('manage-status', e.message || 'Failed to load linked verifications.', 'error');
       }
     }

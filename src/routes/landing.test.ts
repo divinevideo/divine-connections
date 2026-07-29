@@ -89,4 +89,29 @@ describe('landing page connections wiring', () => {
     const proofSelect = bare.match(/<select id="proof-platform-select"[^>]*>([\s\S]*?)<\/select>/)?.[1] ?? ''
     expect(proofSelect).toContain('<option value="tiktok">')
   })
+
+  it('explains Quick Connect instead of showing an empty dropdown when no providers are configured', () => {
+    const bare = renderLandingPage(testEnv(), 'https://verifier.divine.video')
+    expect(bare).toContain('No connection providers are configured on this deployment yet')
+    expect(bare).not.toContain('Continue to secure sign-in')
+
+    expect(html).toContain('Continue to secure sign-in')
+  })
+
+  it('clears the Loading placeholder when the manage list fails to load', () => {
+    const catchBlock = html.match(/async function loadLinkedVerifications[\s\S]*?catch \(e\) \{[\s\S]*?\}/)?.[0] ?? ''
+    expect(catchBlock).toContain("container.textContent = '';")
+  })
+
+  it('says what is happening when no browser signer exists instead of silently falling back', () => {
+    expect(html).toContain('No browser signer found')
+    expect(html).toContain('login.divine.video instead')
+  })
+
+  it('labels the sign-in paths for humans', () => {
+    expect(html).toContain('Sign in to your Divine account')
+    expect(html).not.toContain('Sign in with your Nostr account')
+    expect(html).toContain('Use browser signer (NIP-07)')
+    expect(html).toContain('Sign in above, or paste your account')
+  })
 })
