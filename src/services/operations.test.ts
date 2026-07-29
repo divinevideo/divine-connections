@@ -52,7 +52,7 @@ describe('operational checks', () => {
     expect(dlq.metrics).toHaveBeenCalledOnce()
     expect(issues).toEqual([
       {
-        service: 'divine-crossposter',
+        service: 'divine-connections',
         observedAt: 10_000,
         issue: 'dlq_nonempty',
         backlogCount: 2,
@@ -100,7 +100,7 @@ describe('operational checks', () => {
       runOperationalChecks(env(db, { CROSSPOST_QUEUE: primary, CROSSPOST_DLQ: dlq }), 10_000),
     ).resolves.toEqual([
       {
-        service: 'divine-crossposter',
+        service: 'divine-connections',
         observedAt: 10_000,
         issue: 'primary_jobs_overdue',
         backlogCount: 4,
@@ -151,7 +151,7 @@ describe('operational checks', () => {
     expect(successfulBody).not.toContain('private-request-id')
     expect(JSON.parse(successfulBody)).toEqual([
       {
-        service: 'divine-crossposter',
+        service: 'divine-connections',
         observedAt: 2_001,
         issue: 'notification_test',
         backlogCount: 0,
