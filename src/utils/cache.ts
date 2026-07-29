@@ -1,5 +1,6 @@
 // ABOUTME: Negative-result KV cache for the verify flow: failures and upstream
-// ABOUTME: errors only. D1 owns success state; verified results are rejected.
+// ABOUTME: errors only. D1 owns platform successes; NIP-05 names are the one
+// documented exception (no D1 store) and keep the legacy 24h success TTL.
 import type { VerificationMethod, VerificationProvenance } from '../verify/identity-link'
 
 export interface CachedResult {
@@ -14,14 +15,15 @@ export interface CachedResult {
 // TTLs in seconds
 const TTL_FAILED = 15 * 60            // 15 minutes
 const TTL_PLATFORM_ERROR = 5 * 60     // 5 minutes
+// Documented exception: D1 only stores platform verifications, not NIP-05
+// names, so NIP-05 successes live here with the legacy 24h TTL.
+const TTL_NIP05_VERIFIED = 24 * 60 * 60
 
 export function getTtl(type: CachedResult['type']): number {
   switch (type) {
+    case 'verified': return TTL_NIP05_VERIFIED
     case 'failed': return TTL_FAILED
     case 'platform_error': return TTL_PLATFORM_ERROR
-    default:
-      // D1 is the success store; KV must never hold successes.
-      throw new Error(`no TTL for cached result type: ${type}`)
   }
 }
 

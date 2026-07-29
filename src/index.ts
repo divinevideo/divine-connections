@@ -6,6 +6,7 @@ import { platforms } from './routes/platforms'
 import { preferences } from './routes/preferences'
 import verify from './routes/verify'
 import { verified } from './routes/verified'
+import nip05 from './routes/nip05'
 import { webhooks } from './routes/webhooks'
 import { processCrosspostJob, PublisherRetryError } from './services/publisher'
 import { runAutoCrosspostReconciliation } from './services/reconciler'
@@ -22,6 +23,7 @@ app.route('/', webhooks)
 // TODO(#dispatch): Task 14 moves the verify surface behind host dispatch.
 app.route('/verify', verify)
 app.route('/', verified)
+app.route('/nip05', nip05)
 
 // Alias: POST /api/verify → single claim verification (divine-web compatibility)
 app.post('/api/verify', async (c) => {

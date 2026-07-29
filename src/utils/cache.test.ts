@@ -31,8 +31,8 @@ describe('ttl selection', () => {
     expect(getTtl('platform_error')).toBe(300)
   })
 
-  it('throws on verified results — D1 is the success store, KV never holds successes', () => {
-    expect(() => getTtl('verified')).toThrow()
+  it('caches verified results for 24 hours as the documented NIP-05 exception', () => {
+    expect(getTtl('verified')).toBe(86_400)
   })
 })
 
@@ -53,9 +53,9 @@ describe('get/put roundtrip', () => {
     await expect(getCached(env.CACHE_KV, 'v|corrupt|x|y|z')).resolves.toBeNull()
   })
 
-  it('refuses to store a verified result', async () => {
-    await expect(
-      putCached(env.CACHE_KV, 'v|nope|x|y|z', { verified: true, checked_at: 1000, type: 'verified' }),
-    ).rejects.toThrow()
+  it('stores verified results for the NIP-05 exception', async () => {
+    const key = nip05CacheKey('alice', 'example.com', pubkey)
+    await putCached(env.CACHE_KV, key, { verified: true, checked_at: 1000, type: 'verified' })
+    await expect(getCached(env.CACHE_KV, key)).resolves.toMatchObject({ verified: true, checked_at: 1000 })
   })
 })
