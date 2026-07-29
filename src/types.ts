@@ -62,6 +62,10 @@ export type Env = {
   ENABLE_X?: string
   ENABLE_YOUTUBE?: string
   YOUTUBE_DEFAULT_PRIVACY_STATUS?: string
+  GITHUB_TOKEN?: string
+  YOUTUBE_API_KEY?: string
+  DISCORD_BOT_TOKEN?: string
+  DISCORD_VERIFY_CHANNEL_ID?: string
 }
 
 export type OAuthStateRecord = {
