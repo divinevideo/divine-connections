@@ -4,6 +4,7 @@ import { crossposts } from './routes/crossposts'
 import { health } from './routes/health'
 import { platforms } from './routes/platforms'
 import { preferences } from './routes/preferences'
+import verify from './routes/verify'
 import { webhooks } from './routes/webhooks'
 import { processCrosspostJob, PublisherRetryError } from './services/publisher'
 import { runAutoCrosspostReconciliation } from './services/reconciler'
@@ -17,6 +18,21 @@ app.route('/', connections)
 app.route('/', preferences)
 app.route('/', crossposts)
 app.route('/', webhooks)
+// TODO(#dispatch): Task 14 moves the verify surface behind host dispatch.
+app.route('/verify', verify)
+
+// Alias: POST /api/verify → single claim verification (divine-web compatibility)
+app.post('/api/verify', async (c) => {
+  // Rewrite as a subrequest to /verify/single
+  const url = new URL(c.req.url)
+  url.pathname = '/verify/single'
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return app.fetch(newReq, c.env)
+})
 
 export { app }
 
