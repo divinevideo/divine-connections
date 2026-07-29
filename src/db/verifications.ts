@@ -19,22 +19,42 @@ export interface ProofPostVerificationInput {
   verifiedAt: number
 }
 
+/**
+ * The normalized value writes dedupe on and reads match against.
+ *
+ * YouTube proves a channel id (UC…) where case is significant — two ids differing
+ * only by case are different channels, so folding them would let a lookup resolve
+ * one channel to another channel's pubkey. Every other platform proves a handle
+ * that upstreams treat as case-insensitive. `identity` keeps its display casing.
+ */
+export function verificationIdentityKey(platform: VerificationPlatform, identity: string): string {
+  return platform === 'youtube' ? identity : identity.toLowerCase()
+}
+
 export function upsertOauthVerificationStatement(
   db: D1Database,
   input: OauthVerificationInput,
 ): D1PreparedStatement {
   return db
     .prepare(
-      `INSERT INTO verifications (pubkey, platform, identity, method, proof_url, connection_id, verified_at, revoked_at)
-       VALUES (?, ?, ?, 'oauth', NULL, ?, ?, NULL)
-       ON CONFLICT(pubkey, platform, identity) DO UPDATE SET
+      `INSERT INTO verifications (pubkey, platform, identity, identity_key, method, proof_url, connection_id, verified_at, revoked_at)
+       VALUES (?, ?, ?, ?, 'oauth', NULL, ?, ?, NULL)
+       ON CONFLICT(pubkey, platform, identity_key) DO UPDATE SET
+         identity = excluded.identity,
          method = excluded.method,
          proof_url = excluded.proof_url,
          connection_id = excluded.connection_id,
          verified_at = excluded.verified_at,
          revoked_at = NULL`,
     )
-    .bind(input.pubkey, input.platform, input.identity, input.connectionId, input.verifiedAt)
+    .bind(
+      input.pubkey,
+      input.platform,
+      input.identity,
+      verificationIdentityKey(input.platform, input.identity),
+      input.connectionId,
+      input.verifiedAt,
+    )
 }
 
 export function upsertProofPostVerificationStatement(
@@ -43,16 +63,26 @@ export function upsertProofPostVerificationStatement(
 ): D1PreparedStatement {
   return db
     .prepare(
-      `INSERT INTO verifications (pubkey, platform, identity, method, proof_url, connection_id, verified_at, revoked_at)
-       VALUES (?, ?, ?, 'proof-post', ?, NULL, ?, NULL)
-       ON CONFLICT(pubkey, platform, identity) DO UPDATE SET
+      `INSERT INTO verifications (pubkey, platform, identity, identity_key, method, proof_url, connection_id, verified_at, revoked_at)
+       VALUES (?, ?, ?, ?, 'proof-post', ?, NULL, ?, NULL)
+       ON CONFLICT(pubkey, platform, identity_key) DO UPDATE SET
+         identity = excluded.identity,
          method = excluded.method,
          proof_url = excluded.proof_url,
-         connection_id = NULL,
+         -- Keep any existing connection link: revocation matches on connection_id,
+         -- so clearing it here would strand a badge that disconnecting can never remove.
+         connection_id = COALESCE(verifications.connection_id, excluded.connection_id),
          verified_at = excluded.verified_at,
          revoked_at = NULL`,
     )
-    .bind(input.pubkey, input.platform, input.identity, input.proofUrl, input.verifiedAt)
+    .bind(
+      input.pubkey,
+      input.platform,
+      input.identity,
+      verificationIdentityKey(input.platform, input.identity),
+      input.proofUrl,
+      input.verifiedAt,
+    )
 }
 
 export function revokeVerificationsForConnectionStatement(
@@ -114,10 +144,10 @@ export async function findLiveVerification(
   const row = await db
     .prepare(
       `SELECT * FROM verifications
-       WHERE pubkey = ? AND platform = ? AND identity = ? COLLATE NOCASE AND revoked_at IS NULL
+       WHERE pubkey = ? AND platform = ? AND identity_key = ? AND revoked_at IS NULL
        LIMIT 1`,
     )
-    .bind(pubkey, platform, identity)
+    .bind(pubkey, platform, verificationIdentityKey(platform, identity))
     .first<VerificationRow>()
   return row ? toRecord(row) : null
 }
@@ -130,10 +160,10 @@ export async function findVerificationByIdentity(
   const row = await db
     .prepare(
       `SELECT * FROM verifications
-       WHERE platform = ? AND identity = ? COLLATE NOCASE AND revoked_at IS NULL
+       WHERE platform = ? AND identity_key = ? AND revoked_at IS NULL
        LIMIT 1`,
     )
-    .bind(platform, identity)
+    .bind(platform, verificationIdentityKey(platform, identity))
     .first<VerificationRow>()
   return row ? toRecord(row) : null
 }
