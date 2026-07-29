@@ -1,4 +1,8 @@
+// ABOUTME: Worker entry: host-based dispatch between the verifier public surface
+// ABOUTME: and the crossposter publishing API over one shared core; plus queue
+// and scheduled handlers.
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import { connections } from './routes/connections'
 import { crossposts } from './routes/crossposts'
 import { health } from './routes/health'
@@ -7,26 +11,37 @@ import { preferences } from './routes/preferences'
 import verify from './routes/verify'
 import { verified } from './routes/verified'
 import nip05 from './routes/nip05'
+import { platformsInfoHandler } from './verify/platforms-info'
 import { webhooks } from './routes/webhooks'
 import { processCrosspostJob, PublisherRetryError } from './services/publisher'
 import { runAutoCrosspostReconciliation } from './services/reconciler'
 import { runOperationalChecks } from './services/operations'
 import type { Env } from './types'
 
-const app = new Hono<{ Bindings: Env }>()
-app.route('/', health)
-app.route('/', platforms)
-app.route('/', connections)
-app.route('/', preferences)
-app.route('/', crossposts)
-app.route('/', webhooks)
-// TODO(#dispatch): Task 14 moves the verify surface behind host dispatch.
-app.route('/verify', verify)
-app.route('/', verified)
-app.route('/nip05', nip05)
+// The crossposter publishing API, exactly as served today on crossposter.divine.video.
+const crossposterApp = new Hono<{ Bindings: Env }>()
+crossposterApp.route('/', health)
+crossposterApp.route('/', platforms)
+crossposterApp.route('/', connections)
+crossposterApp.route('/', preferences)
+crossposterApp.route('/', crossposts)
+crossposterApp.route('/', webhooks)
+
+// The verifier public surface: public verification API, badge reads, landing
+// page, and the same keycast-authenticated connection routes on this domain.
+const verifierApp = new Hono<{ Bindings: Env }>()
+verifierApp.use('*', cors({ origin: '*' }))
+// TODO(#7): Task 15 replaces this placeholder with the ported landing page.
+verifierApp.get('/', (c) => c.text('Divine Identity Verification', 200))
+verifierApp.route('/verify', verify)
+verifierApp.route('/', verified)
+verifierApp.route('/nip05', nip05)
+verifierApp.get('/platforms', platformsInfoHandler)
+verifierApp.get('/health', (c) => c.json({ status: 'ok', service: 'divine-connections', timestamp: Math.floor(Date.now() / 1000) }))
+verifierApp.route('/', connections)
 
 // Alias: POST /api/verify → single claim verification (divine-web compatibility)
-app.post('/api/verify', async (c) => {
+verifierApp.post('/api/verify', async (c) => {
   // Rewrite as a subrequest to /verify/single
   const url = new URL(c.req.url)
   url.pathname = '/verify/single'
@@ -35,13 +50,26 @@ app.post('/api/verify', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.raw.body,
   })
-  return app.fetch(newReq, c.env)
+  return verifierApp.fetch(newReq, c.env)
 })
+
+// Fallback (workers.dev, localhost): union of both surfaces; the verifier shape
+// wins the colliding /, /platforms, and /health paths.
+const fallbackApp = new Hono<{ Bindings: Env }>()
+fallbackApp.route('/', verifierApp)
+fallbackApp.route('/', crossposterApp)
+
+const app = fallbackApp
 
 export { app }
 
 export default {
-  fetch: app.fetch,
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> | Response {
+    const host = new URL(request.url).hostname
+    if (host === 'verifier.divine.video') return verifierApp.fetch(request, env, ctx)
+    if (host === 'crossposter.divine.video') return crossposterApp.fetch(request, env, ctx)
+    return fallbackApp.fetch(request, env, ctx)
+  },
   async queue(batch: MessageBatch<{ jobId: string }>, env: Env, _ctx: ExecutionContext): Promise<void> {
     for (const message of batch.messages) {
       try {

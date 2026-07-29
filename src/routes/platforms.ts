@@ -343,3 +343,7 @@ platforms.get('/platforms', (c) => {
   if (wantsJson(c.req.raw)) return platformJsonResponse({ platforms: summaries })
   return htmlResponse(renderPlatforms(c.env))
 })
+
+// JSON alias of /platforms?format=json; survives on the fallback host where the
+// verifier surface owns /platforms.
+platforms.get('/api/providers', (c) => platformJsonResponse({ platforms: getProviderSummaries(c.env) }))
