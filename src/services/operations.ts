@@ -55,7 +55,7 @@ export async function runOperationalChecks(env: Env, now: number): Promise<Opera
   if (issues.length === 0) return issues
 
   if (!env.OPS_ALERT_WEBHOOK_URL) {
-    console.warn('crossposter operational issues', issues)
+    console.warn('divine-connections operational issues', issues)
     return issues
   }
 
