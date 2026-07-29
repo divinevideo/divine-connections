@@ -96,6 +96,22 @@ describe('verify routes', () => {
     await expect(response.json()).resolves.toEqual({ error: 'Invalid or missing proof' })
   })
 
+  it('treats the bluesky proof exemption case-insensitively, like platform validation', async () => {
+    const single = await app.request('/verify/single', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pubkey: PUBKEY_A, platform: 'Bluesky', identity: 'alice.bsky.social' }),
+    }, env)
+    expect(single.status).toBe(200)
+
+    const batch = await app.request('/verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ claims: [{ pubkey: PUBKEY_A, platform: 'Bluesky', identity: 'bob.bsky.social', proof: '' }] }),
+    }, env)
+    expect(batch.status).toBe(200)
+  })
+
   it('POST /api/verify aliases /verify/single for divine-web', async () => {
     fetchMock.mockResolvedValueOnce(gistResponse('octocat', NPUB_A))
 
@@ -134,6 +150,10 @@ describe('verify routes', () => {
     expect(html).toContain('Divine Identity Verification')
     expect(html).toContain('octocat is verified on GitHub')
     expect(html).not.toContain('octocat is not verified on GitHub')
+    // The page re-verifies i-tags client-side; 'x' must survive there too,
+    // since the batch endpoint reports every twitter claim back as 'x'.
+    expect(html).toContain("'twitter','x'")
+    expect(html).toContain('icons.x = icons.twitter')
   })
 
   it('GET /verify/:platform/* renders the failed HTML page when the proof does not match', async () => {
