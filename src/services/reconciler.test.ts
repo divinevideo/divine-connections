@@ -26,7 +26,8 @@ function event(id = VIDEO_EVENT_ID, createdAt = 2_000) {
 function env(db: D1Database, queueSend: ReturnType<typeof vi.fn>): Env {
   return {
     DB: db,
-    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: { send: queueSend } as unknown as Queue<{ jobId: string }>,
+    CACHE_KV: {} as KVNamespace,
+    CROSSPOST_QUEUE: { send: queueSend } as unknown as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://login.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',

@@ -7,7 +7,8 @@ const PUBKEY = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
 function env(): Env {
   return {
     DB: {} as D1Database,
-    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CACHE_KV: {} as KVNamespace,
+    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video/',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video/oauth',

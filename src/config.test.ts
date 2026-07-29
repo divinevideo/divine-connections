@@ -14,7 +14,8 @@ function expectThrowStatus(fn: () => unknown, status: number): void {
 function env(overrides: Partial<Env> = {}): Env {
   return {
     DB: {} as D1Database,
-    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CACHE_KV: {} as KVNamespace,
+    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video/oauth',

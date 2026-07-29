@@ -13,7 +13,8 @@ function queue(metrics: QueueMetrics, send = vi.fn()): Queue<{ jobId: string }> 
 function env(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
     DB: db,
-    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: queue({ backlogCount: 0, backlogBytes: 0 }),
+    CACHE_KV: {} as KVNamespace,
+    CROSSPOST_QUEUE: queue({ backlogCount: 0, backlogBytes: 0 }),
     KEYCAST_URL: 'https://login.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
