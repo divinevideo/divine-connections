@@ -6,6 +6,7 @@ import { cors } from 'hono/cors'
 import { connections } from './routes/connections'
 import { crossposts } from './routes/crossposts'
 import { health } from './routes/health'
+import { landing } from './routes/landing'
 import { platforms } from './routes/platforms'
 import { preferences } from './routes/preferences'
 import verify from './routes/verify'
@@ -31,8 +32,7 @@ crossposterApp.route('/', webhooks)
 // page, and the same keycast-authenticated connection routes on this domain.
 const verifierApp = new Hono<{ Bindings: Env }>()
 verifierApp.use('*', cors({ origin: '*' }))
-// TODO(#7): Task 15 replaces this placeholder with the ported landing page.
-verifierApp.get('/', (c) => c.text('Divine Identity Verification', 200))
+verifierApp.route('/', landing)
 verifierApp.route('/verify', verify)
 verifierApp.route('/', verified)
 verifierApp.route('/nip05', nip05)
