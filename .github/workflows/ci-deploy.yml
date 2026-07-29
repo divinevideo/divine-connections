@@ -76,6 +76,10 @@ jobs:
         run: npm run deploy
 
       - name: Smoke test production
+        env:
+          # The fallback host serves both surfaces pre-cutover; custom domains
+          # move at rollout step 4 (TODO(#2) in wrangler.toml).
+          WORKERS_DEV_BASE: https://divine-connections.${{ vars.WORKERS_DEV_SUBDOMAIN }}.workers.dev
         run: |
           set -euo pipefail
 
@@ -120,11 +124,11 @@ jobs:
             exit 1
           }
 
-          check "https://crossposter.divine.video/health" '"ok":true'
-          check "https://crossposter.divine.video/" 'Login with Divine'
-          check "https://crossposter.divine.video/platforms" 'Provider status'
-          check_platform_enabled "https://crossposter.divine.video/platforms?format=json" instagram
-          check_platform_enabled "https://crossposter.divine.video/platforms?format=json" x
+          check "$WORKERS_DEV_BASE/health" '"status":"ok"'
+          check "$WORKERS_DEV_BASE/verified/0000000000000000000000000000000000000000000000000000000000000000" '"verifications":[]'
+          check "$WORKERS_DEV_BASE/platforms" '"GitHub"'
+          check_platform_enabled "$WORKERS_DEV_BASE/api/providers" instagram
+          check_platform_enabled "$WORKERS_DEV_BASE/api/providers" x
 
   notify:
     if: ${{ always() && (inputs.test_failure_notification == true || needs.test.result == 'failure' || needs.deploy.result == 'failure') }}
@@ -151,7 +155,7 @@ jobs:
           fi
 
           payload="$(jq -cn \
-            --arg service divine-crossposter \
+            --arg service divine-connections \
             --arg event "$event" \
             --arg run_url "$RUN_URL" \
             '{service: $service, event: $event, runUrl: $run_url}')"
