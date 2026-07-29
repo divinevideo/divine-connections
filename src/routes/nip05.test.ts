@@ -62,12 +62,17 @@ describe('nip05 route', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('rejects private/internal domains via the SSRF guard', async () => {
-    const response = await app.request(`/nip05/verify?name=alice@localhost&pubkey=${PUBKEY_A}`, {}, env)
-    expect(response.status).toBe(400)
-    await expect(response.json()).resolves.toEqual({ error: 'Invalid NIP-05 name format (expected user@domain)' })
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
+  // Hostname-shaped private domains only: a bare 'localhost' is already rejected
+  // by the hostname regex, so it never reaches isPrivateHostname.
+  it.each(['alice@box.local', 'alice@svc.internal', 'alice@host.corp'])(
+    'rejects %s via the SSRF guard',
+    async (name) => {
+      const response = await app.request(`/nip05/verify?name=${name}&pubkey=${PUBKEY_A}`, {}, env)
+      expect(response.status).toBe(400)
+      await expect(response.json()).resolves.toEqual({ error: 'Invalid NIP-05 name format (expected user@domain)' })
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
 
   it('requires name and a valid pubkey', async () => {
     const noName = await app.request(`/nip05/verify?pubkey=${PUBKEY_A}`, {}, env)
