@@ -122,3 +122,84 @@ describe('verifications access helpers', () => {
     expect(row).toMatchObject({ pubkey: PUBKEY_A, platform: 'x', identity: 'alice' })
   })
 })
+
+// Handle platforms treat case as insignificant, so writes must dedupe the same
+// way reads match. YouTube is the exception: it proves a channel id, where case
+// is significant and two ids differing only by case are different channels.
+describe('verification identity casing', () => {
+  const CHANNEL_LOWER = 'UCabcdefghijklmnopqrstuv'
+  const CHANNEL_UPPER = 'UCABCDEFGHIJKLMNOPQRSTUV'
+
+  beforeEach(async () => {
+    await applyMigrations()
+  })
+
+  it('collapses case-variant handles into a single row instead of duplicating the badge', async () => {
+    await env.DB.batch([
+      upsertProofPostVerificationStatement(env.DB, { pubkey: PUBKEY_A, platform: 'github', identity: 'Alice', proofUrl: 'gist-1', verifiedAt: 1000 }),
+    ])
+    await env.DB.batch([
+      upsertProofPostVerificationStatement(env.DB, { pubkey: PUBKEY_A, platform: 'github', identity: 'alice', proofUrl: 'gist-2', verifiedAt: 2000 }),
+    ])
+
+    const rows = await listVerificationsByPubkey(env.DB, PUBKEY_A)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ platform: 'github', proofUrl: 'gist-2', verifiedAt: 2000 })
+  })
+
+  it('keeps youtube channel ids that differ only by case as separate verifications', async () => {
+    await env.DB.batch([
+      upsertOauthVerificationStatement(env.DB, { pubkey: PUBKEY_A, platform: 'youtube', identity: CHANNEL_LOWER, connectionId: 'conn_1', verifiedAt: 1000 }),
+      upsertOauthVerificationStatement(env.DB, { pubkey: PUBKEY_A, platform: 'youtube', identity: CHANNEL_UPPER, connectionId: 'conn_2', verifiedAt: 1000 }),
+    ])
+
+    const rows = await listVerificationsByPubkey(env.DB, PUBKEY_A)
+    expect(rows).toHaveLength(2)
+    expect(await findLiveVerification(env.DB, PUBKEY_A, 'youtube', CHANNEL_LOWER)).toMatchObject({ connectionId: 'conn_1' })
+    expect(await findLiveVerification(env.DB, PUBKEY_A, 'youtube', CHANNEL_UPPER)).toMatchObject({ connectionId: 'conn_2' })
+  })
+
+  it('does not resolve a youtube channel id to a different-cased channel', async () => {
+    await env.DB.batch([
+      upsertOauthVerificationStatement(env.DB, { pubkey: PUBKEY_A, platform: 'youtube', identity: CHANNEL_LOWER, connectionId: 'conn_1', verifiedAt: 1000 }),
+    ])
+
+    expect(await findVerificationByIdentity(env.DB, 'youtube', CHANNEL_UPPER)).toBeNull()
+    expect(await findVerificationByIdentity(env.DB, 'youtube', CHANNEL_LOWER)).toMatchObject({ pubkey: PUBKEY_A })
+  })
+
+  it('preserves the stored handle casing for display', async () => {
+    await env.DB.batch([
+      upsertOauthVerificationStatement(env.DB, { pubkey: PUBKEY_A, platform: 'x', identity: 'AliceInChains', connectionId: 'conn_1', verifiedAt: 1000 }),
+    ])
+
+    const row = await findLiveVerification(env.DB, PUBKEY_A, 'x', 'aliceinchains')
+    expect(row?.identity).toBe('AliceInChains')
+  })
+})
+
+// A proof-post verification layered on top of an OAuth connection must not
+// orphan the row: revocation matches on connection_id, so dropping the link
+// would leave a badge that disconnecting the account can never remove.
+describe('proof-post over an existing oauth verification', () => {
+  beforeEach(async () => {
+    await applyMigrations()
+  })
+
+  it('keeps the connection link so an explicit disconnect still revokes the badge', async () => {
+    await env.DB.batch([
+      upsertOauthVerificationStatement(env.DB, { pubkey: PUBKEY_A, platform: 'x', identity: 'alice', connectionId: 'conn_1', verifiedAt: 1000 }),
+    ])
+    await env.DB.batch([
+      upsertProofPostVerificationStatement(env.DB, { pubkey: PUBKEY_A, platform: 'x', identity: 'alice', proofUrl: 'https://x.com/alice/status/1', verifiedAt: 2000 }),
+    ])
+
+    const upgraded = await findLiveVerification(env.DB, PUBKEY_A, 'x', 'alice')
+    expect(upgraded).toMatchObject({ method: 'proof-post', proofUrl: 'https://x.com/alice/status/1', connectionId: 'conn_1' })
+
+    await env.DB.batch([
+      revokeVerificationsForConnectionStatement(env.DB, { connectionId: 'conn_1', pubkey: PUBKEY_A, now: 3000 }),
+    ])
+    expect(await findLiveVerification(env.DB, PUBKEY_A, 'x', 'alice')).toBeNull()
+  })
+})
