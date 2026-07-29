@@ -52,7 +52,7 @@ function queue(send: ReturnType<typeof vi.fn>): Queue<{ jobId: string }> {
 function platformEnv(db: D1Database, platform: Platform, send: ReturnType<typeof vi.fn>): Env {
   const base: Env = {
     DB: db,
-    CROSSPOST_QUEUE: queue(send),
+    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: queue(send),
     KEYCAST_URL: 'https://login.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',

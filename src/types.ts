@@ -41,6 +41,7 @@ export type ErrorCode =
 
 export type Env = {
   DB: D1Database
+  CACHE_KV: KVNamespace
   CROSSPOST_QUEUE: Queue<{ jobId: string }>
   CROSSPOST_DLQ?: Queue<unknown>
   OPS_ALERT_WEBHOOK_URL?: string
