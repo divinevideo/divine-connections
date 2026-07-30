@@ -1,4 +1,20 @@
 export type Platform = 'instagram' | 'tiktok' | 'x' | 'youtube'
+
+export type VerificationPlatform =
+  | 'x' | 'instagram' | 'tiktok' | 'youtube'
+  | 'bluesky' | 'github' | 'mastodon' | 'telegram' | 'discord'
+
+export interface VerificationRecord {
+  pubkey: string
+  platform: VerificationPlatform
+  identity: string
+  method: 'oauth' | 'proof-post'
+  proofUrl: string | null
+  connectionId: string | null
+  verifiedAt: number
+  revokedAt: number | null
+}
+
 export type PreferenceMode = 'manual' | 'automatic' | 'disabled'
 export type JobStatus =
   | 'queued'
