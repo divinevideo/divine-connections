@@ -115,3 +115,38 @@ describe('landing page connections wiring', () => {
     expect(html).toContain('Sign in above, or paste your account')
   })
 })
+
+// The page attaches listeners by id at startup. If any of those ids is absent
+// from the markup, the whole init block throws at that line and every later
+// binding silently never happens — which is how a deployment with no OAuth
+// providers ended up with a dead "Verify this link" button.
+describe('landing page event wiring integrity', () => {
+  const noProvidersEnv = testEnv()
+
+  function listenerTargets(page: string): string[] {
+    const ids = new Set<string>()
+    for (const m of page.matchAll(/getElementById\('([^']+)'\)\s*\.addEventListener/g)) ids.add(m[1])
+    for (const m of page.matchAll(/bindEvent\('([^']+)'/g)) ids.add(m[1])
+    return [...ids]
+  }
+
+  for (const [name, env] of [
+    ['every provider enabled', allProvidersEnv],
+    ['no providers configured', noProvidersEnv],
+  ] as const) {
+    it(`binds listeners only to elements that exist (${name})`, () => {
+      const page = renderLandingPage(env, 'https://verifier.divine.video')
+      const targets = listenerTargets(page)
+      expect(targets.length).toBeGreaterThan(0)
+
+      const missing = targets.filter((id) => !page.includes(`id="${id}"`))
+      expect(missing).toEqual([])
+    })
+  }
+
+  it('does not label a Platform control that is absent without providers', () => {
+    const page = renderLandingPage(noProvidersEnv, 'https://verifier.divine.video')
+    expect(page).not.toContain('id="oauth-platform-select"')
+    expect(page).not.toContain('for="oauth-platform-select"')
+  })
+})

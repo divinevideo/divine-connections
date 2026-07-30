@@ -233,6 +233,9 @@ export function renderLandingPage(env: Env, origin: string): string {
     .post { background: var(--mint); }
     .head { background: var(--violet); }
 
+    /* Wide API/result tables scroll inside their own card; the page body must
+       never scroll sideways, which shifted the whole layout on phones. */
+    section { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; margin: 0.5rem 0; }
     th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid rgba(7, 36, 27, 0.12); font-size: 0.9rem; }
     th { color: rgba(7, 36, 27, 0.6); font-weight: 700; font-family: 'Bricolage Grotesque', sans-serif; }
@@ -551,7 +554,7 @@ export function renderLandingPage(env: Env, origin: string): string {
           <span class="step-pill">Step 2 (Recommended)</span>
           <h3 style="margin-top:0;">Quick Connect (no posting)</h3>
           <p>Sign in with the platform account you want to link.</p>
-          <label for="oauth-platform-select" class="field-label">Platform</label>
+          ${oauthPlatformOptions ? '<label for="oauth-platform-select" class="field-label">Platform</label>' : ''}
           ${oauthConnectControls}
           <div id="oauth-status" class="status-row"></div>
         </div>
@@ -792,7 +795,7 @@ Authorization: Bearer &lt;keycast token&gt;
         <tr><td>Per platform</td><td>30 outbound fetches</td><td>1 minute</td></tr>
         <tr><td>Batch max</td><td>10 claims</td><td>per request</td></tr>
       </table>
-      <p style="margin-top:0.75rem;">Verified claims are cached for 24 hours, failures for 15 minutes, platform errors for 5 minutes.</p>
+      <p style="margin-top:0.75rem;">Successful verifications are stored durably and served instantly until you disconnect the account — they are not re-fetched on a timer. Failures are cached for 15 minutes and platform errors for 5 minutes, so a fixed proof post can be re-checked shortly after.</p>
     </section>
 
     <script>
@@ -1649,9 +1652,16 @@ Authorization: Bearer &lt;keycast token&gt;
       try {
         clearStatus('verify-global-status');
         clearStatus('oauth-status');
+        // Reachable via the account field's Enter key even when Quick Connect
+        // has no configured providers and therefore renders no platform select.
+        const platformSelect = document.getElementById('oauth-platform-select');
+        if (!platformSelect) {
+          setStatus('oauth-status', 'Quick Connect is not available on this deployment. Use "verify by post/link proof" below instead.', 'error');
+          return;
+        }
         setButtonLoading('oauth-start-btn', true, 'Opening sign-in...');
 
-        const platform = document.getElementById('oauth-platform-select').value;
+        const platform = platformSelect.value;
         const session = await getValidKeycastSession();
         if (!session || !session.accessToken) {
           setStatus('oauth-status', 'Quick Connect needs a login.divine.video session. Use the login.divine.video button above first, then retry.', 'error');
@@ -2282,9 +2292,13 @@ Authorization: Bearer &lt;keycast token&gt;
     document.getElementById('start-nostr-connect-btn').addEventListener('click', startNostrConnect);
     document.getElementById('copy-nostr-connect-btn').addEventListener('click', copyNostrConnectUri);
     document.getElementById('cancel-nostr-connect-btn').addEventListener('click', cancelNostrConnect);
-    document.getElementById('oauth-platform-select').addEventListener('change', updateOAuthInputs);
+    ${
+      oauthPlatformOptions
+        ? `document.getElementById('oauth-platform-select').addEventListener('change', updateOAuthInputs);
+    document.getElementById('oauth-start-btn').addEventListener('click', startOAuthVerification);`
+        : '// Quick Connect controls are not rendered when no OAuth provider is configured.'
+    }
     document.getElementById('proof-platform-select').addEventListener('change', updateProofInputs);
-    document.getElementById('oauth-start-btn').addEventListener('click', startOAuthVerification);
     document.getElementById('proof-verify-btn').addEventListener('click', verifySingleHere);
     document.getElementById('publish-kind0-btn').addEventListener('click', publishIdentityTagToNostr);
     document.getElementById('verify-pubkey-input').addEventListener('keydown', (e) => {
