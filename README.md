@@ -149,7 +149,7 @@ Public:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/` | Self-contained setup UI: Divine login, connect platforms, set posting switches. |
-| `GET` | `/health` | Liveness JSON: `{ "ok": true, "service": "divine-crossposter" }`. |
+| `GET` | `/health` | Liveness JSON: `{ "ok": true, "service": "divine-connections" }`. |
 | `GET` | `/platforms` | Provider readiness. HTML by default; JSON via `?format=json` or `Accept: application/json`. |
 
 Authenticated routes require `Authorization: Bearer <Keycast access token>`:

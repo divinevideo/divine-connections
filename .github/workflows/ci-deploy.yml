@@ -151,7 +151,7 @@ jobs:
           fi
 
           payload="$(jq -cn \
-            --arg service divine-crossposter \
+            --arg service divine-connections \
             --arg event "$event" \
             --arg run_url "$RUN_URL" \
             '{service: $service, event: $event, runUrl: $run_url}')"
