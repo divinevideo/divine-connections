@@ -34,11 +34,9 @@ migrations_dir = "migrations"
 
 # One KV namespace shared by negative verify results, NIP-05 results, and
 # rate-limit windows. D1 owns success state; KV never holds successes.
-# TODO(#3): create the namespace (`wrangler kv namespace create
-# divine-connections-cache`) and fill in the real id before Task 7 lands.
-# [[kv_namespaces]]
-# binding = "CACHE_KV"
-# id = "__CACHE_KV_ID__"
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id = "df90f1ec70df4d16bfa39e26d60a9f1c"
 
 [[queues.producers]]
 binding = "CROSSPOST_QUEUE"
