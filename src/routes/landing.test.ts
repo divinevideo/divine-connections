@@ -244,3 +244,25 @@ describe('landing page lookup reads the verifications store', () => {
     expect(lookup).not.toMatch(/tryParseJSON\(profile\./)
   })
 })
+
+// Stored verifications arrive in one fast request, but the lookup used to hold them
+// back until the relay round-trip finished — up to ~25s of "Checking verified
+// links..." with an empty table, which reads as broken. Render what we already know
+// first, then enrich once relays answer.
+describe('landing page lookup renders stored results before waiting on relays', () => {
+  const lookupBody = () => html.split('async function doLookup')[1].split('\n    }')[0]
+
+  it('renders the stored verifications before the relay fetch begins', () => {
+    const lookup = lookupBody()
+    const earlyRender = lookup.indexOf('renderResults(storedResults')
+    const relayFetch = lookup.indexOf('fetchIdentityEvent')
+
+    expect(earlyRender).toBeGreaterThan(-1)
+    expect(relayFetch).toBeGreaterThan(-1)
+    expect(earlyRender).toBeLessThan(relayFetch)
+  })
+
+  it('tells the reader the relay check is still running', () => {
+    expect(lookupBody()).toContain('Checking relays')
+  })
+})

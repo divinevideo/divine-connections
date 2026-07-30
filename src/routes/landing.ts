@@ -2040,6 +2040,14 @@ Authorization: Bearer &lt;keycast token&gt;
         const storedKey = r => r.platform + '|' + String(r.identity).toLowerCase();
         const storedKeys = new Set(storedResults.map(storedKey));
 
+        // Show what we already know straight away. The relay round-trip below can take
+        // tens of seconds when relays are slow or unreachable, and leaving the table
+        // empty until then reads as "nothing was verified".
+        if (storedResults.length > 0) {
+          renderResults(storedResults, pubkey);
+          showStatus('Checking relays for any additional NIP-39 claims...', 'loading');
+        }
+
         // Fetch identity event (kind 10011) from Nostr relays, fall back to kind 0
         const relays = PROFILE_RELAYS;
         let identityEvent = null;
