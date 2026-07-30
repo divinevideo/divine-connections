@@ -226,3 +226,21 @@ describe('landing page platform capability matrix', () => {
     expect(html).toContain('<details class="advanced-proof" id="advanced-proof">')
   })
 })
+
+// A verification recorded by this service was invisible in "Look up someone":
+// the lookup only read NIP-39 i-tags from relays, so a proof-post or OAuth
+// verification sitting in the verifications table showed as "no claims" until the
+// user separately published a NIP-39 tag — which needs a signer session.
+describe('landing page lookup reads the verifications store', () => {
+  it('queries /verified/:pubkey so recorded verifications show without a NIP-39 tag', () => {
+    const lookup = html.split('async function doLookup')[1].split('\n    }')[0]
+    expect(lookup).toContain("'/verified/'")
+  })
+
+  it('does not dereference an undeclared `profile` variable', () => {
+    // `doLookup` resolves `legacyProfile`, never `profile`; the stray reference threw
+    // ReferenceError for every pubkey that actually had supported i-tags.
+    const lookup = html.split('async function doLookup')[1].split('\n    }')[0]
+    expect(lookup).not.toMatch(/tryParseJSON\(profile\./)
+  })
+})
