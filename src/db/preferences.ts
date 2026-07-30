@@ -66,6 +66,19 @@ export async function setPreference(db: D1Database, input: PreferenceRecord): Pr
   return mapPreference(row)
 }
 
+export function disablePreferenceForConnectionStatement(
+  db: D1Database,
+  input: { pubkey: string; platform: Platform; connectionId: string; now: number },
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE preferences
+       SET connection_id = NULL, mode = 'disabled', automatic_enabled_at = NULL, updated_at = ?
+       WHERE pubkey = ? AND platform = ? AND connection_id = ?`,
+    )
+    .bind(input.now, input.pubkey, input.platform, input.connectionId)
+}
+
 export async function listAutomaticPreferences(
   db: D1Database,
   limit: number,

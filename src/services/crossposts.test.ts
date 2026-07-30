@@ -30,7 +30,7 @@ function nip71Event(overrides: Record<string, unknown> = {}) {
 function testEnv(db: D1Database, queueSend: ReturnType<typeof vi.fn>): Env {
   return {
     DB: db,
-    CROSSPOST_QUEUE: { send: queueSend } as unknown as Queue<{ jobId: string }>,
+    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: { send: queueSend } as unknown as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://login.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',

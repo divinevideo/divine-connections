@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { app } from '../index'
+import worker from '../index'
 import type { Env } from '../types'
 
 function env(overrides: Partial<Env> = {}): Env {
   return {
     DB: {} as D1Database,
-    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video/oauth',
@@ -14,9 +14,15 @@ function env(overrides: Partial<Env> = {}): Env {
   }
 }
 
+// The crossposter /platforms shapes live on the crossposter host; the fallback
+// host's /platforms belongs to the verifier surface (see dispatch.test.ts).
+function crossposterRequest(path: string, init: RequestInit, env: Env): Promise<Response> {
+  return Promise.resolve(worker.fetch!(new Request(`https://crossposter.divine.video${path}`, init), env, {} as ExecutionContext))
+}
+
 describe('platforms route', () => {
   it('returns a branded provider status page by default', async () => {
-    const res = await app.request(
+    const res = await crossposterRequest(
       '/platforms',
       {
         headers: { accept: 'text/html' },
@@ -41,7 +47,7 @@ describe('platforms route', () => {
   })
 
   it('returns all provider summaries as JSON when requested', async () => {
-    const res = await app.request(
+    const res = await crossposterRequest(
       '/platforms',
       {
         headers: { accept: 'application/json' },
@@ -66,7 +72,7 @@ describe('platforms route', () => {
   })
 
   it('returns JSON for format=json', async () => {
-    const res = await app.request('/platforms?format=json', {}, env())
+    const res = await crossposterRequest('/platforms?format=json', {}, env())
 
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('application/json')

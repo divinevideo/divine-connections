@@ -62,6 +62,9 @@ describe('validation helpers', () => {
     expect(assertAllowedReturnUrl('https://crossposter.divine.video/connected', redirectBase)).toBe(
       'https://crossposter.divine.video/connected',
     )
+    expect(assertAllowedReturnUrl('https://verifier.divine.video/', redirectBase)).toBe(
+      'https://verifier.divine.video/',
+    )
     expect(assertAllowedReturnUrl('http://localhost:8787/callback', redirectBase)).toBe(
       'http://localhost:8787/callback',
     )

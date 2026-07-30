@@ -79,17 +79,20 @@ The initial schema (`migrations/0001_initial.sql`) creates `oauth_states`, `conn
 
 ## Configuration
 
-The Worker is deployed as `divine-crossposter` on the `crossposter.divine.video` custom domain (`wrangler.toml`).
+The Worker is deployed as `divine-connections`. Until the cutover tracked in #2 it serves only its `*.workers.dev` hostname (the fallback union of both surfaces); at cutover the custom domains `verifier.divine.video` (public verification API + landing page) and `crossposter.divine.video` (publishing API) move to it from the legacy workers, and the queue consumer + reconciler cron re-enable here. The `TODO(#2)` markers in `wrangler.toml` cover all three.
+
+Bluesky OAuth is deliberately deferred to #1: Bluesky verifies via AT Protocol identity-link records and public proof posts, and gains OAuth when Bluesky crossposting exists.
 
 ### Bindings
 
 | Binding | Type | Purpose |
 | --- | --- | --- |
-| `DB` | D1 database | Service-owned state (`divine-crossposter`). |
+| `DB` | D1 database | Service-owned state, shared with the legacy crossposter worker (`divine-crossposter`). |
+| `CACHE_KV` | KV namespace | Negative verify results, NIP-05 results, and rate-limit windows. D1 owns success state. |
 | `CROSSPOST_QUEUE` | Queue producer | Enqueues publish jobs onto `divine-crossposter-jobs`. |
 | `CROSSPOST_DLQ` | Queue producer/metrics binding | Reads aggregate backlog metrics for `divine-crossposter-jobs-dlq`. |
 
-The same Worker is the queue consumer, configured with `max_batch_size = 10`, `max_batch_timeout = 30`, five native retries, and `divine-crossposter-jobs-dlq` as its dead-letter queue. The reconciler/watchdog cron runs `*/5 * * * *`.
+The queue consumer (`max_batch_size = 10`, `max_batch_timeout = 30`, five native retries, `divine-crossposter-jobs-dlq` as dead-letter queue) and the reconciler/watchdog cron are configured in `wrangler.toml` but commented out behind `TODO(#2)` until cutover — a second consumer would steal jobs from the live crossposter worker, and double cron double-fires ops alerts against the shared D1.
 
 ### Variables
 
@@ -118,7 +121,12 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put TIKTOK_CLIENT_KEY
 npx wrangler secret put TIKTOK_CLIENT_SECRET
 npx wrangler secret put OPS_ALERT_WEBHOOK_URL
+npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret put YOUTUBE_API_KEY
+npx wrangler secret put DISCORD_BOT_TOKEN
 ```
+
+`GITHUB_TOKEN` (optional) raises the GitHub gist API rate limit for proof-post verification. `YOUTUBE_API_KEY` enables YouTube proof-post verification; without it YouTube still verifies via OAuth connection. `DISCORD_BOT_TOKEN` enables Discord message-link proofs (the proof channel is the non-secret `DISCORD_VERIFY_CHANNEL_ID` var).
 
 `TOKEN_ENCRYPTION_KEY` must be at least 32 characters. It encrypts provider access and refresh tokens before they are stored in D1. Do not log OAuth codes, callback URLs containing codes, access tokens, refresh tokens, client secrets, or decrypted token values.
 
@@ -144,15 +152,30 @@ Provider notes:
 
 ## Routes
 
-Public:
+The verifier surface (`verifier.divine.video`; fallback host) is public:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/` | Self-service verification landing page (sign in, Quick Connect, proof posts, manage links). |
+| `GET` | `/health` | Liveness JSON: `{ "status": "ok", "service": "divine-connections", ... }`. |
+| `GET` | `/platforms` | Merged platform info: label, `supported` (OAuth-enabled or proof-capable), and `methods` per platform. |
+| `POST` | `/verify` | Batch proof-post verification (max 10 claims). |
+| `POST` | `/verify/single`, `POST /api/verify` | Single-claim verification (`/api/verify` is the divine-web alias). |
+| `GET` | `/verify/:platform/:identity/:proof?pubkey=<hex>` | URL-based verification; HTML result page for browsers, JSON otherwise. |
+| `GET` | `/verified/:pubkey` | All live verifications for a pubkey (badge rendering; empty list for unknown pubkeys). |
+| `GET` | `/verified?platform&identity` | Reverse lookup: which pubkey owns this platform identity. |
+| `GET` | `/nip05/verify?name&pubkey` | NIP-05 well-known verification. |
+
+The crossposter surface (`crossposter.divine.video`), public:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/` | Self-contained setup UI: Divine login, connect platforms, set posting switches. |
 | `GET` | `/health` | Liveness JSON: `{ "ok": true, "service": "divine-connections" }`. |
 | `GET` | `/platforms` | Provider readiness. HTML by default; JSON via `?format=json` or `Accept: application/json`. |
+| `GET` | `/api/providers` | The provider-readiness JSON on any host (fallback alias). |
 
-Authenticated routes require `Authorization: Bearer <Keycast access token>`:
+Authenticated routes on both hosts require `Authorization: Bearer <Keycast access token>`:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -207,9 +230,11 @@ One-shot alert delivery is at-least-once. Overlapping scheduled runs, or a webho
 
 Merges to `main` deploy automatically through GitHub Actions (`.github/workflows/ci-deploy.yml`). Every pull request and push runs the `test` job on Node 24 (`npm ci`, `npm run typecheck`, `npm run test:once`). On push to `main`, the `deploy` job then:
 
-1. Applies remote D1 migrations with Wrangler.
+1. Applies remote D1 migrations to the shared `divine-crossposter` database with Wrangler.
 2. Deploys the Worker with `npm run deploy`.
-3. Smoke-tests the live health, home UI, and platform endpoints on `crossposter.divine.video`, including `GET /platforms?format=json` reporting Instagram and X enabled.
+3. Smoke-tests the fallback host (`divine-connections.$WORKERS_DEV_SUBDOMAIN.workers.dev`): `/health` reports `"status":"ok"`, `/verified/<zero pubkey>` returns an empty list, `/platforms` returns the verifier shape, and `/api/providers` reports Instagram and X enabled.
+
+The smoke test needs the account's workers.dev subdomain set as the `WORKERS_DEV_SUBDOMAIN` GitHub Actions repository variable (not a secret; the hostname is public).
 
 The deploy job enters the `production` GitHub environment. `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` may therefore be repository secrets, production-environment secrets, or selected-organization secrets that include this repository. Keep the API token limited to the Divine account and these permissions: Account Settings Read, Workers Scripts Edit, D1 Edit, Queues Edit, and Workers Routes Edit for the `divine.video` zone only.
 

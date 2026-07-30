@@ -45,7 +45,10 @@ export function assertAllowedReturnUrl(url: string, oauthRedirectBase: string): 
   }
 
   const isDivineOrigin =
-    parsed.protocol === 'https:' && (parsed.hostname === 'divine.video' || parsed.hostname === 'www.divine.video')
+    parsed.protocol === 'https:' &&
+    (parsed.hostname === 'divine.video' ||
+      parsed.hostname === 'www.divine.video' ||
+      parsed.hostname === 'verifier.divine.video')
   const isRedirectBaseOrigin = parsed.origin === redirectBase.origin
   const isLocalOrigin = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'
 
