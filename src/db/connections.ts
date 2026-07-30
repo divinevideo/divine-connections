@@ -1,4 +1,5 @@
 import { allPrepared, changes, firstPrepared, runPrepared } from './client'
+import { upsertOauthVerificationStatement } from './verifications'
 import type { ConnectionRecord, ConnectionStatus, Platform, PreferenceRecord } from '../types'
 
 type ConnectionRow = {
@@ -96,6 +97,7 @@ export async function completeConnectionSetup(
     preference: PreferenceRecord
     attemptId: string | null
     now: number
+    verificationIdentity: string
   },
 ): Promise<void> {
   const { connection, preference } = input
@@ -167,6 +169,13 @@ export async function completeConnectionSetup(
         WHERE id = ? AND pubkey = ? AND platform = ? AND status = 'started'`,
       )
       .bind(input.now, input.attemptId, connection.pubkey, connection.platform),
+    upsertOauthVerificationStatement(db, {
+      pubkey: connection.pubkey,
+      platform: connection.platform,
+      identity: input.verificationIdentity,
+      connectionId: connection.id,
+      verifiedAt: input.now,
+    }),
   ])
 
 }
@@ -215,18 +224,21 @@ export async function markConnectionNeedsReauth(db: D1Database, id: string, now:
   await runPrepared(db, "UPDATE connections SET status = 'needs_reauth', updated_at = ? WHERE id = ?", now, id)
 }
 
+export function disconnectConnectionStatement(
+  db: D1Database,
+  input: { id: string; pubkey: string; now: number },
+): D1PreparedStatement {
+  return db
+    .prepare("UPDATE connections SET status = 'disconnected', updated_at = ? WHERE id = ? AND pubkey = ?")
+    .bind(input.now, input.id, input.pubkey)
+}
+
 export async function disconnectConnection(
   db: D1Database,
   id: string,
   pubkey: string,
   now: number,
 ): Promise<boolean> {
-  const result = await runPrepared(
-    db,
-    "UPDATE connections SET status = 'disconnected', updated_at = ? WHERE id = ? AND pubkey = ?",
-    now,
-    id,
-    pubkey,
-  )
+  const result = await disconnectConnectionStatement(db, { id, pubkey, now }).run()
   return changes(result) > 0 && (await getById(db, id)) !== null
 }

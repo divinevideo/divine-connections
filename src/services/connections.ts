@@ -1,14 +1,15 @@
 import { authenticateRequest } from '../auth/keycast'
 import {
   completeConnectionSetup,
-  disconnectConnection,
+  disconnectConnectionStatement,
   getActiveConnectionForPlatform,
   getConnection,
   listConnections,
 } from '../db/connections'
 import { createOAuthAttempt, updateOAuthAttempt } from '../db/oauth-attempts'
 import { consumeOAuthState, createOAuthState } from '../db/oauth-states'
-import { getPreferences, setPreference } from '../db/preferences'
+import { disablePreferenceForConnectionStatement, getPreferences, setPreference } from '../db/preferences'
+import { revokeVerificationsForConnectionStatement } from '../db/verifications'
 import { loadConfig, oauthRedirectBase } from '../config'
 import { getAdapter } from '../platforms/registry'
 import { PlatformAdapterError } from '../platforms/adapter'
@@ -177,31 +178,6 @@ async function failureRedirect(
   await transitionAttempt(env, attemptId, state.platform, reason, reason, error).catch(() => undefined)
   const redirectReason = attemptId || reason === 'provider_denied' ? reason : undefined
   return redirectWithResult(state.returnUrl, redirectPlatform, 'failed', redirectReason)
-}
-
-async function disablePreferenceForConnection(
-  db: D1Database,
-  pubkey: string,
-  platform: Platform,
-  connectionId: string,
-  now: number,
-): Promise<void> {
-  const preference = (await getPreferences(db, pubkey)).find(
-    (candidate) => candidate.platform === platform && candidate.connectionId === connectionId,
-  )
-  if (!preference) {
-    return
-  }
-
-  await setPreference(db, {
-    pubkey,
-    platform,
-    connectionId: null,
-    mode: 'disabled',
-    automaticEnabledAt: null,
-    createdAt: preference.createdAt,
-    updatedAt: now,
-  })
 }
 
 export async function startConnection(
@@ -382,6 +358,7 @@ export async function completeConnectionCallback(
       },
       attemptId,
       now,
+      verificationIdentity: verificationIdentityForConnection(connectionInput),
     })
     if (attemptId) {
       logAttemptTransition(attemptId, platform, 'connected', null)
@@ -390,6 +367,14 @@ export async function completeConnectionCallback(
   } catch (error) {
     return failureRedirect(env, state, platform, 'storage_failed', error)
   }
+}
+
+// Verification identity per platform: YouTube proves the channel (UC… id);
+// the other OAuth providers prove the human handle stored as the account name.
+export function verificationIdentityForConnection(connection: ConnectionRecord): string {
+  return connection.platform === 'youtube'
+    ? connection.externalAccountId
+    : connection.externalAccountName
 }
 
 export async function listConnectionSummaries(request: Request, env: Env): Promise<ConnectionSummary[]> {
@@ -425,8 +410,11 @@ export async function disconnectOwnedConnection(
   }
 
   const now = nowSeconds()
-  await disconnectConnection(env.DB, connection.id, pubkey, now)
-  await disablePreferenceForConnection(env.DB, pubkey, platform, connection.id, now)
+  await env.DB.batch([
+    disconnectConnectionStatement(env.DB, { id: connection.id, pubkey, now }),
+    disablePreferenceForConnectionStatement(env.DB, { pubkey, platform, connectionId: connection.id, now }),
+    revokeVerificationsForConnectionStatement(env.DB, { connectionId: connection.id, pubkey, now }),
+  ])
   return { disconnected: true }
 }
 
