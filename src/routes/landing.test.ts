@@ -196,6 +196,25 @@ describe('landing page platform capability matrix', () => {
     expect(proofSelect).toContain('youtube')
   })
 
+
+  it('drops Discord from the proof form until its bot token is configured', () => {
+    const noToken = renderLandingPage(noProvidersEnv, 'https://verifier.divine.video')
+    expect(noToken.split('id="proof-platform-select"')[1].split('</select>')[0]).not.toContain('discord')
+
+    const withToken = renderLandingPage(testEnv({ DISCORD_BOT_TOKEN: 'bot' }), 'https://verifier.divine.video')
+    expect(withToken.split('id="proof-platform-select"')[1].split('</select>')[0]).toContain('discord')
+  })
+
+  it('asks for a Discord message link, never a server invite', () => {
+    const withToken = renderLandingPage(testEnv({ DISCORD_BOT_TOKEN: 'bot' }), 'https://verifier.divine.video')
+    expect(withToken).not.toContain('discord.gg')
+
+    const table = withToken.split('Supported Platforms')[1].split('</table>')[0]
+    const discordRow = table.split('<code>discord</code>')[1].split('</tr>')[0]
+    expect(discordRow).toContain('Message link')
+    expect(discordRow).toContain('DISCORD_BOT_TOKEN')
+  })
+
   it('stops calling Quick Connect "Recommended" and opens the proof form when no provider is live', () => {
     const page = renderLandingPage(noProvidersEnv, 'https://verifier.divine.video')
     expect(page).not.toContain('Step 2 (Recommended)')

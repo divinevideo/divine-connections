@@ -24,8 +24,8 @@ interface PlatformCapability {
   identity: string
   proofFormat: string | null
   connect: boolean
-  /** YouTube proof-post reads the Data API, so it needs YOUTUBE_API_KEY. */
-  proofNeedsApiKey?: boolean
+  /** Env secret the proof-post path needs, when it reads an authenticated API. */
+  proofRequiresSecret?: 'YOUTUBE_API_KEY' | 'DISCORD_BOT_TOKEN'
   /** OAuth adapter exists upstream but is deliberately not wired yet. */
   connectDeferred?: string
   icon: string
@@ -44,7 +44,7 @@ const PLATFORMS: PlatformCapability[] = [
   },
   {
     key: 'youtube', label: 'YouTube', identity: 'Channel ID (<code>UCxxxx</code>) or handle (<code>@user</code>)',
-    proofFormat: 'Video ID (11 chars)', connect: true, proofNeedsApiKey: true,
+    proofFormat: 'Video ID (11 chars)', connect: true, proofRequiresSecret: 'YOUTUBE_API_KEY',
     icon: 'M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z',
   },
   {
@@ -75,7 +75,7 @@ const PLATFORMS: PlatformCapability[] = [
   },
   {
     key: 'discord', label: 'Discord', identity: 'Username',
-    proofFormat: 'Invite code', connect: false,
+    proofFormat: 'Message link', connect: false, proofRequiresSecret: 'DISCORD_BOT_TOKEN',
     icon: 'M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1569 2.4189z',
   },
 ]
@@ -89,11 +89,11 @@ export function renderLandingPage(env: Env, origin: string): string {
   // Quick Connect offers only providers whose OAuth app is configured; the
   // proof-post platform list is static (YouTube needs its API key).
   const oauthEnabled = new Set(getProviderSummaries(env).filter((p) => p.enabled).map((p) => p.platform))
-  const hasYouTubeProof = !!env.YOUTUBE_API_KEY
 
   // Every platform-facing string below derives from PLATFORMS so the chips, the
   // copy, the proof form and the API table always agree.
-  const canProof = (p: PlatformCapability) => p.proofFormat !== null && (!p.proofNeedsApiKey || hasYouTubeProof)
+  const canProof = (p: PlatformCapability) =>
+    p.proofFormat !== null && (!p.proofRequiresSecret || Boolean(env[p.proofRequiresSecret]))
   const joinList = (names: string[], conjunction: 'and' | 'or') =>
     names.length < 2
       ? (names[0] ?? '')
@@ -109,8 +109,8 @@ export function renderLandingPage(env: Env, origin: string): string {
   const platformTableRows = PLATFORMS.map((p) => {
     const proofCell = p.proofFormat === null
       ? 'Not supported — connect the account instead'
-      : p.proofNeedsApiKey
-        ? `${p.proofFormat} (needs <code>YOUTUBE_API_KEY</code>)`
+      : p.proofRequiresSecret
+        ? `${p.proofFormat} (needs <code>${p.proofRequiresSecret}</code>)`
         : p.proofFormat
     const connectCell = p.connect ? 'Yes' : (p.connectDeferred ?? 'No')
     return `        <tr><td><code>${p.key}</code></td><td>${p.identity}</td><td>${proofCell}</td><td>${connectCell}</td></tr>`
@@ -1549,10 +1549,10 @@ Authorization: Bearer &lt;keycast token&gt;
         proofInput.placeholder = 'https://t.me/mychannel/123 or mychannel/123';
         helper.textContent = 'Telegram proof should point to a public message that contains your npub.';
       } else if (platform === 'discord') {
-        identityInput.placeholder = 'your server name';
-        proofLabel.textContent = 'Invite link or invite code';
-        proofInput.placeholder = 'https://discord.gg/abc123 or abc123';
-        helper.textContent = 'Use a non-expiring invite and include your npub in server name/description.';
+        identityInput.placeholder = 'your Discord username';
+        proofLabel.textContent = 'Message link';
+        proofInput.placeholder = 'https://discord.com/channels/.../.../...';
+        helper.textContent = 'Post a message containing your npub, then right-click it and Copy Message Link. A server invite cannot prove who owns an account.';
       } else if (platform === 'youtube') {
         identityInput.placeholder = 'UC... or @channelhandle';
         proofLabel.textContent = 'Video link or video ID';
@@ -1624,15 +1624,6 @@ Authorization: Bearer &lt;keycast token&gt;
         }
       }
 
-      if (platform === 'discord') {
-        if ((host === 'discord.gg' || host === 'www.discord.gg') && path[0]) {
-          return { proof: path[0] };
-        }
-        if ((host === 'discord.com' || host === 'www.discord.com') && path[0] === 'invite' && path[1]) {
-          return { proof: path[1] };
-        }
-      }
-
       if (platform === 'youtube') {
         if ((host === 'youtube.com' || host === 'www.youtube.com') && parsedUrl.searchParams.get('v')) {
           return { proof: parsedUrl.searchParams.get('v') };
@@ -1683,14 +1674,6 @@ Authorization: Bearer &lt;keycast token&gt;
       if (platform === 'bluesky') {
         identity = identity.replace(/^@/, '').toLowerCase();
       }
-      if (platform === 'discord') {
-        const maybeCodeUrl = tryMakeUrl(proof);
-        if (maybeCodeUrl) {
-          const parsed = parseProofUrl(platform, maybeCodeUrl);
-          if (parsed.proof) proof = parsed.proof;
-        }
-      }
-
       proof = proof.replace(/^\\/+/, '').replace(/\\/+$/, '');
       return { identity, proof };
     }

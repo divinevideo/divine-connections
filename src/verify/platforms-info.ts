@@ -47,7 +47,13 @@ export function getVerificationPlatformInfo(env: Env): { platforms: Record<Verif
       github: { label: LABELS.github, ...proofOnly },
       mastodon: { label: LABELS.mastodon, ...proofOnly },
       telegram: { label: LABELS.telegram, ...proofOnly },
-      discord: { label: LABELS.discord, ...proofOnly },
+      // Discord resolves the proof message through the bot API; server invites cannot
+      // bind an account, so without the bot token there is no verification path.
+      discord: {
+        label: LABELS.discord,
+        supported: Boolean(env.DISCORD_BOT_TOKEN),
+        methods: env.DISCORD_BOT_TOKEN ? ['proof_post'] : [],
+      },
     },
   }
 }

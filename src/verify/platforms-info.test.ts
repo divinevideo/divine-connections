@@ -31,9 +31,11 @@ describe('getVerificationPlatformInfo', () => {
     }
   })
 
-  it('keeps proof-post-only platforms supported with no configuration', () => {
+  // Discord is deliberately absent: unlike these, its proof path needs a bot token,
+  // so it is not supported out of the box. Covered separately below.
+  it('keeps unauthenticated proof-post-only platforms supported with no configuration', () => {
     const { platforms } = getVerificationPlatformInfo(testEnv())
-    for (const key of ['github', 'mastodon', 'telegram', 'bluesky', 'discord'] as const) {
+    for (const key of ['github', 'mastodon', 'telegram', 'bluesky'] as const) {
       expect(platforms[key]).toMatchObject({ supported: true, methods: ['proof_post'] })
     }
   })
@@ -91,6 +93,17 @@ describe('getVerificationPlatformInfo', () => {
 
     const neither = getVerificationPlatformInfo(testEnv())
     expect(neither.platforms.youtube).toMatchObject({ supported: false, methods: [] })
+  })
+
+
+  // Discord proof posts resolve a message through the bot API, so without the bot
+  // token there is no usable verification path at all — invites are not accepted.
+  it('reports discord as unsupported until the bot token is configured', () => {
+    const unconfigured = getVerificationPlatformInfo(testEnv())
+    expect(unconfigured.platforms.discord).toMatchObject({ supported: false, methods: [] })
+
+    const configured = getVerificationPlatformInfo(testEnv({ DISCORD_BOT_TOKEN: 'bot-token' }))
+    expect(configured.platforms.discord).toMatchObject({ supported: true, methods: ['proof_post'] })
   })
 
   it('serves the verifier-shape JSON envelope from the handler', async () => {
