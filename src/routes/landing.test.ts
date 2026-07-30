@@ -150,3 +150,60 @@ describe('landing page event wiring integrity', () => {
     expect(page).not.toContain('for="oauth-platform-select"')
   })
 })
+
+// The page described its platform support in four places that had drifted apart:
+// Instagram was missing from the chips, YouTube from the API table, and Bluesky
+// was advertised as OAuth-capable even though that is deferred (#1). All of it now
+// renders from one capability matrix.
+describe('landing page platform capability matrix', () => {
+  const noProvidersEnv = testEnv()
+  const ALL_NINE = ['Twitter / X', 'Instagram', 'YouTube', 'TikTok', 'GitHub', 'Bluesky', 'Mastodon', 'Telegram', 'Discord']
+
+  // Split on the markup, not the CSS rule of the same name.
+  const chipMarkup = (page: string) => page.split('<div class="platform-grid">')[1].split('</div>')[0]
+
+  it('shows every supported platform in the hero chips, including Instagram', () => {
+    const chips = chipMarkup(html)
+    for (const label of ALL_NINE) expect(chips).toContain(label)
+  })
+
+  it('makes the hero chips jump to the verify section instead of looking inert', () => {
+    expect(chipMarkup(html)).toContain('href="#verify-here"')
+  })
+
+  it('documents Quick Connect only for platforms that have an OAuth adapter', () => {
+    const table = html.split('Supported Platforms')[1].split('</table>')[0]
+    for (const key of ['x', 'instagram', 'youtube', 'tiktok', 'github', 'bluesky', 'mastodon', 'telegram', 'discord']) {
+      expect(table).toContain(`<code>${key}</code>`)
+    }
+    // Bluesky OAuth is deferred, so it must not be advertised as available.
+    const blueskyRow = table.split('<code>bluesky</code>')[1].split('</tr>')[0]
+    expect(blueskyRow).not.toContain('>Yes<')
+  })
+
+  it('marks Instagram as connect-only, since it has no proof-post verifier', () => {
+    const table = html.split('Supported Platforms')[1].split('</table>')[0]
+    const igRow = table.split('<code>instagram</code>')[1].split('</tr>')[0]
+    expect(igRow).toContain('Not supported')
+    // And it must never appear as a proof-post option in the advanced form.
+    const proofSelect = html.split('id="proof-platform-select"')[1].split('</select>')[0]
+    expect(proofSelect).not.toContain('instagram')
+  })
+
+  it('offers YouTube as a proof-post option when its API key is configured', () => {
+    const withKey = renderLandingPage(testEnv({ YOUTUBE_API_KEY: 'yt-key' }), 'https://verifier.divine.video')
+    const proofSelect = withKey.split('id="proof-platform-select"')[1].split('</select>')[0]
+    expect(proofSelect).toContain('youtube')
+  })
+
+  it('stops calling Quick Connect "Recommended" and opens the proof form when no provider is live', () => {
+    const page = renderLandingPage(noProvidersEnv, 'https://verifier.divine.video')
+    expect(page).not.toContain('Step 2 (Recommended)')
+    expect(page).toContain('<details class="advanced-proof" id="advanced-proof" open>')
+  })
+
+  it('keeps Quick Connect as the recommended path when providers are live', () => {
+    expect(html).toContain('Step 2 (Recommended)')
+    expect(html).toContain('<details class="advanced-proof" id="advanced-proof">')
+  })
+})
