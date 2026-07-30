@@ -8,7 +8,7 @@ import type { Env } from '../types'
 function testEnv(db: D1Database): Env {
   return {
     DB: db,
-    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',

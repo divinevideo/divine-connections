@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import worker, { app } from './index'
+import worker from './index'
 import { upsertConnection } from './db/connections'
 import { createOrGetJob, getJob } from './db/jobs'
 import { requestOperationsAlertTest } from './db/operations'
@@ -9,7 +9,7 @@ import type { Env } from './types'
 function env(overrides: Partial<Env> = {}): Env {
   return {
     DB: {} as D1Database,
-    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
@@ -19,8 +19,14 @@ function env(overrides: Partial<Env> = {}): Env {
 }
 
 describe('health route', () => {
+  // The crossposter / and /health shapes live on the crossposter host; the
+  // fallback host's colliding paths belong to the verifier (see dispatch.test.ts).
+  function crossposterRequest(path: string, env: Env): Promise<Response> {
+    return Promise.resolve(worker.fetch!(new Request(`https://crossposter.divine.video${path}`), env, {} as ExecutionContext))
+  }
+
   it('returns branded service UI at root', async () => {
-    const res = await app.request('/', {}, env())
+    const res = await crossposterRequest('/', env())
 
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('text/html')
@@ -57,7 +63,7 @@ describe('health route', () => {
   })
 
   it('returns service health', async () => {
-    const res = await app.request('/health')
+    const res = await crossposterRequest('/health', env())
 
     expect(res.status).toBe(200)
     await expect(res.json()).resolves.toEqual({ ok: true, service: 'divine-connections' })

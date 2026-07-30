@@ -41,6 +41,7 @@ export type ErrorCode =
 
 export type Env = {
   DB: D1Database
+  CACHE_KV: KVNamespace
   CROSSPOST_QUEUE: Queue<{ jobId: string }>
   CROSSPOST_DLQ?: Queue<unknown>
   OPS_ALERT_WEBHOOK_URL?: string
@@ -62,6 +63,10 @@ export type Env = {
   ENABLE_X?: string
   ENABLE_YOUTUBE?: string
   YOUTUBE_DEFAULT_PRIVACY_STATUS?: string
+  GITHUB_TOKEN?: string
+  YOUTUBE_API_KEY?: string
+  DISCORD_BOT_TOKEN?: string
+  DISCORD_VERIFY_CHANNEL_ID?: string
 }
 
 export type OAuthStateRecord = {
