@@ -2017,7 +2017,28 @@ Authorization: Bearer &lt;keycast token&gt;
           }
         }
 
-        showStatus('Found pubkey: ' + pubkey.slice(0, 8) + '...' + pubkey.slice(-8) + '. Fetching identity claims from relays...', 'loading');
+        showStatus('Found pubkey: ' + pubkey.slice(0, 8) + '...' + pubkey.slice(-8) + '. Checking verified links...', 'loading');
+
+        // Verifications this service recorded are authoritative and need no relay
+        // round trip. Publishing a NIP-39 tag is a separate, signer-gated step, so
+        // these must show even when the profile carries no i-tags at all.
+        let storedResults = [];
+        try {
+          const storedResp = await fetch(API + '/verified/' + pubkey);
+          if (storedResp.ok) {
+            const stored = await storedResp.json();
+            storedResults = (stored.verifications || []).map(v => ({
+              platform: v.platform,
+              identity: v.identity,
+              verified: true,
+              method: v.method,
+              cached: true,
+            }));
+          }
+        } catch { /* fall through to relay claims */ }
+
+        const storedKey = r => r.platform + '|' + String(r.identity).toLowerCase();
+        const storedKeys = new Set(storedResults.map(storedKey));
 
         // Fetch identity event (kind 10011) from Nostr relays, fall back to kind 0
         const relays = PROFILE_RELAYS;
@@ -2034,28 +2055,37 @@ Authorization: Bearer &lt;keycast token&gt;
 
         const source = identityEvent || legacyProfile;
         if (!source) {
-          showStatus('Could not find identity claims on relays.', 'error');
+          if (storedResults.length > 0) {
+            hideStatus();
+            renderResults(storedResults, pubkey);
+          } else {
+            showStatus('Could not find identity claims on relays.', 'error');
+          }
           return;
         }
 
         // Extract i-tags (NIP-39 identity claims)
         const iTags = (source.tags || []).filter(t => t[0] === 'i' && t[1] && t[2]);
         if (iTags.length === 0) {
-          showStatus('No linked identity claims (NIP-39 i-tags) found.', 'error');
-          // Check NIP-05 if present in kind 0 profile
           const profileContent = legacyProfile ? tryParseJSON(legacyProfile.content) : null;
+          let results = storedResults.slice();
           if (profileContent && profileContent.nip05) {
             const nip05Resp = await fetch(API + '/nip05/verify?name=' + encodeURIComponent(profileContent.nip05) + '&pubkey=' + pubkey);
             const nip05Result = await nip05Resp.json();
-            showStatus('No NIP-39 claims, but found NIP-05:', 'loading');
-            renderResults([{
+            results = [{
               platform: 'nip05',
               identity: profileContent.nip05,
               verified: nip05Result.verified,
               error: nip05Result.error,
               cached: nip05Result.cached
-            }], pubkey);
+            }, ...results];
           }
+          if (results.length === 0) {
+            showStatus('No linked identity claims found for this account.', 'error');
+            return;
+          }
+          hideStatus();
+          renderResults(results, pubkey);
           return;
         }
 
@@ -2064,10 +2094,16 @@ Authorization: Bearer &lt;keycast token&gt;
           const [platform, ...rest] = tag[1].split(':');
           const identity = rest.join(':');
           return { platform, identity, proof: tag[2], pubkey };
-        }).filter(c => ['github','twitter','mastodon','telegram','bluesky','discord'${extraLookupPlatforms}].includes(c.platform));
+        }).filter(c => ['github','twitter','mastodon','telegram','bluesky','discord'${extraLookupPlatforms}].includes(c.platform))
+          .filter(c => !storedKeys.has(storedKey(c)));
 
         if (claims.length === 0) {
-          showStatus('Profile has identity tags but none for supported platforms.', 'error');
+          if (storedResults.length > 0) {
+            hideStatus();
+            renderResults(storedResults, pubkey);
+          } else {
+            showStatus('Profile has identity tags but none for supported platforms.', 'error');
+          }
           return;
         }
 
@@ -2087,8 +2123,8 @@ Authorization: Bearer &lt;keycast token&gt;
         }
 
         // Also check NIP-05
-        const content = tryParseJSON(profile.content);
-        let allResults = verifyData.results || [];
+        const content = legacyProfile ? tryParseJSON(legacyProfile.content) : null;
+        let allResults = storedResults.concat(verifyData.results || []);
         if (content && content.nip05) {
           const nip05Resp = await fetch(API + '/nip05/verify?name=' + encodeURIComponent(content.nip05) + '&pubkey=' + pubkey);
           const nip05Result = await nip05Resp.json();
