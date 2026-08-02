@@ -2444,12 +2444,18 @@ export const landing = new Hono<{ Bindings: Env }>()
 // hold a stale page for hours, which turns every deploy into a support thread
 // about bugs that are already fixed. `no-cache` permits storing the page but
 // requires revalidation, and the ETag makes that revalidation a 304.
+//
+// The validator is weak. Cloudflare compresses this response at the edge and
+// strips a strong ETag when it does, so a strong validator never reaches the
+// browser at all — verified by comparing `wrangler dev` against the deployed
+// worker. Weak is also the honest label: the entity is the same page whether
+// it arrives gzipped, brotli'd, or plain.
 async function pageETag(html: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(html))
   const hex = Array.from(new Uint8Array(digest).slice(0, 8))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('')
-  return `"${hex}"`
+  return `W/"${hex}"`
 }
 
 landing.get('/', async (c) => {

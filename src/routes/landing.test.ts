@@ -283,10 +283,12 @@ describe('landing page cache headers', () => {
     expect(response.headers.get('cache-control')).toContain('no-cache')
   })
 
-  it('serves an ETag so revalidation costs one 304 instead of a full page', async () => {
+  // Weak, not strong: Cloudflare compresses this response at the edge and drops
+  // a strong ETag on the way out, so a strong validator never reaches a browser.
+  it('serves a weak ETag so revalidation costs one 304 instead of a full page', async () => {
     const response = await app.request('/', {}, dispatchEnv())
 
-    expect(response.headers.get('etag')).toMatch(/^"[0-9a-f]+"$/)
+    expect(response.headers.get('etag')).toMatch(/^W\/"[0-9a-f]+"$/)
   })
 
   it('answers a matching If-None-Match with 304 and no body', async () => {
