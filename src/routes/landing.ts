@@ -2439,10 +2439,34 @@ Authorization: Bearer &lt;keycast token&gt;
 
 export const landing = new Hono<{ Bindings: Env }>()
 
-landing.get('/', (c) => {
+// The page carries all of its JavaScript inline, so a cached copy is a cached
+// build. Without an explicit policy browsers apply heuristic freshness and can
+// hold a stale page for hours, which turns every deploy into a support thread
+// about bugs that are already fixed. `no-cache` permits storing the page but
+// requires revalidation, and the ETag makes that revalidation a 304.
+async function pageETag(html: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(html))
+  const hex = Array.from(new Uint8Array(digest).slice(0, 8))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+  return `"${hex}"`
+}
+
+landing.get('/', async (c) => {
   const accept = c.req.header('accept') || ''
   if (accept.includes('application/json') && !accept.includes('text/html')) {
     return c.json({ service: 'divine-connections', version: '1.0.0' })
   }
-  return c.html(renderLandingPage(c.env, new URL(c.req.url).origin))
+
+  const html = renderLandingPage(c.env, new URL(c.req.url).origin)
+  const etag = await pageETag(html)
+
+  c.header('Cache-Control', 'no-cache, must-revalidate')
+  c.header('ETag', etag)
+
+  if (c.req.header('if-none-match') === etag) {
+    return c.body(null, 304)
+  }
+
+  return c.html(html)
 })

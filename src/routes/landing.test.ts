@@ -2,6 +2,7 @@
 // ABOUTME: removal of every legacy /auth/* call path from the page JS.
 import { describe, it, expect } from 'vitest'
 import { renderLandingPage } from './landing'
+import { app } from '../index'
 import type { Env } from '../types'
 
 function testEnv(overrides: Partial<Env> = {}): Env {
@@ -264,5 +265,52 @@ describe('landing page lookup renders stored results before waiting on relays', 
 
   it('tells the reader the relay check is still running', () => {
     expect(lookupBody()).toContain('Checking relays')
+  })
+})
+
+// The landing page is one HTML document with all of its JS inlined, so a stale
+// copy in a browser cache means a tester runs last week's code and reports bugs
+// that are already fixed. It shipped with no Cache-Control and no ETag at all,
+// which leaves freshness entirely to heuristic browser caching. Revalidate on
+// every load, and make that revalidation cheap with an ETag.
+describe('landing page cache headers', () => {
+  const dispatchEnv = () => testEnv()
+
+  it('tells the browser to revalidate instead of serving from cache blindly', async () => {
+    const response = await app.request('/', {}, dispatchEnv())
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toContain('no-cache')
+  })
+
+  it('serves an ETag so revalidation costs one 304 instead of a full page', async () => {
+    const response = await app.request('/', {}, dispatchEnv())
+
+    expect(response.headers.get('etag')).toMatch(/^"[0-9a-f]+"$/)
+  })
+
+  it('answers a matching If-None-Match with 304 and no body', async () => {
+    const first = await app.request('/', {}, dispatchEnv())
+    const etag = first.headers.get('etag') as string
+
+    const revalidated = await app.request('/', { headers: { 'if-none-match': etag } }, dispatchEnv())
+
+    expect(revalidated.status).toBe(304)
+    expect(await revalidated.text()).toBe('')
+    expect(revalidated.headers.get('etag')).toBe(etag)
+  })
+
+  it('changes the ETag when the rendered page changes', async () => {
+    const base = await app.request('/', {}, dispatchEnv())
+    const withProviders = await app.request('/', {}, allProvidersEnv)
+
+    expect(withProviders.headers.get('etag')).not.toBe(base.headers.get('etag'))
+  })
+
+  it('still serves a stale ETag holder the current page', async () => {
+    const response = await app.request('/', { headers: { 'if-none-match': '"deadbeef"' } }, dispatchEnv())
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain('<!DOCTYPE html>')
   })
 })
