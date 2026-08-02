@@ -2443,36 +2443,21 @@ export const landing = new Hono<{ Bindings: Env }>()
 // build. Without an explicit policy browsers apply heuristic freshness and can
 // hold a stale page for hours, which turns every deploy into a support thread
 // about bugs that are already fixed. `no-cache` permits storing the page but
-// requires revalidation, and the ETag makes that revalidation a 304.
+// forces revalidation on every load, so a deploy is visible immediately.
 //
-// The validator is weak. Cloudflare compresses this response at the edge and
-// strips a strong ETag when it does, so a strong validator never reaches the
-// browser at all — verified by comparing `wrangler dev` against the deployed
-// worker. Weak is also the honest label: the entity is the same page whether
-// it arrives gzipped, brotli'd, or plain.
-async function pageETag(html: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(html))
-  const hex = Array.from(new Uint8Array(digest).slice(0, 8))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
-  return `W/"${hex}"`
-}
-
-landing.get('/', async (c) => {
+// There is deliberately no ETag. Cloudflare strips the `ETag` response header
+// from this worker's responses at the edge — confirmed by serving the same
+// build with a mirrored `X-Page-ETag`: the mirror arrives, `ETag` does not.
+// It is dropped by header name, not because of its strength or the presence of
+// `must-revalidate`; both variants were tested. Computing one would cost a
+// hash of the whole page on every request to produce a header no browser will
+// ever see, so revalidation is a plain 200 rather than a 304.
+landing.get('/', (c) => {
   const accept = c.req.header('accept') || ''
   if (accept.includes('application/json') && !accept.includes('text/html')) {
     return c.json({ service: 'divine-connections', version: '1.0.0' })
   }
 
-  const html = renderLandingPage(c.env, new URL(c.req.url).origin)
-  const etag = await pageETag(html)
-
   c.header('Cache-Control', 'no-cache, must-revalidate')
-  c.header('ETag', etag)
-
-  if (c.req.header('if-none-match') === etag) {
-    return c.body(null, 304)
-  }
-
-  return c.html(html)
+  return c.html(renderLandingPage(c.env, new URL(c.req.url).origin))
 })

@@ -270,9 +270,8 @@ describe('landing page lookup renders stored results before waiting on relays', 
 
 // The landing page is one HTML document with all of its JS inlined, so a stale
 // copy in a browser cache means a tester runs last week's code and reports bugs
-// that are already fixed. It shipped with no Cache-Control and no ETag at all,
-// which leaves freshness entirely to heuristic browser caching. Revalidate on
-// every load, and make that revalidation cheap with an ETag.
+// that are already fixed. It shipped with no Cache-Control at all, which leaves
+// freshness entirely to heuristic browser caching.
 describe('landing page cache headers', () => {
   const dispatchEnv = () => testEnv()
 
@@ -283,36 +282,23 @@ describe('landing page cache headers', () => {
     expect(response.headers.get('cache-control')).toContain('no-cache')
   })
 
-  // Weak, not strong: Cloudflare compresses this response at the edge and drops
-  // a strong ETag on the way out, so a strong validator never reaches a browser.
-  it('serves a weak ETag so revalidation costs one 304 instead of a full page', async () => {
-    const response = await app.request('/', {}, dispatchEnv())
-
-    expect(response.headers.get('etag')).toMatch(/^W\/"[0-9a-f]+"$/)
-  })
-
-  it('answers a matching If-None-Match with 304 and no body', async () => {
-    const first = await app.request('/', {}, dispatchEnv())
-    const etag = first.headers.get('etag') as string
-
-    const revalidated = await app.request('/', { headers: { 'if-none-match': etag } }, dispatchEnv())
-
-    expect(revalidated.status).toBe(304)
-    expect(await revalidated.text()).toBe('')
-    expect(revalidated.headers.get('etag')).toBe(etag)
-  })
-
-  it('changes the ETag when the rendered page changes', async () => {
-    const base = await app.request('/', {}, dispatchEnv())
-    const withProviders = await app.request('/', {}, allProvidersEnv)
-
-    expect(withProviders.headers.get('etag')).not.toBe(base.headers.get('etag'))
-  })
-
-  it('still serves a stale ETag holder the current page', async () => {
-    const response = await app.request('/', { headers: { 'if-none-match': '"deadbeef"' } }, dispatchEnv())
+  it('always answers with the current page rather than a conditional 304', async () => {
+    // Cloudflare strips `ETag` from this worker's responses at the edge, so we
+    // never issue a validator and must never answer 304 to a client that
+    // invented one. Every load returns the page as it is right now.
+    const response = await app.request(
+      '/',
+      { headers: { 'if-none-match': 'W/"deadbeef"' } },
+      dispatchEnv(),
+    )
 
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('<!DOCTYPE html>')
+  })
+
+  it('does not compute an ETag the edge will discard', async () => {
+    const response = await app.request('/', {}, dispatchEnv())
+
+    expect(response.headers.get('etag')).toBeNull()
   })
 })
