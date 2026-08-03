@@ -96,27 +96,25 @@ describe('landing page connections wiring', () => {
   // box that said "Sign in with the platform account you want to link" and then
   // admitted there was nothing to sign in with. Omit the step entirely instead,
   // and promote proof-post verification from "Step 3 (Advanced)" to Step 2.
-  it('omits the Quick Connect step entirely when no providers are configured', () => {
+  it('offers no connect path at all when no providers are configured', () => {
     const bare = renderLandingPage(testEnv(), 'https://verifier.divine.video')
 
-    expect(bare).not.toContain('Quick Connect (no posting)')
-    expect(bare).not.toContain('Sign in with the platform account you want to link')
-    expect(bare).not.toContain('No connection providers are configured on this deployment yet')
     expect(bare).not.toContain('Continue to secure sign-in')
+    expect(bare).not.toContain('No connection providers are configured on this deployment yet')
   })
 
-  it('renumbers proof verification to Step 2 when Quick Connect is absent', () => {
-    const bare = renderLandingPage(testEnv(), 'https://verifier.divine.video')
-
-    expect(bare).toContain('Step 2: verify an account by post or link')
-    expect(bare).not.toContain('Step 3 (Advanced)')
+  it('no longer frames the two verification paths as sequential steps', () => {
+    // They are alternatives chosen by platform, not steps 2 and 3, and the
+    // proof path is the only option for five of nine platforms, so it must not
+    // sit behind an "Advanced" disclosure.
+    expect(html).not.toContain('Step 2 (Recommended)')
+    expect(html).not.toContain('Step 3 (Advanced)')
+    expect(html).not.toContain('id="advanced-proof"')
   })
 
-  it('keeps Quick Connect as Step 2 and proof as Step 3 when providers exist', () => {
-    expect(html).toContain('Quick Connect (no posting)')
-    expect(html).toContain('Step 2 (Recommended)')
-    expect(html).toContain('Step 3 (Advanced)')
+  it('still offers the connect path when providers exist', () => {
     expect(html).toContain('Continue to secure sign-in')
+    expect(html).toContain('id="method-oauth"')
   })
 
   it('clears the Loading placeholder when the manage list fails to load', () => {
@@ -218,15 +216,12 @@ describe('landing page platform capability matrix', () => {
     expect(withToken).not.toContain('discord.gg')
   })
 
-  it('stops calling Quick Connect "Recommended" and opens the proof form when no provider is live', () => {
+  it('shows the proof form directly rather than behind a disclosure', () => {
     const page = renderLandingPage(noProvidersEnv, 'https://verifier.divine.video')
-    expect(page).not.toContain('Step 2 (Recommended)')
-    expect(page).toContain('<details class="advanced-proof" id="advanced-proof" open>')
-  })
-
-  it('keeps Quick Connect as the recommended path when providers are live', () => {
-    expect(html).toContain('Step 2 (Recommended)')
-    expect(html).toContain('<details class="advanced-proof" id="advanced-proof">')
+    expect(page).toContain('id="method-proof"')
+    // The shared .advanced-proof class still styles the remote-signer
+    // disclosure; it is the proof form's own disclosure that is gone.
+    expect(page).not.toContain('id="advanced-proof"')
   })
 })
 
@@ -446,69 +441,86 @@ describe('landing page npub encoder is actually correct', () => {
   })
 })
 
-// Picking a platform from a bare <select> gives no sense of what the product
-// connects to. The capability matrix already carries an SVG path per platform —
-// the hero chips use it — so the picker can use the same artwork.
-describe('landing page platform picker uses logos', () => {
+// One picker for every platform, each carrying how that platform can be
+// verified on this deployment. The old page split them across "Quick Connect"
+// and an "Advanced" disclosure, which made the reader learn our implementation
+// before they could find their own account.
+describe('landing page verify picker covers every platform', () => {
   const picker = (page: string) =>
-    page.match(/<div class="platform-picker"[\s\S]*?<\/div>\s*<select id="proof-platform-select"/)?.[0] ?? ''
+    page.match(/<div class="platform-picker" role="radiogroup" aria-labelledby="verify-platform-label">[\s\S]*?<\/div>/)?.[0] ?? ''
 
-  it('renders a clickable choice per proof-capable platform', () => {
+  it('lists all nine platforms, including ones not yet available', () => {
     const markup = picker(html)
-    for (const label of ['GitHub', 'Twitter / X', 'Bluesky', 'Mastodon', 'Telegram', 'TikTok']) {
+    for (const label of ['GitHub', 'Twitter / X', 'Bluesky', 'Mastodon', 'Telegram', 'TikTok', 'Instagram', 'YouTube', 'Discord']) {
       expect(markup).toContain(label)
     }
   })
 
   it('gives every choice its logo', () => {
     const markup = picker(html)
-    const buttons = markup.match(/<button[^>]*class="platform-choice"/g) ?? []
+    const buttons = markup.match(/<button[^>]*class="platform-choice/g) ?? []
     const svgs = markup.match(/<svg viewBox="0 0 24 24"/g) ?? []
 
-    expect(buttons.length).toBeGreaterThanOrEqual(6)
+    expect(buttons.length).toBe(9)
     expect(svgs.length).toBe(buttons.length)
   })
 
-  it('includes TikTok as a first-class choice, not a leftover', () => {
-    expect(picker(html)).toContain('data-platform="tiktok"')
-  })
-
-  it('sends the same platform values the API expects, including the x/twitter alias', () => {
+  it('records how each platform can be verified here', () => {
     const markup = picker(html)
-    expect(markup).toContain('data-platform="twitter"')
-    expect(markup).not.toContain('data-platform="x"')
+    // x and instagram have OAuth configured in this env; github does not.
+    expect(markup).toMatch(/data-verify-platform="twitter"[^>]*data-method="oauth"/)
+    expect(markup).toMatch(/data-verify-platform="github"[^>]*data-method="proof"/)
+    // discord and youtube are gated on secrets this env lacks.
+    expect(markup).toMatch(/data-verify-platform="discord"[^>]*data-method="unavailable"/)
   })
 
-  it('starts on GitHub, matching the default the select already had', () => {
-    const first = picker(html).match(/<button[^>]*data-platform="([^"]+)"[^>]*aria-checked="true"/)
-    expect(first?.[1]).toBe('github')
+  it('says why an unavailable platform is unavailable, rather than hiding it', () => {
+    const markup = picker(html)
+    const discord = markup.match(/<button[^>]*data-verify-platform="discord"[^>]*>/)?.[0] ?? ''
+
+    expect(discord).toContain('data-reason="')
+    expect(discord).not.toContain('data-reason=""')
+  })
+
+  it('starts on a platform the reader can actually use', () => {
+    const first = picker(html).match(/<button[^>]*data-verify-platform="([^"]+)"[^>]*aria-checked="true"/)
+    const markup = picker(html)
+    const selected = markup.match(new RegExp(`data-verify-platform="${first?.[1]}"[^>]*data-method="([^"]+)"`))
+
+    expect(first?.[1]).toBeTruthy()
+    expect(selected?.[1]).not.toBe('unavailable')
+  })
+
+  it('sends the platform values the API expects, including the x/twitter alias', () => {
+    const markup = picker(html)
+    expect(markup).toContain('data-verify-platform="twitter"')
+    expect(markup).not.toContain('data-verify-platform="x"')
   })
 
   it('keeps a real radio group rather than unlabelled buttons', () => {
     const markup = picker(html)
     expect(markup).toContain('role="radiogroup"')
-    expect((markup.match(/role="radio"/g) ?? []).length).toBeGreaterThanOrEqual(6)
+    expect((markup.match(/role="radio"/g) ?? []).length).toBe(9)
   })
 
-  it('keeps the select as the state the rest of the page already reads', () => {
-    // Six call sites read proof-platform-select.value; the picker drives it
+  it('keeps the selects the rest of the page already reads', () => {
+    // Several call sites read proof-platform-select.value; the picker drives it
     // rather than replacing it, so none of them had to change.
     expect(html).toContain('<select id="proof-platform-select"')
-    expect(html).toMatch(/<select id="proof-platform-select"[^>]*(hidden|display:\s*none)/)
+    expect(html).toMatch(/<select id="proof-platform-select"[^>]*hidden/)
   })
 
-  it('drives the select and re-runs the existing change handler', () => {
-    const wiring = html.split('function bindPlatformPicker')[1].split('\n    }')[0]
-    expect(wiring).toContain('platform-choice')
+  it('shows one method panel at a time and re-runs the existing change handler', () => {
+    const wiring = html.split('function bindVerifyPlatformPicker')[1].split('\n    }\n\n    //')[0]
     expect(wiring).toContain("dispatchEvent(new Event('change'))")
-    expect(wiring).toContain('aria-checked')
+    expect(wiring).toContain('method-oauth')
+    expect(wiring).toContain('method-proof')
+    expect(wiring).toContain('method-unavailable')
   })
 
-  it('omits platforms whose proof path needs a secret this deployment lacks', () => {
-    // discord and youtube are gated on DISCORD_BOT_TOKEN / YOUTUBE_API_KEY.
-    const markup = picker(html)
-    expect(markup).not.toContain('data-platform="discord"')
-    expect(markup).not.toContain('data-platform="youtube"')
+  it('offers the proof path as an escape hatch for platforms that have both', () => {
+    expect(html).toContain('id="use-proof-instead-btn"')
+    expect(html).toContain('data-can-proof="yes"')
   })
 })
 
@@ -532,5 +544,106 @@ describe('landing page does not narrate session plumbing', () => {
   it('still confirms a sign-in the reader actually initiated', () => {
     expect(html).toContain("'browser', 'Signed in with your browser signer.'")
     expect(html).toContain("'keycast', 'Signed in with Divine.'")
+  })
+})
+
+// The instructions used to hardcode "For X, Instagram, TikTok, and YouTube,
+// just sign in from this page" on a deployment where three of those four had
+// no credentials. Derive the copy from the same matrix that decides what the
+// picker offers, so it cannot promise something that does not work.
+describe('landing page instructions match what this deployment can do', () => {
+  const noProviders = renderLandingPage(testEnv(), 'https://verify.divine.video')
+
+  it('does not promise a connect path for platforms with no credentials', () => {
+    expect(html).not.toContain('For X, Instagram, TikTok, and YouTube, just sign in')
+
+    // Only X and Instagram have credentials in this env, matching production.
+    const partial = renderLandingPage(
+      testEnv({ ENABLE_X: 'true', TWITTER_CLIENT_ID: 'x', TWITTER_CLIENT_SECRET: 'x' }),
+      'https://verify.divine.video',
+    )
+    const note = partial.split('<div class="note">')[1].split('</div>')[0]
+
+    expect(note).toMatch(/No posting needed for[^.]*Twitter/)
+    expect(note).not.toMatch(/No posting needed for[^.]*YouTube/)
+    expect(note).toMatch(/YouTube[^.]*not switched on/)
+  })
+
+  it('names the platforms that really do skip posting', () => {
+    const note = html.split('<div class="note">')[1].split('</div>')[0]
+    expect(note).toContain('No posting needed for')
+    expect(note).toContain('Twitter / X')
+    expect(note).toContain('Instagram')
+  })
+
+  it('says plainly which platforms are switched off here', () => {
+    const note = html.split('<div class="note">')[1].split('</div>')[0]
+    expect(note).toMatch(/not switched on for this site yet/)
+  })
+
+  it('drops the connect sentence entirely when nothing is configured', () => {
+    const note = noProviders.split('<div class="note">')[1].split('</div>')[0]
+    expect(note).not.toContain('No posting needed for')
+    expect(noProviders).toContain('Post something containing your npub')
+  })
+
+  it('no longer sends the reader to an advanced section to finish', () => {
+    expect(html).not.toContain('use the advanced section')
+  })
+})
+
+// Verification succeeded and the profile did not change, because publishing was
+// a separate button further down that people never found. That is exactly the
+// "it said I connected but nothing shows up" report.
+describe('landing page publishes the verification without being asked', () => {
+  it('publishes straight after a successful proof verification', () => {
+    const verifyFn = html.split('Success. This account is verified')[1].split('} else {')[0]
+    expect(verifyFn).toContain('publishAfterVerification()')
+  })
+
+  it('publishes after returning from a connect flow too', () => {
+    const callback = html.split("params.get('connection')")[1].split('shouldClean = true;')[0]
+    expect(callback).toContain('publishAfterVerification()')
+  })
+
+  it('keeps the verification when there is no signer, and says so calmly', () => {
+    const publish = html.split('async function publishAfterVerification')[1].split('\n    }')[0]
+    const noSignerBranch = publish.split('if (!activeSigner)')[1].split('return;')[0]
+
+    // Missing a signer is a normal state, not a failure: the verification is
+    // already stored. Only a genuine publish failure is styled as an error.
+    expect(noSignerBranch).toMatch(/Sign in above to also publish/)
+    expect(noSignerBranch).not.toContain("'error'")
+    expect(publish).toContain('Your verification is saved either way')
+  })
+
+  it('keeps a manual retry visible rather than removing the control', () => {
+    expect(html).toContain('id="publish-kind0-btn"')
+    expect(html).toContain('Publish to my profile again')
+  })
+
+  it('does not leave the old unconditional publish button in the flow', () => {
+    expect(html).not.toContain('>Publish to Nostr profile<')
+  })
+})
+
+// "No posting needed for Twitter / X, and Instagram." — the list helper added a
+// serial comma even with two items, which reads as a typo everywhere it appears.
+describe('landing page joins platform lists like English', () => {
+  const noteOf = (page: string) => page.split('<div class="note">')[1].split('</div>')[0]
+
+  it('uses no comma for two platforms', () => {
+    const twoConnect = renderLandingPage(
+      testEnv({ ENABLE_X: 'true', TWITTER_CLIENT_ID: 'x', TWITTER_CLIENT_SECRET: 'x',
+                ENABLE_INSTAGRAM: 'true', INSTAGRAM_CLIENT_ID: 'i', INSTAGRAM_CLIENT_SECRET: 'i' }),
+      'https://verify.divine.video',
+    )
+
+    expect(noteOf(twoConnect)).toContain('Twitter / X and Instagram')
+    expect(noteOf(twoConnect)).not.toContain('Twitter / X, and Instagram')
+  })
+
+  it('keeps the serial comma for three or more', () => {
+    expect(noteOf(html)).toMatch(/Bluesky, Mastodon, and Telegram/)
   })
 })

@@ -625,7 +625,7 @@ export function renderHome(env: Env): string {
             </div>
             <div class="flow-section">
               <h3>2. Connect a platform</h3>
-              <p>Provider keys are still off until we add the app credentials. Ready providers will unlock here.</p>
+              <p>Connecting an account here also verifies it on your Divine profile, so people can see the account is really yours. Anything not ready yet says so.</p>
               <div class="connect-list" id="connect-list"></div>
             </div>
           </div>
