@@ -1,7 +1,21 @@
 // ABOUTME: End-to-end proof that the live deployment refuses forged and malformed
 // ABOUTME: verification claims, calling the real upstream platform APIs to decide.
 import { describe, expect, it } from 'vitest'
-import { postJson, UNCLAIMED_PUBKEY, verifySingle } from './support/deployment'
+import { postJson, UNCLAIMED_PUBKEY, verifySingle, type VerifyResult } from './support/deployment'
+
+// GitHub allows 60 unauthenticated API calls per hour per IP, and a Worker's
+// egress IPs are shared across the whole Cloudflare edge — so without a
+// GITHUB_TOKEN on the deployment that budget is being spent by strangers and
+// every GitHub verification returns 403. That is an outage, not a verdict about
+// the proof, and it must not be reported as though the forgery check failed.
+function assertUpstreamAnswered(body: VerifyResult): void {
+  expect(
+    body.error ?? '',
+    'GitHub refused the request rather than answering it. Unauthenticated calls are ' +
+      'limited to 60/hour per IP and Cloudflare egress IPs are shared, so this affects ' +
+      'real users, not just this test. Install a token: npx wrangler secret put GITHUB_TOKEN',
+  ).not.toMatch(/API error: (401|403|429)/)
+}
 
 // A real, long-lived gist owned by GitHub's own mascot account. Nothing about
 // this test depends on its contents beyond the fact that octocat owns it and
@@ -21,6 +35,7 @@ describe('the deployment refuses proof that does not prove anything', () => {
 
     expect(status).toBe(200)
     expect(body.verified).toBe(false)
+    assertUpstreamAnswered(body)
     expect(body.error).toMatch(/owner/i)
   })
 
@@ -36,6 +51,7 @@ describe('the deployment refuses proof that does not prove anything', () => {
 
     expect(status).toBe(200)
     expect(body.verified).toBe(false)
+    assertUpstreamAnswered(body)
     expect(body.error).toMatch(/npub not found/i)
   })
 
@@ -48,6 +64,7 @@ describe('the deployment refuses proof that does not prove anything', () => {
     })
 
     expect(body.verified).toBe(false)
+    assertUpstreamAnswered(body)
     expect(body.error).toMatch(/not found/i)
   })
 })
@@ -148,7 +165,7 @@ describe('none of the refused claims left a stored verification behind', () => {
     expect(status).toBe(200)
 
     const stored = await fetch(
-      `${process.env.E2E_BASE_URL || 'https://divine-connections.protestnet.workers.dev'}/verified/${UNCLAIMED_PUBKEY}`,
+      `${process.env.E2E_BASE_URL || 'https://verify.divine.video'}/verified/${UNCLAIMED_PUBKEY}`,
     )
     const payload = (await stored.json()) as { verifications: unknown[] }
 

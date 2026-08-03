@@ -183,3 +183,42 @@ describe('host dispatch', () => {
     await expect(response.json()).resolves.toMatchObject({ status: 'ok', service: 'divine-connections' })
   })
 })
+
+// verify.divine.video is the second verifier hostname, and it is the one keycast
+// has registered as a redirect_uri alongside verifier.divine.video. Sign-in only
+// works from a hostname keycast will redirect back to, so this host has to reach
+// the verifier surface — not the union fallback, which would also expose the
+// crossposter publishing API on a public verification domain.
+describe('verify.divine.video', () => {
+  const VERIFY = 'https://verify.divine.video'
+
+  beforeEach(async () => {
+    await applyMigrations()
+  })
+
+  it('serves the verifier surface', async () => {
+    const landing = await hostRequest(`${VERIFY}/`, {}, dispatchEnv())
+    expect(landing.status).toBe(200)
+    await expect(landing.text()).resolves.not.toContain('<title>Divine Crossposter</title>')
+
+    const healthRes = await hostRequest(`${VERIFY}/health`, {}, dispatchEnv())
+    await expect(healthRes.json()).resolves.toMatchObject({ status: 'ok', service: 'divine-connections' })
+
+    const verifiedRes = await hostRequest(`${VERIFY}/verified/${PUBKEY_A}`, {}, dispatchEnv())
+    expect(verifiedRes.status).toBe(200)
+  })
+
+  it('does not expose the crossposter publishing surface', async () => {
+    const providers = await hostRequest(`${VERIFY}/api/providers`, {}, dispatchEnv())
+    expect(providers.status).toBe(404)
+  })
+
+  it('builds its keycast redirect_uri from its own origin', async () => {
+    const landing = await hostRequest(`${VERIFY}/`, {}, dispatchEnv())
+    const html = await landing.text()
+
+    // getKeycastRedirectUrl() derives the redirect from window.location, so the
+    // page served here must not hardcode another host into the login link.
+    expect(html).toContain('return_url=https%3A%2F%2Fverify.divine.video%2F')
+  })
+})
