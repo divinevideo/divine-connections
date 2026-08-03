@@ -91,11 +91,30 @@ describe('landing page connections wiring', () => {
     expect(proofSelect).toContain('<option value="tiktok">')
   })
 
-  it('explains Quick Connect instead of showing an empty dropdown when no providers are configured', () => {
+  // Rendering the Quick Connect card with nothing in it produced a tall empty
+  // box that said "Sign in with the platform account you want to link" and then
+  // admitted there was nothing to sign in with. Omit the step entirely instead,
+  // and promote proof-post verification from "Step 3 (Advanced)" to Step 2.
+  it('omits the Quick Connect step entirely when no providers are configured', () => {
     const bare = renderLandingPage(testEnv(), 'https://verifier.divine.video')
-    expect(bare).toContain('No connection providers are configured on this deployment yet')
-    expect(bare).not.toContain('Continue to secure sign-in')
 
+    expect(bare).not.toContain('Quick Connect (no posting)')
+    expect(bare).not.toContain('Sign in with the platform account you want to link')
+    expect(bare).not.toContain('No connection providers are configured on this deployment yet')
+    expect(bare).not.toContain('Continue to secure sign-in')
+  })
+
+  it('renumbers proof verification to Step 2 when Quick Connect is absent', () => {
+    const bare = renderLandingPage(testEnv(), 'https://verifier.divine.video')
+
+    expect(bare).toContain('Step 2: verify an account by post or link')
+    expect(bare).not.toContain('Step 3 (Advanced)')
+  })
+
+  it('keeps Quick Connect as Step 2 and proof as Step 3 when providers exist', () => {
+    expect(html).toContain('Quick Connect (no posting)')
+    expect(html).toContain('Step 2 (Recommended)')
+    expect(html).toContain('Step 3 (Advanced)')
     expect(html).toContain('Continue to secure sign-in')
   })
 
@@ -300,5 +319,66 @@ describe('landing page cache headers', () => {
     const response = await app.request('/', {}, dispatchEnv())
 
     expect(response.headers.get('etag')).toBeNull()
+  })
+})
+
+// keycast decides which form to show from the authorize URL:
+//
+//   const defaultRegister = params.get('default_register') === 'true'
+//   if (defaultRegister || byokPubkey) showForm('register'); else showForm('login')
+//
+// We were sending default_register=true, so a button labelled "sign in" landed
+// existing users on "Create account". Both views already link to each other, so
+// letting keycast default to login costs a new user one click and stops sending
+// returning users to the wrong form.
+describe('landing page sign-in lands on the sign-in form', () => {
+  it('does not force keycast into its register view', () => {
+    // Asserts the parameter is never set, rather than that the string is
+    // absent — the comment explaining this decision names it too.
+    expect(html).not.toMatch(/searchParams\.set\(\s*'default_register'/)
+  })
+
+  it('still starts the authorize round trip with the PKCE parameters', () => {
+    expect(html).toContain("url.searchParams.set('client_id', KEYCAST_CLIENT_ID)")
+    expect(html).toContain("url.searchParams.set('code_challenge_method', 'S256')")
+    expect(html).toContain("url.searchParams.set('redirect_uri', getKeycastRedirectUrl())")
+  })
+})
+
+// Signing in changed almost nothing on screen: all three sign-in buttons, the
+// account paste field, the "if a signer session is not available" fallback copy
+// and the remote-signer disclosure all stayed, with a one-line "Connected"
+// note underneath. The screen should reflect that you are done with step 1.
+describe('landing page collapses step 1 once a signer is active', () => {
+  it('wraps the sign-in controls so they can be hidden together', () => {
+    expect(html).toContain('id="signin-controls"')
+  })
+
+  it('renders a signed-in panel that starts hidden', () => {
+    const panel = html.match(/<div id="signed-in-panel"[^>]*>/)?.[0] ?? ''
+    expect(panel).toBeTruthy()
+    expect(panel).toContain('display:none')
+  })
+
+  it('swaps controls for the signed-in panel when a key is active', () => {
+    const summary = html.split('function updateSignerSummary')[1].split('\n    }')[0]
+
+    expect(summary).toContain("getElementById('signin-controls')")
+    expect(summary).toContain("getElementById('signed-in-panel')")
+    // The active key is what decides, not merely having clicked a button.
+    expect(summary).toContain('signerPubkeyHex')
+  })
+
+  it('names the account you are signed in as', () => {
+    expect(html).toContain('id="signed-in-identity"')
+  })
+
+  it('offers a way back out to sign in as somebody else', () => {
+    expect(html).toContain('id="sign-out-btn"')
+
+    const signOut = html.split('function signOutSigner')[1]?.split('\n    }')[0] ?? ''
+    expect(signOut).toContain('clearKeycastSession()')
+    expect(signOut).toContain('signerPubkeyHex = null')
+    expect(signOut).toContain('updateSignerSummary()')
   })
 })

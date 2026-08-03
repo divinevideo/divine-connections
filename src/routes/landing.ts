@@ -596,7 +596,13 @@ ${platformChips}
       <div class="verify-step-grid">
         <div class="verify-card">
           <span class="step-pill">Step 1</span>
-          <h3 style="margin-top:0;">Sign in to your Divine account</h3>
+          <h3 style="margin-top:0;" id="signin-heading">Sign in to your Divine account</h3>
+          <div id="signed-in-panel" style="display:none;">
+            <p style="margin-bottom:0.35rem;">You're signed in and ready to verify an account below.</p>
+            <p id="signed-in-identity" class="field-help" style="margin-bottom:0.75rem;"></p>
+            <button id="sign-out-btn" class="verify-btn" type="button">Sign in as someone else</button>
+          </div>
+          <div id="signin-controls">
           <p>Use your browser signer, login.divine.video session, bunker URL, or Nostr Connect. Any of these lets us publish the final verification tag into your Nostr identity event (NIP-39).</p>
           <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.6rem;">
             <button id="connect-nostr-btn" class="verify-btn verify-btn-primary" type="button">Use browser signer (NIP-07)</button>
@@ -629,24 +635,25 @@ ${platformChips}
               </div>
             </div>
           </details>
+          </div>
           <div id="verify-login-status" class="status-row"></div>
           <div id="verify-global-status" class="status-row"></div>
         </div>
 
-        <div class="verify-card">
-          <span class="step-pill">Step 2${oauthPlatformOptions ? ' (Recommended)' : ''}</span>
+        ${oauthPlatformOptions ? `<div class="verify-card">
+          <span class="step-pill">Step 2 (Recommended)</span>
           <h3 style="margin-top:0;">Quick Connect (no posting)</h3>
           <p>Sign in with the platform account you want to link.</p>
-          ${oauthPlatformOptions ? '<label for="oauth-platform-select" class="field-label">Platform</label>' : ''}
+          <label for="oauth-platform-select" class="field-label">Platform</label>
           ${oauthConnectControls}
           <div id="oauth-status" class="status-row"></div>
-        </div>
+        </div>` : ''}
       </div>
 
       <details class="advanced-proof" id="advanced-proof"${oauthPlatformOptions ? '' : ' open'}>
-        <summary>Step 3 (Advanced): verify by post/link proof instead</summary>
+        <summary>${oauthPlatformOptions ? 'Step 3 (Advanced): verify by post/link proof instead' : 'Step 2: verify an account by post or link'}</summary>
         <div class="advanced-proof-inner">
-          <p style="margin-bottom:0.75rem;">${oauthPlatformOptions ? 'Use this for the platforms Quick Connect does not cover, or if you would rather not connect an account.' : 'Quick Connect is unavailable on this deployment, so verify here instead.'} You can paste a full URL and we'll extract IDs where possible.</p>
+          <p style="margin-bottom:0.75rem;">${oauthPlatformOptions ? 'Use this for the platforms Quick Connect does not cover, or if you would rather not connect an account.' : 'Post something containing your npub on the platform you want to verify, then paste the link here.'} You can paste a full URL and we'll extract IDs where possible.</p>
           <label for="proof-platform-select" class="field-label">Platform</label>
           <select id="proof-platform-select" class="field-select">
             ${proofPlatformOptions}
@@ -922,6 +929,26 @@ Authorization: Bearer &lt;keycast token&gt;
     }
 
     function updateSignerSummary() {
+      // Signing in is a mode change, not a status line. Once there is an active
+      // key the whole sign-in apparatus — three buttons, the paste field, its
+      // fallback copy, the remote-signer disclosure — has nothing left to
+      // offer, so swap it for a statement of who you are and a way back out.
+      const signedIn = !!signerPubkeyHex;
+      const controls = document.getElementById('signin-controls');
+      const panel = document.getElementById('signed-in-panel');
+      const heading = document.getElementById('signin-heading');
+      if (controls) controls.style.display = signedIn ? 'none' : 'block';
+      if (panel) panel.style.display = signedIn ? 'block' : 'none';
+      if (heading) heading.textContent = signedIn ? 'Signed in' : 'Sign in to your Divine account';
+
+      const identity = document.getElementById('signed-in-identity');
+      if (identity) {
+        const via = activeSignerSource ? ' via ' + signerSourceLabel(activeSignerSource) : '';
+        identity.textContent = signedIn
+          ? signerPubkeyHex.slice(0, 12) + '...' + signerPubkeyHex.slice(-8) + via
+          : '';
+      }
+
       const el = document.getElementById('signer-session-summary');
       if (!el) return;
       const parts = [];
@@ -938,6 +965,18 @@ Authorization: Bearer &lt;keycast token&gt;
       }
       el.style.display = 'block';
       el.textContent = parts.join(' ');
+    }
+
+    async function signOutSigner() {
+      const previous = activeSigner;
+      activeSigner = null;
+      activeSignerSource = null;
+      signerPubkeyHex = null;
+      clearKeycastSession();
+      setAccountInputValue('');
+      updateSignerSummary();
+      setStatus('verify-login-status', 'Signed out. Choose how to sign in again.', 'ok');
+      if (previous) await maybeCloseSigner(previous);
     }
 
     function isBrowserSignerAvailable() {
@@ -1295,7 +1334,9 @@ Authorization: Bearer &lt;keycast token&gt;
       url.searchParams.set('code_challenge', pkce.challenge);
       url.searchParams.set('code_challenge_method', 'S256');
       url.searchParams.set('state', state);
-      url.searchParams.set('default_register', 'true');
+      // No default_register: keycast reads that param to choose which form to
+      // open on, and sending 'true' put people who clicked "sign in" on the
+      // Create account form. Its login view already links to registration.
       if (session && session.authorizationHandle) {
         url.searchParams.set('authorization_handle', session.authorizationHandle);
       }
@@ -2350,6 +2391,7 @@ Authorization: Bearer &lt;keycast token&gt;
     }
 
     // Verify Here wiring
+    document.getElementById('sign-out-btn').addEventListener('click', signOutSigner);
     document.getElementById('connect-nostr-btn').addEventListener('click', connectNostrSigner);
     document.getElementById('connect-keycast-btn').addEventListener('click', async () => {
       clearStatus('verify-login-status');
