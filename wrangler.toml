@@ -1,9 +1,21 @@
 name = "divine-connections"
 main = "src/index.ts"
 compatibility_date = "2025-09-06"
-# TODO(#2): custom domains move here at rollout step 4, once the new
-# worker is verified on workers.dev. Until then this worker must not claim
-# either domain from the live services.
+# verify.divine.video is claimed now, ahead of the rest of the cutover (#2).
+# Sign-in is impossible without it: keycast matches redirect URIs as whole
+# strings and only has verify.divine.video/ and verifier.divine.video/
+# registered for this client, so a workers.dev deployment can never complete
+# an OAuth round trip and every signer-dependent flow is dead on arrival.
+#
+# verifier.divine.video and crossposter.divine.video deliberately stay on the
+# legacy workers until the rest of #2 lands, so this worker holds exactly one
+# public hostname and the previous services keep serving their existing
+# consumers untouched.
+routes = [
+  { pattern = "verify.divine.video", custom_domain = true }
+]
+
+# TODO(#2): the remaining custom domains move here at rollout step 4.
 # routes = [
 #   { pattern = "verifier.divine.video", custom_domain = true },
 #   { pattern = "crossposter.divine.video", custom_domain = true }

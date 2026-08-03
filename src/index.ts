@@ -53,6 +53,13 @@ verifierApp.post('/api/verify', async (c) => {
   return verifierApp.fetch(newReq, c.env)
 })
 
+// Both public verification hostnames. keycast has each registered as a
+// redirect_uri for the 'Divine Identity Verification' client, and it matches
+// redirect URIs as whole strings — so sign-in only works from a host in this
+// set. Anything else falls through to the union below, where the crossposter
+// publishing surface would also be exposed.
+const VERIFIER_HOSTS = new Set(['verifier.divine.video', 'verify.divine.video'])
+
 // Fallback (workers.dev, localhost): union of both surfaces; the verifier shape
 // wins the colliding /, /platforms, and /health paths.
 const fallbackApp = new Hono<{ Bindings: Env }>()
@@ -66,7 +73,7 @@ export { app }
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> | Response {
     const host = new URL(request.url).hostname
-    if (host === 'verifier.divine.video') return verifierApp.fetch(request, env, ctx)
+    if (VERIFIER_HOSTS.has(host)) return verifierApp.fetch(request, env, ctx)
     if (host === 'crossposter.divine.video') return crossposterApp.fetch(request, env, ctx)
     return fallbackApp.fetch(request, env, ctx)
   },

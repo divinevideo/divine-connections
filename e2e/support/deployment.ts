@@ -2,10 +2,12 @@
 // ABOUTME: how to call it, and how to read the proof fixtures from the environment.
 import { hexToNpub } from '../../src/utils/npub'
 
-// Defaults to the workers.dev deployment because that is where the merged
-// worker lives until the domain cutover (issue #2). Point E2E_BASE_URL at
-// verifier.divine.video once that lands, or at `wrangler dev` to run locally.
-export const BASE_URL = (process.env.E2E_BASE_URL || 'https://divine-connections.protestnet.workers.dev').replace(/\/$/, '')
+// The merged worker's public hostname. It has to be a host keycast has
+// registered as a redirect_uri, or sign-in cannot complete and every
+// signer-dependent flow fails — which is why the workers.dev URL this used to
+// default to was never a viable place to test. Point E2E_BASE_URL at
+// `wrangler dev` to run against a local build.
+export const BASE_URL = (process.env.E2E_BASE_URL || 'https://verify.divine.video').replace(/\/$/, '')
 
 export interface ApiResponse<T> {
   status: number
