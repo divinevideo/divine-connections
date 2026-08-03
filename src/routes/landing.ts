@@ -19,10 +19,13 @@ export function renderLandingPage(env: Env, origin: string): string {
   // copy, the proof form and the API table always agree.
   const canProof = (p: PlatformCapability) =>
     p.proofFormat !== null && (!p.proofRequiresSecret || Boolean(env[p.proofRequiresSecret]))
-  const joinList = (names: string[], conjunction: 'and' | 'or') =>
-    names.length < 2
-      ? (names[0] ?? '')
-      : `${names.slice(0, -1).join(', ')}, ${conjunction} ${names[names.length - 1]}`
+  // Two items take no comma ("A and B"); three or more keep the serial comma
+  // ("A, B, and C"). The unconditional version read "Twitter / X, and Instagram".
+  const joinList = (names: string[], conjunction: 'and' | 'or') => {
+    if (names.length < 2) return names[0] ?? ''
+    if (names.length === 2) return `${names[0]} ${conjunction} ${names[1]}`
+    return `${names.slice(0, -1).join(', ')}, ${conjunction} ${names[names.length - 1]}`
+  }
 
   const platformChips = PLATFORMS.map(
     (p) => `      <a class="platform-pill" href="#verify-here">
@@ -49,12 +52,6 @@ export function renderLandingPage(env: Env, origin: string): string {
     .filter((p) => oauthEnabled.has(p.key as 'x' | 'instagram' | 'tiktok' | 'youtube'))
     .map((p) => `<option value="${p.key}">${p.label}</option>`)
     .join('')
-  const oauthConnectControls = oauthPlatformOptions
-    ? `<select id="oauth-platform-select" class="field-select">
-            ${oauthPlatformOptions}
-          </select>
-          <button id="oauth-start-btn" class="verify-btn verify-btn-primary" type="button">Continue to secure sign-in</button>`
-    : `<p class="field-help">No connection providers are configured on this deployment yet. Use the advanced section below to verify by post/link proof instead.</p>`
   // GitHub stays the default selection; the rest follow the matrix order.
   const proofCapable = PLATFORMS.filter(canProof)
   const proofOrdered = [
@@ -64,13 +61,55 @@ export function renderLandingPage(env: Env, origin: string): string {
   const proofPlatformOptions = proofOrdered
     .map((p) => `<option value="${PROOF_VALUE_OVERRIDES[p.key] ?? p.key}">${p.label}</option>`)
     .join('')
-  // The same artwork the hero chips use, as the actual control. The <select>
-  // stays in the DOM as the value the rest of the page reads; these buttons
-  // drive it, so none of its six call sites had to change.
-  const proofPlatformChoices = proofOrdered
+  // Every platform in one list, each carrying how *it* can be verified on this
+  // deployment. The old page split them across "Quick Connect" and an
+  // "Advanced" disclosure, which asked the reader to understand our
+  // implementation before they could find their own account.
+  type VerifyMethod = 'oauth' | 'proof' | 'unavailable'
+  const methodFor = (p: PlatformCapability): VerifyMethod => {
+    if (p.connect && oauthEnabled.has(p.key as 'x' | 'instagram' | 'tiktok' | 'youtube')) return 'oauth'
+    if (canProof(p)) return 'proof'
+    return 'unavailable'
+  }
+  const unavailableReason = (p: PlatformCapability): string => {
+    if (p.proofRequiresSecret && !env[p.proofRequiresSecret]) {
+      return `${p.label} verification is not switched on for this site yet.`
+    }
+    if (p.connect) {
+      return `${p.label} needs an account connection, which is not switched on for this site yet.`
+    }
+    return `${p.label} cannot be verified here yet.`
+  }
+  const connectNames = PLATFORMS.filter((p) => methodFor(p) === 'oauth').map((p) => p.label)
+  const proofNames = PLATFORMS.filter((p) => methodFor(p) === 'proof').map((p) => p.label)
+  const offNames = PLATFORMS.filter((p) => methodFor(p) === 'unavailable').map((p) => p.label)
+  // Written from the matrix rather than hardcoded, because the previous copy
+  // promised "for X, Instagram, TikTok and YouTube just sign in" on a
+  // deployment where three of those four had no credentials installed.
+  const howToVerifySummary = connectNames.length
+    ? `For ${joinList(connectNames, 'and')} you just sign in to the account &mdash; nothing gets posted. Everything else asks you to post something containing your npub and paste the link back.`
+    : 'Post something containing your npub on that platform, then paste the link back here.'
+  const howToVerifyNote = [
+    connectNames.length ? `<strong>No posting needed for ${joinList(connectNames, 'and')}.</strong>` : '',
+    proofNames.length ? `${joinList(proofNames, 'and')} ${proofNames.length === 1 ? 'asks' : 'ask'} for a post or link.` : '',
+    offNames.length ? `${joinList(offNames, 'and')} ${offNames.length === 1 ? 'is' : 'are'} not switched on for this site yet.` : '',
+  ].filter(Boolean).join(' ')
+
+  // Ordered so the reader meets what they can actually do first.
+  const verifyOrdered = [
+    ...PLATFORMS.filter((p) => methodFor(p) === 'oauth'),
+    ...PLATFORMS.filter((p) => methodFor(p) === 'proof'),
+    ...PLATFORMS.filter((p) => methodFor(p) === 'unavailable'),
+  ]
+  const firstAvailable = verifyOrdered.findIndex((p) => methodFor(p) !== 'unavailable')
+  const verifyPlatformChoices = verifyOrdered
     .map((p, index) => {
+      const method = methodFor(p)
       const value = PROOF_VALUE_OVERRIDES[p.key] ?? p.key
-      return `            <button type="button" class="platform-choice" role="radio" data-platform="${value}" aria-checked="${index === 0 ? 'true' : 'false'}" tabindex="${index === 0 ? '0' : '-1'}">
+      const selected = index === firstAvailable
+      // A platform with both paths still offers the proof form, via a link in
+      // the connect panel, so nothing that used to be possible is lost.
+      return `            <button type="button" class="platform-choice${method === 'unavailable' ? ' platform-choice-off' : ''}" role="radio" data-verify-platform="${value}" data-method="${method}" data-can-proof="${canProof(p) ? 'yes' : 'no'}" data-label="${p.label}" data-reason="${unavailableReason(p)}" aria-checked="${selected ? 'true' : 'false'}" tabindex="${selected ? '0' : '-1'}">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="${p.icon}"/></svg>
               <span>${p.label}</span>
             </button>`
@@ -524,7 +563,7 @@ ${platformChips}
     <!-- HOW TO VERIFY -->
     <section id="how-to-verify">
       <h2>How to Get Verified</h2>
-      <p>Most people finish in under a minute. You are just confirming that your Divine account and social account belong to the same person.</p>
+      <p>Most people finish in under a minute. You are just confirming that your Divine account and your account somewhere else belong to the same person.</p>
 
       <div class="steps">
         <div class="step">
@@ -539,18 +578,18 @@ ${platformChips}
         </div>
         <div class="step">
           <div class="step-number">3</div>
-          <h4>Use Quick Connect</h4>
-          <p>For X, Instagram, TikTok, and YouTube, just sign in from this page. No posting required.</p>
+          <h4>Do the one thing it asks</h4>
+          <p>${howToVerifySummary}</p>
         </div>
         <div class="step">
           <div class="step-number">4</div>
           <h4>Done &mdash; you're verified</h4>
-          <p>A checkmark shows up on your profile. Anyone can click it to confirm the link is real.</p>
+          <p>A checkmark shows up on your profile. Anyone can click it to confirm the link is real. We publish it for you.</p>
         </div>
       </div>
 
       <div class="note">
-        <strong>${noPostingPlatforms}</strong> For GitHub, Mastodon, Telegram, and Discord, use the advanced section to paste a post/invite link and verify it.
+        ${howToVerifyNote}
       </div>
     </section>
 
@@ -605,27 +644,35 @@ ${platformChips}
           <div id="verify-global-status" class="status-row"></div>
         </div>
 
-        ${oauthPlatformOptions ? `<div class="verify-card">
-          <span class="step-pill">Step 2 (Recommended)</span>
-          <h3 style="margin-top:0;">Quick Connect (no posting)</h3>
-          <p>Sign in with the platform account you want to link.</p>
-          <label for="oauth-platform-select" class="field-label">Platform</label>
-          ${oauthConnectControls}
-          <div id="oauth-status" class="status-row"></div>
-        </div>` : ''}
       </div>
 
-      <details class="advanced-proof" id="advanced-proof"${oauthPlatformOptions ? '' : ' open'}>
-        <summary>${oauthPlatformOptions ? 'Step 3 (Advanced): verify by post/link proof instead' : 'Step 2: verify an account by post or link'}</summary>
-        <div class="advanced-proof-inner">
-          <p style="margin-bottom:0.75rem;">${oauthPlatformOptions ? 'Use this for the platforms Quick Connect does not cover, or if you would rather not connect an account.' : 'Post something containing your npub on the platform you want to verify, then paste the link here.'} You can paste a full URL and we'll extract IDs where possible.</p>
-          <span class="field-label" id="proof-platform-label">Platform</span>
-          <div class="platform-picker" role="radiogroup" aria-labelledby="proof-platform-label">
-${proofPlatformChoices}
-          </div>
-          <select id="proof-platform-select" class="field-select" hidden aria-hidden="true" tabindex="-1">
-            ${proofPlatformOptions}
-          </select>
+      <div class="verify-card" style="margin-top:14px;">
+        <span class="step-pill">Step 2</span>
+        <h3 style="margin-top:0;" id="verify-platform-label">Choose the account you want to verify</h3>
+        <p>Pick a platform and we'll show you the one way to verify it. You can repeat this for as many accounts as you like.</p>
+        <div class="platform-picker" role="radiogroup" aria-labelledby="verify-platform-label">
+${verifyPlatformChoices}
+        </div>
+
+        ${oauthPlatformOptions ? `<select id="oauth-platform-select" hidden aria-hidden="true" tabindex="-1">${oauthPlatformOptions}</select>` : ''}
+        <select id="proof-platform-select" class="field-select" hidden aria-hidden="true" tabindex="-1">
+          ${proofPlatformOptions}
+        </select>
+
+        <div id="method-unavailable" style="display:none;">
+          <p id="method-unavailable-reason" class="field-help"></p>
+          <p class="field-help">Pick another platform above, or check back later.</p>
+        </div>
+
+        ${oauthPlatformOptions ? `<div id="method-oauth" style="display:none;">
+          <p>Sign in to <strong id="oauth-platform-name">the platform</strong> and you'll come straight back here. Nothing is posted, and we never see your password.</p>
+          <button id="oauth-start-btn" class="verify-btn verify-btn-primary" type="button">Continue to secure sign-in</button>
+          <p class="field-help" id="oauth-proof-alternative" style="display:none;margin-top:0.6rem;">Would rather not connect the account? <button type="button" class="link-button" id="use-proof-instead-btn">Verify by post or link instead</button></p>
+          <div id="oauth-status" class="status-row"></div>
+        </div>` : '<div id="method-oauth" style="display:none;"><div id="oauth-status" class="status-row"></div></div>'}
+
+        <div id="method-proof" style="display:none;">
+          <p style="margin-bottom:0.75rem;">Post something containing your npub on <strong id="proof-platform-name">the platform</strong>, then paste the link here. A full URL is fine, we'll pull the ID out of it.</p>
           <label for="proof-identity-input" class="field-label">Your account name on that platform</label>
           <input id="proof-identity-input" class="field-input" type="text" placeholder="e.g. octocat or alice.bsky.social">
           <label id="proof-label" for="proof-proof-input" class="field-label">Post link or proof ID</label>
@@ -633,14 +680,20 @@ ${proofPlatformChoices}
           <p id="proof-helper" class="field-help">Tip: for Twitter and Bluesky, paste the full post URL.</p>
           <button id="proof-verify-btn" class="verify-btn verify-btn-success" type="button">Verify this link</button>
           <div id="proof-status" class="status-row"></div>
-          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">
-            <button id="publish-kind0-btn" class="verify-btn verify-btn-primary" type="button">Publish to Nostr profile</button>
-          </div>
-          <p class="field-help">This writes/updates your identity tag in your signed Nostr identity event (NIP-39).</p>
-          <div id="publish-status" class="status-row"></div>
-          <pre id="proof-result" style="display:none;margin-top:0.75rem;"></pre>
         </div>
-      </details>
+
+        <!-- Publishing is the step that makes a verification visible on the
+             profile, and it used to be a separate button people never found:
+             verification succeeded, nothing changed, and it read as broken.
+             It now runs automatically on success, and this stays only as a
+             manual retry for when the signer was unavailable at that moment. -->
+        <div id="publish-row" style="display:none;margin-top:0.75rem;">
+          <div id="publish-status" class="status-row"></div>
+          <button id="publish-kind0-btn" class="verify-btn" type="button">Publish to my profile again</button>
+          <p class="field-help">This writes your identity tag into your signed Nostr profile event (NIP-39), which is what makes the checkmark visible to other people.</p>
+        </div>
+        <pre id="proof-result" style="display:none;margin-top:0.75rem;"></pre>
+      </div>
     </section>
 
     <!-- MANAGE LINKED VERIFICATIONS -->
@@ -800,30 +853,74 @@ ${proofPlatformChoices}
       return '';
     }
 
-    // The logo buttons are the control; the hidden <select> stays the value the
-    // rest of the page reads, so selecting here writes to it and fires the same
-    // 'change' the select always fired.
-    function bindPlatformPicker() {
-      const picker = document.querySelector('.platform-picker');
-      const select = document.getElementById('proof-platform-select');
-      if (!picker || !select) return;
+    // One picker for every platform. Choosing one reveals the single way that
+    // platform can be verified here, rather than asking the reader to know the
+    // difference between connecting an account and posting a proof, and then
+    // find their platform inside whichever box holds it.
+    function bindVerifyPlatformPicker() {
+      const picker = document.querySelector('[aria-labelledby="verify-platform-label"]');
+      if (!picker) return;
       const choices = Array.from(picker.querySelectorAll('.platform-choice'));
+      const proofSelect = document.getElementById('proof-platform-select');
+      const oauthSelect = document.getElementById('oauth-platform-select');
 
-      function select_(choice) {
+      function setSelectIfPresent(select, value) {
+        if (!select) return false;
+        const has = Array.from(select.options).some((o) => o.value === value);
+        if (has) select.value = value;
+        return has;
+      }
+
+      function showPanel(name) {
+        for (const id of ['method-oauth', 'method-proof', 'method-unavailable']) {
+          const el = document.getElementById(id);
+          if (el) el.style.display = id === 'method-' + name ? 'block' : 'none';
+        }
+      }
+
+      function choosePlatform(choice, { showProofInstead = false } = {}) {
         for (const c of choices) {
           const on = c === choice;
           c.setAttribute('aria-checked', on ? 'true' : 'false');
           c.tabIndex = on ? 0 : -1;
         }
-        select.value = choice.dataset.platform;
-        select.dispatchEvent(new Event('change'));
+
+        const platform = choice.dataset.verifyPlatform;
+        const label = choice.dataset.label || 'the platform';
+        const method = showProofInstead ? 'proof' : choice.dataset.method;
+
+        setSelectIfPresent(oauthSelect, platform);
+        if (setSelectIfPresent(proofSelect, platform)) {
+          // Re-run the existing per-platform field labels and placeholders.
+          proofSelect.dispatchEvent(new Event('change'));
+        }
+
+        const oauthName = document.getElementById('oauth-platform-name');
+        if (oauthName) oauthName.textContent = label;
+        const proofName = document.getElementById('proof-platform-name');
+        if (proofName) proofName.textContent = label;
+
+        const alt = document.getElementById('oauth-proof-alternative');
+        if (alt) alt.style.display = choice.dataset.canProof === 'yes' ? 'block' : 'none';
+
+        const reason = document.getElementById('method-unavailable-reason');
+        if (reason) reason.textContent = choice.dataset.reason || '';
+
+        // A fresh platform means the previous result no longer applies.
+        clearStatus('proof-status');
+        clearStatus('publish-status');
+        const publishRow = document.getElementById('publish-row');
+        if (publishRow) publishRow.style.display = 'none';
+        const result = document.getElementById('proof-result');
+        if (result) result.style.display = 'none';
+
+        showPanel(method);
       }
 
       for (const choice of choices) {
-        choice.addEventListener('click', () => select_(choice));
+        choice.addEventListener('click', () => choosePlatform(choice));
       }
 
-      // Arrow keys move within a radiogroup; Tab enters and leaves it.
       picker.addEventListener('keydown', (event) => {
         const index = choices.indexOf(document.activeElement);
         if (index === -1) return;
@@ -833,9 +930,26 @@ ${proofPlatformChoices}
         if (event.key === ' ' || event.key === 'Enter') next = choices[index];
         if (!next) return;
         event.preventDefault();
-        select_(next);
+        choosePlatform(next);
         next.focus();
       });
+
+      const useProof = document.getElementById('use-proof-instead-btn');
+      if (useProof) {
+        useProof.addEventListener('click', () => {
+          const current = choices.find((c) => c.getAttribute('aria-checked') === 'true');
+          if (current) choosePlatform(current, { showProofInstead: true });
+        });
+      }
+
+      const initial = choices.find((c) => c.getAttribute('aria-checked') === 'true') || choices[0];
+      if (initial) choosePlatform(initial);
+
+      // Lets the OAuth return path select the platform it just connected.
+      window.__selectVerifyPlatform = (platform) => {
+        const match = choices.find((c) => c.dataset.verifyPlatform === platform);
+        if (match) choosePlatform(match);
+      };
     }
 
     function setStatus(elId, msg, type) {
@@ -1749,6 +1863,10 @@ ${proofPlatformChoices}
         } else if (data.verified) {
           const method = data.method ? ' via ' + data.method.replace('_', ' ') : '';
           setStatus('proof-status', 'Success. This account is verified' + method + '.', 'ok');
+          // Publishing is what makes the verification visible to other people.
+          // Leaving it to a separate button people never found is why a
+          // successful verification read as "nothing happened".
+          await publishAfterVerification();
         } else {
           setStatus('proof-status', data.error || 'Not verified yet.', 'error');
         }
@@ -1758,6 +1876,24 @@ ${proofPlatformChoices}
         setStatus('proof-status', e.message || 'Verification failed.', 'error');
       } finally {
         setButtonLoading('proof-verify-btn', false, '');
+      }
+    }
+
+    // Runs straight after a verification succeeds. A missing signer is a normal
+    // situation here, not an error worth shouting about: the verification is
+    // already stored and readable through the badge API, it just is not on the
+    // profile event yet. Say that plainly and leave the manual button visible.
+    async function publishAfterVerification() {
+      const row = document.getElementById('publish-row');
+      if (row) row.style.display = 'block';
+      if (!activeSigner) {
+        setStatus('publish-status', 'Verified. Sign in above to also publish this to your Nostr profile so others can see it.', 'loading');
+        return;
+      }
+      try {
+        await publishIdentityTagToNostr();
+      } catch (e) {
+        setStatus('publish-status', (e.message || 'Could not publish to your profile.') + ' Your verification is saved either way.', 'error');
       }
     }
 
@@ -1913,14 +2049,14 @@ ${proofPlatformChoices}
         if (proofPlatformEl) {
           proofPlatformEl.value = platform;
           if (proofProofEl) proofProofEl.value = 'oauth';
-          // Open the Advanced section and scroll the publish button into view
-          const advancedDetails = document.getElementById('advanced-proof');
-          if (advancedDetails) {
-            advancedDetails.open = true;
-            const publishBtn = document.getElementById('publish-kind0-btn');
-            if (publishBtn) publishBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }
         }
+        // Returning from a connect flow is a successful verification, so it
+        // publishes to the profile just like a proof post does rather than
+        // dropping the reader next to a button they have to know to press.
+        if (typeof window.__selectVerifyPlatform === 'function') {
+          window.__selectVerifyPlatform(platform);
+        }
+        await publishAfterVerification();
 
         shouldClean = true;
       } else if (params.get('connection') === 'failed') {
@@ -2362,7 +2498,7 @@ ${proofPlatformChoices}
         : '// Quick Connect controls are not rendered when no OAuth provider is configured.'
     }
     document.getElementById('proof-platform-select').addEventListener('change', updateProofInputs);
-    bindPlatformPicker();
+    bindVerifyPlatformPicker();
     document.getElementById('proof-verify-btn').addEventListener('click', verifySingleHere);
     document.getElementById('publish-kind0-btn').addEventListener('click', publishIdentityTagToNostr);
     document.getElementById('verify-pubkey-input').addEventListener('keydown', (e) => {

@@ -48,3 +48,19 @@ describe('manual crosspost button responds to the click immediately', () => {
     expect(block).toContain('target.textContent = previousLabel')
   })
 })
+
+// The setup copy told users "provider keys are still off until we add the app
+// credentials" long after X and Instagram had credentials installed, and it
+// leaked our rollout state into a user-facing page either way.
+describe('crossposter setup copy describes the product, not our rollout', () => {
+  it('does not claim every provider is switched off', () => {
+    expect(html).not.toContain('Provider keys are still off')
+    expect(html).not.toContain('Ready providers will unlock here')
+  })
+
+  it('tells the reader that connecting also verifies the account', () => {
+    // These stopped being two products when the workers merged: a connection
+    // now writes a verification, so the page should say so.
+    expect(html).toContain('also verifies it on your Divine profile')
+  })
+})
