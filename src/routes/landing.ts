@@ -603,12 +603,12 @@ ${platformChips}
             <button id="sign-out-btn" class="verify-btn" type="button">Sign in as someone else</button>
           </div>
           <div id="signin-controls">
-          <p>Use your browser signer, login.divine.video session, bunker URL, or Nostr Connect. Any of these lets us publish the final verification tag into your Nostr identity event (NIP-39).</p>
-          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.6rem;">
-            <button id="connect-nostr-btn" class="verify-btn verify-btn-primary" type="button">Use browser signer (NIP-07)</button>
-            <button id="connect-keycast-btn" class="verify-btn" type="button">Use login.divine.video</button>
-            <a href="${divineLoginUrl}" target="_blank" rel="noopener noreferrer" class="verify-btn">Open login.divine.video</a>
+          <p>Signing in lets us publish the final verification tag into your Nostr identity event (NIP-39). Most people should use their Divine account; the other options are for people who already run their own signer.</p>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.6rem;align-items:center;">
+            <button id="connect-keycast-btn" class="verify-btn verify-btn-primary" type="button">Sign in with Divine</button>
+            <button id="connect-nostr-btn" class="verify-btn" type="button">Use browser signer (NIP-07)</button>
           </div>
+          <p class="field-help" style="margin-bottom:0.6rem;">Sign-in not opening? <a href="${divineLoginUrl}" target="_blank" rel="noopener noreferrer">Open login.divine.video in a new tab</a>.</p>
           <label for="verify-pubkey-input" class="field-label">Account (auto-filled after login; manual paste fallback)</label>
           <input id="verify-pubkey-input" class="field-input" type="text" placeholder="alice@divine.video or npub1...">
           <p id="signer-session-summary" class="field-help" style="display:none;"></p>
@@ -904,6 +904,70 @@ Authorization: Bearer &lt;keycast token&gt;
       return result.map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
+    const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+
+    function bech32Checksum(hrp, data) {
+      const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+      const polymod = (values) => {
+        let chk = 1;
+        for (const v of values) {
+          const top = chk >> 25;
+          chk = ((chk & 0x1ffffff) << 5) ^ v;
+          for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i];
+        }
+        return chk;
+      };
+      const expanded = [];
+      for (const c of hrp) expanded.push(c.charCodeAt(0) >> 5);
+      expanded.push(0);
+      for (const c of hrp) expanded.push(c.charCodeAt(0) & 31);
+      const mod = polymod(expanded.concat(data).concat([0, 0, 0, 0, 0, 0])) ^ 1;
+      const out = [];
+      for (let i = 0; i < 6; i++) out.push((mod >> (5 * (5 - i))) & 31);
+      return out;
+    }
+
+    // Raw hex is not an identity anybody recognises. npub is at least the form
+    // people paste and compare, so it is the fallback when a profile has no name.
+    function hexToNpub(hex) {
+      if (!/^[0-9a-f]{64}$/i.test(hex || '')) return '';
+      const bytes = [];
+      for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));
+      const words = [];
+      let acc = 0, bits = 0;
+      for (const b of bytes) {
+        acc = (acc << 8) | b;
+        bits += 8;
+        while (bits >= 5) { bits -= 5; words.push((acc >> bits) & 31); }
+      }
+      if (bits > 0) words.push((acc << (5 - bits)) & 31);
+      const full = words.concat(bech32Checksum('npub', words));
+      return 'npub1' + full.map(w => BECH32_CHARSET[w]).join('');
+    }
+
+    function shortNpub(npub) {
+      return npub ? npub.slice(0, 12) + '...' + npub.slice(-6) : '';
+    }
+
+    // Resolves the signed-in pubkey to something a person recognises, using the
+    // same kind 0 metadata the lookup tool reads. Runs after the panel is
+    // already on screen, so a slow or unreachable relay never blocks sign-in.
+    async function resolveSignerDisplayName(pubkey) {
+      for (const relay of PROFILE_RELAYS) {
+        try {
+          const profile = await fetchProfileLegacy(relay, pubkey);
+          const content = profile ? tryParseJSON(profile.content) : null;
+          if (!content) continue;
+          const name = content.display_name || content.name || '';
+          const nip05 = content.nip05 || '';
+          if (name && nip05) return name + ' (' + nip05 + ')';
+          if (nip05) return nip05;
+          if (name) return name;
+        } catch { /* try the next relay */ }
+      }
+      return '';
+    }
+
     function setStatus(elId, msg, type) {
       const el = document.getElementById(elId);
       if (!el) return;
@@ -943,10 +1007,21 @@ Authorization: Bearer &lt;keycast token&gt;
 
       const identity = document.getElementById('signed-in-identity');
       if (identity) {
-        const via = activeSignerSource ? ' via ' + signerSourceLabel(activeSignerSource) : '';
-        identity.textContent = signedIn
-          ? signerPubkeyHex.slice(0, 12) + '...' + signerPubkeyHex.slice(-8) + via
-          : '';
+        if (!signedIn) {
+          identity.textContent = '';
+        } else {
+          const via = activeSignerSource ? ' via ' + signerSourceLabel(activeSignerSource) : '';
+          const npub = hexToNpub(signerPubkeyHex);
+          identity.textContent = (shortNpub(npub) || signerPubkeyHex.slice(0, 12) + '...') + via;
+          // Then upgrade to a human name if the profile has one. Keyed to the
+          // pubkey that was current when the lookup started, so a fast
+          // account switch cannot leave the previous name on screen.
+          const resolvingFor = signerPubkeyHex;
+          resolveSignerDisplayName(resolvingFor).then((name) => {
+            if (!name || signerPubkeyHex !== resolvingFor) return;
+            identity.textContent = name + via;
+          }).catch(() => { /* keep the npub */ });
+        }
       }
 
       const el = document.getElementById('signer-session-summary');

@@ -2,6 +2,7 @@
 // ABOUTME: removal of every legacy /auth/* call path from the page JS.
 import { describe, it, expect } from 'vitest'
 import { renderLandingPage } from './landing'
+import { hexToNpub } from '../utils/npub'
 import { app } from '../index'
 import type { Env } from '../types'
 
@@ -380,5 +381,85 @@ describe('landing page collapses step 1 once a signer is active', () => {
     expect(signOut).toContain('clearKeycastSession()')
     expect(signOut).toContain('signerPubkeyHex = null')
     expect(signOut).toContain('updateSignerSummary()')
+  })
+})
+
+// "d95aa8fc0eff...8b5ae540 via login.divine.video" tells a person nothing about
+// who they are signed in as. The page already fetches kind 0 metadata for the
+// lookup tool; use the same path to show a name.
+describe('landing page names the signed-in account', () => {
+  it('resolves a display name from the signer pubkey', () => {
+    expect(html).toContain('function resolveSignerDisplayName')
+
+    const resolver = html.split('async function resolveSignerDisplayName')[1].split('\n    }')[0]
+    expect(resolver).toContain('fetchProfileLegacy')
+    expect(resolver).toContain('display_name')
+    expect(resolver).toContain('nip05')
+  })
+
+  it('falls back to an npub rather than raw hex', () => {
+    expect(html).toContain('function hexToNpub')
+
+    const summary = html.split('function updateSignerSummary')[1].split('\n    }')[0]
+    expect(summary).toContain('hexToNpub')
+  })
+
+  it('encodes npub with the bech32 checksum, not just the charset', () => {
+    const encoder = html.split('function hexToNpub')[1].split('\n    }')[0]
+    expect(encoder).toContain('bech32Checksum')
+  })
+})
+
+// Most people have no NIP-07 extension — the page's own fallback copy says as
+// much ("No browser signer found... login.divine.video instead"). Leading with
+// the extension button sends the majority down the path that fails for them.
+describe('landing page leads with the hosted sign-in', () => {
+  const signinBlock = () =>
+    html.split('id="signin-controls"')[1].split('</div>')[0]
+
+  it('offers the Divine account sign-in before the browser extension', () => {
+    const block = signinBlock()
+    const keycast = block.indexOf('connect-keycast-btn')
+    const nip07 = block.indexOf('connect-nostr-btn')
+
+    expect(keycast).toBeGreaterThan(-1)
+    expect(nip07).toBeGreaterThan(-1)
+    expect(keycast).toBeLessThan(nip07)
+  })
+
+  it('styles the hosted sign-in as the primary action', () => {
+    const block = signinBlock()
+    const keycastBtn = block.match(/<button id="connect-keycast-btn"[^>]*>/)?.[0] ?? ''
+    const nip07Btn = block.match(/<button id="connect-nostr-btn"[^>]*>/)?.[0] ?? ''
+
+    expect(keycastBtn).toContain('verify-btn-primary')
+    expect(nip07Btn).not.toContain('verify-btn-primary')
+  })
+})
+
+// Asserting that the encoder exists proves nothing about whether it produces a
+// valid npub, and a wrong one would be worse than showing hex. Extract the
+// functions the page ships and check them against the server implementation.
+describe('landing page npub encoder is actually correct', () => {
+  const src = html.split('function bech32Checksum')[1]
+  const body =
+    'const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";\nfunction bech32Checksum' +
+    src.split('function shortNpub')[0] +
+    '\nreturn hexToNpub;'
+  // eslint-disable-next-line no-new-func
+  const pageHexToNpub = new Function(body)() as (hex: string) => string
+
+  it.each([
+    '0000000000000000000000000000000000000000000000000000000000000001',
+    'd95aa8fc0eff8e488952495b8064991d27fb96f1a4c0a1b2c3d4e5f60718b5ae',
+    'ae35ec87e49f3ca2c92a0bbb40c507ae4a6a8e01de29eb9518bc941ed285f943',
+    '7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e',
+  ])('matches the server encoder for %s', (hex) => {
+    expect(pageHexToNpub(hex)).toBe(hexToNpub(hex))
+  })
+
+  it('returns empty string for input that is not a 64-char hex key', () => {
+    expect(pageHexToNpub('not-hex')).toBe('')
+    expect(pageHexToNpub('')).toBe('')
   })
 })
