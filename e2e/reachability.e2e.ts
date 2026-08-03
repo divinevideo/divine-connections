@@ -100,3 +100,33 @@ describe('platform capability, as the live deployment reports it', () => {
     ).toBe(true)
   })
 })
+
+// Quick Connect — linking an account by signing into that platform, with no
+// post or gist — exists in code for x, instagram, tiktok and youtube. Whether
+// it is *offered* depends on the client secrets installed on this deployment,
+// so with none installed the step is omitted and every user is sent down the
+// manual proof-post path instead. That is a configuration gap, not a design
+// choice, and it should be visible here rather than inferred from a screenshot.
+describe('Quick Connect is offered, not silently replaced by manual proof', () => {
+  it('renders the OAuth step on the landing page', async () => {
+    const page = (await api<string>('/')).text
+
+    expect(
+      page,
+      'Quick Connect is absent, so every user is asked to post a proof by hand. ' +
+        'This deployment is missing TOKEN_ENCRYPTION_KEY plus at least one provider ' +
+        "secret. TOKEN_ENCRYPTION_KEY must be byte-identical to the crossposter " +
+        'worker\'s: both bind the same D1 and existing tokens are encrypted with it.',
+    ).toContain('Quick Connect (no posting)')
+  })
+
+  it.each([
+    ['Twitter / X', 'TWITTER_CLIENT_ID + TWITTER_CLIENT_SECRET'],
+    ['Instagram', 'INSTAGRAM_CLIENT_SECRET'],
+  ])('offers %s without requiring a manual post', async (label, secrets) => {
+    const page = (await api<string>('/')).text
+    const options = page.match(/<select id="oauth-platform-select"[^>]*>([\s\S]*?)<\/select>/)?.[1] ?? ''
+
+    expect(options, `${label} Quick Connect needs ${secrets} on this deployment`).toContain(label)
+  })
+})
