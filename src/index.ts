@@ -7,6 +7,7 @@ import { connections } from './routes/connections'
 import { crossposts } from './routes/crossposts'
 import { health } from './routes/health'
 import { landing } from './routes/landing'
+import { apiDocs } from './routes/api-docs'
 import { platforms } from './routes/platforms'
 import { preferences } from './routes/preferences'
 import verify from './routes/verify'
@@ -33,6 +34,7 @@ crossposterApp.route('/', webhooks)
 const verifierApp = new Hono<{ Bindings: Env }>()
 verifierApp.use('*', cors({ origin: '*' }))
 verifierApp.route('/', landing)
+verifierApp.route('/', apiDocs)
 verifierApp.route('/verify', verify)
 verifierApp.route('/', verified)
 verifierApp.route('/nip05', nip05)

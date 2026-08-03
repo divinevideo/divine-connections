@@ -192,21 +192,8 @@ describe('landing page platform capability matrix', () => {
     expect(chipMarkup(html)).toContain('href="#verify-here"')
   })
 
-  it('documents Quick Connect only for platforms that have an OAuth adapter', () => {
-    const table = html.split('Supported Platforms')[1].split('</table>')[0]
-    for (const key of ['x', 'instagram', 'youtube', 'tiktok', 'github', 'bluesky', 'mastodon', 'telegram', 'discord']) {
-      expect(table).toContain(`<code>${key}</code>`)
-    }
-    // Bluesky OAuth is deferred, so it must not be advertised as available.
-    const blueskyRow = table.split('<code>bluesky</code>')[1].split('</tr>')[0]
-    expect(blueskyRow).not.toContain('>Yes<')
-  })
-
-  it('marks Instagram as connect-only, since it has no proof-post verifier', () => {
-    const table = html.split('Supported Platforms')[1].split('</table>')[0]
-    const igRow = table.split('<code>instagram</code>')[1].split('</tr>')[0]
-    expect(igRow).toContain('Not supported')
-    // And it must never appear as a proof-post option in the advanced form.
+  it('never offers Instagram as a proof-post option, since it has no verifier', () => {
+    // The API table's view of this moved to the docs page with the reference.
     const proofSelect = html.split('id="proof-platform-select"')[1].split('</select>')[0]
     expect(proofSelect).not.toContain('instagram')
   })
@@ -226,14 +213,9 @@ describe('landing page platform capability matrix', () => {
     expect(withToken.split('id="proof-platform-select"')[1].split('</select>')[0]).toContain('discord')
   })
 
-  it('asks for a Discord message link, never a server invite', () => {
+  it('never suggests a Discord server invite anywhere on the page', () => {
     const withToken = renderLandingPage(testEnv({ DISCORD_BOT_TOKEN: 'bot' }), 'https://verifier.divine.video')
     expect(withToken).not.toContain('discord.gg')
-
-    const table = withToken.split('Supported Platforms')[1].split('</table>')[0]
-    const discordRow = table.split('<code>discord</code>')[1].split('</tr>')[0]
-    expect(discordRow).toContain('Message link')
-    expect(discordRow).toContain('DISCORD_BOT_TOKEN')
   })
 
   it('stops calling Quick Connect "Recommended" and opens the proof form when no provider is live', () => {
