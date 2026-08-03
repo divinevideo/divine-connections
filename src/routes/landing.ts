@@ -132,12 +132,25 @@ export function renderLandingPage(env: Env, origin: string): string {
     : `<p class="field-help">No connection providers are configured on this deployment yet. Use the advanced section below to verify by post/link proof instead.</p>`
   // GitHub stays the default selection; the rest follow the matrix order.
   const proofCapable = PLATFORMS.filter(canProof)
-  const proofPlatformOptions = [
+  const proofOrdered = [
     ...proofCapable.filter((p) => p.key === 'github'),
     ...proofCapable.filter((p) => p.key !== 'github'),
   ]
+  const proofPlatformOptions = proofOrdered
     .map((p) => `<option value="${PROOF_VALUE_OVERRIDES[p.key] ?? p.key}">${p.label}</option>`)
     .join('')
+  // The same artwork the hero chips use, as the actual control. The <select>
+  // stays in the DOM as the value the rest of the page reads; these buttons
+  // drive it, so none of its six call sites had to change.
+  const proofPlatformChoices = proofOrdered
+    .map((p, index) => {
+      const value = PROOF_VALUE_OVERRIDES[p.key] ?? p.key
+      return `            <button type="button" class="platform-choice" role="radio" data-platform="${value}" aria-checked="${index === 0 ? 'true' : 'false'}" tabindex="${index === 0 ? '0' : '-1'}">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="${p.icon}"/></svg>
+              <span>${p.label}</span>
+            </button>`
+    })
+    .join('\n')
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -293,6 +306,33 @@ export function renderLandingPage(env: Env, origin: string): string {
       box-shadow: 3px 3px 0 var(--green);
     }
     .platform-pill svg { width: 18px; height: 18px; flex-shrink: 0; fill: var(--dark); }
+
+    /* Platform picker: the real control for proof verification. */
+    .platform-picker {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+      gap: 10px; margin: 0.35rem 0 1rem;
+    }
+    .platform-choice {
+      display: flex; align-items: center; gap: 0.5rem;
+      background: var(--off); color: var(--dark);
+      border: 2px solid var(--dark); border-radius: 14px;
+      padding: 10px 12px; font-size: 0.92rem; font-weight: 600;
+      font-family: inherit; text-align: left; cursor: pointer;
+      box-shadow: 3px 3px 0 rgba(7,36,27,0.18);
+    }
+    .platform-choice svg { width: 20px; height: 20px; flex-shrink: 0; fill: var(--dark); }
+    .platform-choice span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .platform-choice:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 rgba(7,36,27,0.22); }
+    .platform-choice[aria-checked="true"] {
+      background: var(--green); box-shadow: 3px 3px 0 var(--dark);
+    }
+    /* Selection must survive without colour: the border weight and the check
+       carry it for anyone who cannot distinguish the fill. */
+    .platform-choice[aria-checked="true"]::after { content: '✓'; margin-left: auto; font-weight: 800; }
+    .platform-choice:focus-visible { outline: 3px solid var(--violet); outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) {
+      .platform-choice:hover { transform: none; }
+    }
 
     /* Sections (cards) */
     section {
@@ -654,8 +694,11 @@ ${platformChips}
         <summary>${oauthPlatformOptions ? 'Step 3 (Advanced): verify by post/link proof instead' : 'Step 2: verify an account by post or link'}</summary>
         <div class="advanced-proof-inner">
           <p style="margin-bottom:0.75rem;">${oauthPlatformOptions ? 'Use this for the platforms Quick Connect does not cover, or if you would rather not connect an account.' : 'Post something containing your npub on the platform you want to verify, then paste the link here.'} You can paste a full URL and we'll extract IDs where possible.</p>
-          <label for="proof-platform-select" class="field-label">Platform</label>
-          <select id="proof-platform-select" class="field-select">
+          <span class="field-label" id="proof-platform-label">Platform</span>
+          <div class="platform-picker" role="radiogroup" aria-labelledby="proof-platform-label">
+${proofPlatformChoices}
+          </div>
+          <select id="proof-platform-select" class="field-select" hidden aria-hidden="true" tabindex="-1">
             ${proofPlatformOptions}
           </select>
           <label for="proof-identity-input" class="field-label">Your account name on that platform</label>
@@ -966,6 +1009,44 @@ Authorization: Bearer &lt;keycast token&gt;
         } catch { /* try the next relay */ }
       }
       return '';
+    }
+
+    // The logo buttons are the control; the hidden <select> stays the value the
+    // rest of the page reads, so selecting here writes to it and fires the same
+    // 'change' the select always fired.
+    function bindPlatformPicker() {
+      const picker = document.querySelector('.platform-picker');
+      const select = document.getElementById('proof-platform-select');
+      if (!picker || !select) return;
+      const choices = Array.from(picker.querySelectorAll('.platform-choice'));
+
+      function select_(choice) {
+        for (const c of choices) {
+          const on = c === choice;
+          c.setAttribute('aria-checked', on ? 'true' : 'false');
+          c.tabIndex = on ? 0 : -1;
+        }
+        select.value = choice.dataset.platform;
+        select.dispatchEvent(new Event('change'));
+      }
+
+      for (const choice of choices) {
+        choice.addEventListener('click', () => select_(choice));
+      }
+
+      // Arrow keys move within a radiogroup; Tab enters and leaves it.
+      picker.addEventListener('keydown', (event) => {
+        const index = choices.indexOf(document.activeElement);
+        if (index === -1) return;
+        let next = null;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = choices[(index + 1) % choices.length];
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = choices[(index - 1 + choices.length) % choices.length];
+        if (event.key === ' ' || event.key === 'Enter') next = choices[index];
+        if (!next) return;
+        event.preventDefault();
+        select_(next);
+        next.focus();
+      });
     }
 
     function setStatus(elId, msg, type) {
@@ -1471,7 +1552,7 @@ Authorization: Bearer &lt;keycast token&gt;
           throw new Error('login.divine.video did not return a usable signer session.');
         }
         saveKeycastSession(session);
-        await activateSigner(createKeycastSigner(session), 'keycast', 'Connected with login.divine.video.');
+        await activateSigner(createKeycastSigner(session), 'keycast', 'Signed in with Divine.');
       } catch (e) {
         clearKeycastSession();
         setStatus('verify-login-status', e.message || 'Could not connect login.divine.video.', 'error');
@@ -1485,7 +1566,9 @@ Authorization: Bearer &lt;keycast token&gt;
       const session = await getValidKeycastSession();
       if (!session) return false;
       try {
-        await activateSigner(createKeycastSigner(session), 'keycast', 'Reconnected login.divine.video signer session.');
+        // Silent: the reader did not do anything, and the signed-in panel
+        // already states who they are.
+        await activateSigner(createKeycastSigner(session), 'keycast', '');
         return true;
       } catch {
         clearKeycastSession();
@@ -2490,6 +2573,7 @@ Authorization: Bearer &lt;keycast token&gt;
         : '// Quick Connect controls are not rendered when no OAuth provider is configured.'
     }
     document.getElementById('proof-platform-select').addEventListener('change', updateProofInputs);
+    bindPlatformPicker();
     document.getElementById('proof-verify-btn').addEventListener('click', verifySingleHere);
     document.getElementById('publish-kind0-btn').addEventListener('click', publishIdentityTagToNostr);
     document.getElementById('verify-pubkey-input').addEventListener('keydown', (e) => {

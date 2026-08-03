@@ -463,3 +463,92 @@ describe('landing page npub encoder is actually correct', () => {
     expect(pageHexToNpub('')).toBe('')
   })
 })
+
+// Picking a platform from a bare <select> gives no sense of what the product
+// connects to. The capability matrix already carries an SVG path per platform —
+// the hero chips use it — so the picker can use the same artwork.
+describe('landing page platform picker uses logos', () => {
+  const picker = (page: string) =>
+    page.match(/<div class="platform-picker"[\s\S]*?<\/div>\s*<select id="proof-platform-select"/)?.[0] ?? ''
+
+  it('renders a clickable choice per proof-capable platform', () => {
+    const markup = picker(html)
+    for (const label of ['GitHub', 'Twitter / X', 'Bluesky', 'Mastodon', 'Telegram', 'TikTok']) {
+      expect(markup).toContain(label)
+    }
+  })
+
+  it('gives every choice its logo', () => {
+    const markup = picker(html)
+    const buttons = markup.match(/<button[^>]*class="platform-choice"/g) ?? []
+    const svgs = markup.match(/<svg viewBox="0 0 24 24"/g) ?? []
+
+    expect(buttons.length).toBeGreaterThanOrEqual(6)
+    expect(svgs.length).toBe(buttons.length)
+  })
+
+  it('includes TikTok as a first-class choice, not a leftover', () => {
+    expect(picker(html)).toContain('data-platform="tiktok"')
+  })
+
+  it('sends the same platform values the API expects, including the x/twitter alias', () => {
+    const markup = picker(html)
+    expect(markup).toContain('data-platform="twitter"')
+    expect(markup).not.toContain('data-platform="x"')
+  })
+
+  it('starts on GitHub, matching the default the select already had', () => {
+    const first = picker(html).match(/<button[^>]*data-platform="([^"]+)"[^>]*aria-checked="true"/)
+    expect(first?.[1]).toBe('github')
+  })
+
+  it('keeps a real radio group rather than unlabelled buttons', () => {
+    const markup = picker(html)
+    expect(markup).toContain('role="radiogroup"')
+    expect((markup.match(/role="radio"/g) ?? []).length).toBeGreaterThanOrEqual(6)
+  })
+
+  it('keeps the select as the state the rest of the page already reads', () => {
+    // Six call sites read proof-platform-select.value; the picker drives it
+    // rather than replacing it, so none of them had to change.
+    expect(html).toContain('<select id="proof-platform-select"')
+    expect(html).toMatch(/<select id="proof-platform-select"[^>]*(hidden|display:\s*none)/)
+  })
+
+  it('drives the select and re-runs the existing change handler', () => {
+    const wiring = html.split('function bindPlatformPicker')[1].split('\n    }')[0]
+    expect(wiring).toContain('platform-choice')
+    expect(wiring).toContain("dispatchEvent(new Event('change'))")
+    expect(wiring).toContain('aria-checked')
+  })
+
+  it('omits platforms whose proof path needs a secret this deployment lacks', () => {
+    // discord and youtube are gated on DISCORD_BOT_TOKEN / YOUTUBE_API_KEY.
+    const markup = picker(html)
+    expect(markup).not.toContain('data-platform="discord"')
+    expect(markup).not.toContain('data-platform="youtube"')
+  })
+})
+
+// "Reconnected login.divine.video signer session." fired on page load whenever
+// a stored session was restored. It describes our plumbing, not anything the
+// reader did, and the signed-in panel already says who they are — so restoring
+// a session should be silent. Messages are for actions people just took.
+describe('landing page does not narrate session plumbing', () => {
+  it('restores a stored session without announcing it', () => {
+    const restore = html.split('async function restoreKeycastSession')[1].split('\n    }')[0]
+
+    expect(restore).toContain('activateSigner')
+    expect(restore).not.toContain('Reconnected')
+    expect(restore).not.toContain('signer session')
+  })
+
+  it('says nothing about "signer sessions" anywhere a user can read it', () => {
+    expect(html).not.toContain('Reconnected login.divine.video signer session')
+  })
+
+  it('still confirms a sign-in the reader actually initiated', () => {
+    expect(html).toContain("'browser', 'Signed in with your browser signer.'")
+    expect(html).toContain("'keycast', 'Signed in with Divine.'")
+  })
+})
