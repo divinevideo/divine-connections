@@ -1,25 +1,27 @@
-name = "divine-connections"
+# Deployed onto the worker previously called divine-crossposter, rather than a
+# new one. Cloudflare secrets are attached to a worker name and cannot be read
+# back, and TOKEN_ENCRYPTION_KEY exists only here — it is not derivable, and it
+# decrypts every stored OAuth token in the shared D1. Deploying the merged code
+# onto this worker inherits that key, along with the Twitter and Instagram
+# credentials, instead of stranding them on a service we are retiring.
+#
+# The name is therefore historical. This worker serves the whole merged
+# product: verification, badge reads, connections, and crossposting.
+name = "divine-crossposter"
 main = "src/index.ts"
 compatibility_date = "2025-09-06"
-# verify.divine.video is claimed now, ahead of the rest of the cutover (#2).
-# Sign-in is impossible without it: keycast matches redirect URIs as whole
-# strings and only has verify.divine.video/ and verifier.divine.video/
-# registered for this client, so a workers.dev deployment can never complete
-# an OAuth round trip and every signer-dependent flow is dead on arrival.
+
+# Both public hostnames. verify.divine.video is one of the two redirect URIs
+# keycast has registered for this client — it matches them as whole strings —
+# so sign-in only works from a host in this set.
 #
-# verifier.divine.video and crossposter.divine.video deliberately stay on the
-# legacy workers until the rest of #2 lands, so this worker holds exactly one
-# public hostname and the previous services keep serving their existing
-# consumers untouched.
+# TODO(#2): verifier.divine.video still points at the legacy verifier worker.
+# It cannot move until DISCORD_BOT_TOKEN is installed here, or Discord
+# verification regresses for anyone using that hostname.
 routes = [
+  { pattern = "crossposter.divine.video", custom_domain = true },
   { pattern = "verify.divine.video", custom_domain = true }
 ]
-
-# TODO(#2): the remaining custom domains move here at rollout step 4.
-# routes = [
-#   { pattern = "verifier.divine.video", custom_domain = true },
-#   { pattern = "crossposter.divine.video", custom_domain = true }
-# ]
 
 [vars]
 KEYCAST_URL = "https://login.divine.video"
@@ -58,16 +60,16 @@ queue = "divine-crossposter-jobs"
 binding = "CROSSPOST_DLQ"
 queue = "divine-crossposter-jobs-dlq"
 
-# TODO(#2): queues allow exactly one consumer — enabling this before the
-# domain cutover steals job consumption from the live crossposter worker.
-# [[queues.consumers]]
-# queue = "divine-crossposter-jobs"
-# max_batch_size = 10
-# max_batch_timeout = 30
-# max_retries = 5
-# dead_letter_queue = "divine-crossposter-jobs-dlq"
+# A queue allows exactly one consumer. This worker is that consumer now,
+# because it *is* the worker that used to be divine-crossposter.
+[[queues.consumers]]
+queue = "divine-crossposter-jobs"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 5
+dead_letter_queue = "divine-crossposter-jobs-dlq"
 
-# TODO(#2): re-enable at cutover. Running the reconciler cron in both
-# workers against the shared D1 is claim-fenced but double-fires ops alerts.
-# [triggers]
-# crons = ["* * * * *"]
+# The reconciler. Only one worker runs it, so the double-fired ops alerts the
+# split deployment risked cannot happen.
+[triggers]
+crons = ["* * * * *"]
