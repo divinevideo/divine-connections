@@ -76,3 +76,29 @@ describe('validation helpers', () => {
     expectThrowStatus(() => assertAllowedReturnUrl('not a url', redirectBase), 400)
   })
 })
+
+// verify.divine.video is where the merged worker actually serves the
+// verification UI, and the landing page sends window.location.origin as the
+// return url. It was missing from this allowlist, so Quick Connect failed with
+// "invalid return url" for every user the moment the hostname moved.
+describe('assertAllowedReturnUrl accepts both verifier hostnames', () => {
+  const redirectBase = 'https://crossposter.divine.video'
+
+  it.each([
+    'https://verify.divine.video',
+    'https://verify.divine.video/',
+    'https://verify.divine.video/#verify-here',
+    'https://verifier.divine.video',
+  ])('accepts %s', (url) => {
+    expect(assertAllowedReturnUrl(url, redirectBase)).toBe(url)
+  })
+
+  it('still refuses a lookalike host', () => {
+    expect(() => assertAllowedReturnUrl('https://verify.divine.video.evil.test/', redirectBase)).toThrow()
+    expect(() => assertAllowedReturnUrl('https://notverify.divine.video/', redirectBase)).toThrow()
+  })
+
+  it('still requires https for divine origins', () => {
+    expect(() => assertAllowedReturnUrl('http://verify.divine.video/', redirectBase)).toThrow()
+  })
+})
