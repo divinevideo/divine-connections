@@ -28,7 +28,7 @@ function platformName(platform: string): string {
   }
 }
 
-function renderHome(env: Env): string {
+export function renderHome(env: Env): string {
   const platforms = getProviderSummaries(env)
   const readyCount = platforms.filter((platform) => platform.enabled).length
   const platformData = JSON.stringify(platforms).replaceAll('<', '\\u003c')
@@ -1239,7 +1239,25 @@ function renderHome(env: Env): string {
             await connectPlatform(target.dataset.connect);
           }
           if (target?.dataset?.crosspostVideo) {
-            await triggerCrosspost(target.dataset.crosspostVideo, target.dataset.crosspostPlatform);
+            // Feedback before the round trip, not after it. The POST can take
+            // seconds, and the button previously stayed enabled and unchanged
+            // that whole time, which reads as "nothing happened" and invites a
+            // second click. The server is idempotent per (video, platform), so
+            // a double click never duplicated a post -- but the user could not
+            // know that.
+            if (target.disabled) return;
+            target.disabled = true;
+            const previousLabel = target.textContent;
+            target.textContent = 'Sending...';
+            try {
+              await triggerCrosspost(target.dataset.crosspostVideo, target.dataset.crosspostPlatform);
+            } catch (err) {
+              // renderVideoRows() replaces these buttons on success. On failure
+              // it does not, so this one has to be usable again.
+              target.disabled = false;
+              target.textContent = previousLabel;
+              throw err;
+            }
           }
         } catch (err) {
           setStatus(err.message || 'Something broke. Try again.', 'error');

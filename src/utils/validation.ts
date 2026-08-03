@@ -44,10 +44,15 @@ export function assertAllowedReturnUrl(url: string, oauthRedirectBase: string): 
     throw new HttpError(400, 'invalid_return_url', 'invalid return url')
   }
 
+  // Both verifier hostnames: verify.divine.video is where the merged worker
+  // serves the verification UI, and the page sends window.location.origin as
+  // the return url. Omitting it broke Quick Connect for every user the moment
+  // that hostname started serving the app.
   const isDivineOrigin =
     parsed.protocol === 'https:' &&
     (parsed.hostname === 'divine.video' ||
       parsed.hostname === 'www.divine.video' ||
+      parsed.hostname === 'verify.divine.video' ||
       parsed.hostname === 'verifier.divine.video')
   const isRedirectBaseOrigin = parsed.origin === redirectBase.origin
   const isLocalOrigin = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'
