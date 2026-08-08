@@ -47,6 +47,17 @@ function eventFromResponse(value: unknown): DivineVideoEvent | null {
   return null
 }
 
+// The creator's handle rides along in the same response as `stats.author_name`.
+// Reading it here costs nothing, where resolving a pubkey to a handle any other
+// way would mean a relay round trip inside the crosspost request path.
+function authorNameFromResponse(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null
+  const stats = (value as { stats?: unknown }).stats
+  if (!stats || typeof stats !== 'object') return null
+  const name = (stats as { author_name?: unknown }).author_name
+  return typeof name === 'string' && name.trim() !== '' ? name.trim() : null
+}
+
 async function getJson(url: string): Promise<unknown | null> {
   let response: Response
   try {
@@ -69,10 +80,18 @@ async function getJson(url: string): Promise<unknown | null> {
   }
 }
 
-export async function fetchVideoEvent(env: Env, eventId: string): Promise<DivineVideoEvent | null> {
+/** The event plus the author handle the same response already carries. */
+export type DivineVideoLookup = {
+  event: DivineVideoEvent
+  authorName: string | null
+}
+
+export async function fetchVideoEvent(env: Env, eventId: string): Promise<DivineVideoLookup | null> {
   const config = loadConfig(env)
   const body = await getJson(`${config.funnelcakeUrl}/api/videos/${encodeURIComponent(eventId)}`)
-  return body === null ? null : eventFromResponse(body)
+  if (body === null) return null
+  const event = eventFromResponse(body)
+  return event === null ? null : { event, authorName: authorNameFromResponse(body) }
 }
 
 function candidateEventId(candidate: unknown): string | null {
@@ -143,7 +162,7 @@ export async function listRecentUserVideos(
     if (id) {
       const hydrated = await fetchVideoEvent(env, id)
       if (hydrated) {
-        events.push(hydrated)
+        events.push(hydrated.event)
       }
     }
   }

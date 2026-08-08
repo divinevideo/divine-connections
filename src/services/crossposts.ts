@@ -1,5 +1,6 @@
 import type { DivineVideoEvent } from '../funnelcake/client'
-import { fetchVideoEvent } from '../funnelcake/client'
+import { fetchVideoEvent, type DivineVideoLookup } from '../funnelcake/client'
+import { buildCrosspostCaption } from './attribution'
 import { listAttempts } from '../db/attempts'
 import { getActiveConnectionForPlatform, getConnection } from '../db/connections'
 import { createOrGetJob, getJob, listJobsForVideo } from '../db/jobs'
@@ -26,6 +27,8 @@ type SourceSnapshot = {
   mediaHash: string
   caption: string
   createdAt: number
+  /** Best-effort creator handle from funnelcake, used for crosspost credit. */
+  authorName: string | null
 }
 
 const VIDEO_KIND = 34236
@@ -114,10 +117,11 @@ function isRepost(event: DivineVideoEvent): boolean {
   return event.kind === 16 || event.tags.some((tag) => tag[0] === 'k' && tag[1] === String(VIDEO_KIND) && tag[2] === 'repost')
 }
 
-function validateEvent(event: DivineVideoEvent | null, pubkey: string, eventId: string): SourceSnapshot {
-  if (!event) {
+function validateEvent(lookup: DivineVideoLookup | null, pubkey: string, eventId: string): SourceSnapshot {
+  if (!lookup) {
     throw new HttpError(404, 'not_found', 'video event not found')
   }
+  const event = lookup.event
   if (event.pubkey.toLowerCase() !== pubkey) {
     throw new HttpError(403, 'not_owner', 'video does not belong to authenticated user')
   }
@@ -136,6 +140,7 @@ function validateEvent(event: DivineVideoEvent | null, pubkey: string, eventId: 
     mediaHash: hash,
     caption: event.content,
     createdAt: event.created_at,
+    authorName: lookup.authorName,
   }
 }
 
@@ -172,7 +177,16 @@ async function createJobsForConnections(
       externalAccountId: connection.externalAccountId,
       sourceMediaUrl: input.snapshot.mediaUrl,
       sourceMediaHash: input.snapshot.mediaHash,
-      caption: input.snapshot.caption,
+      // Attribution is applied here rather than at publish time so the stored
+      // caption is exactly what went out, and so every path that creates a job
+      // gets it -- manual, automatic, and any future one.
+      caption: buildCrosspostCaption({
+        caption: input.snapshot.caption,
+        eventId: input.eventId,
+        authorName: input.snapshot.authorName,
+        platform: connection.platform,
+        template: env.CROSSPOST_ATTRIBUTION_TEMPLATE,
+      }),
       status: 'queued',
       expiresAt: now + JOB_EXPIRATION_SECONDS,
       createdAt: now,

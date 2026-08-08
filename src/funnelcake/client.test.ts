@@ -44,7 +44,9 @@ describe('Funnelcake client', () => {
 
     const result = await fetchVideoEvent(env(), VIDEO_EVENT_ID)
 
-    expect(result).toMatchObject({ id: VIDEO_EVENT_ID, pubkey: PUBKEY_A, kind: 34236 })
+    // The lookup carries the author handle alongside the event, so crosspost
+    // attribution does not need a second round trip to name the creator.
+    expect(result?.event).toMatchObject({ id: VIDEO_EVENT_ID, pubkey: PUBKEY_A, kind: 34236 })
     expect(fetchMock).toHaveBeenCalledWith(`https://api.divine.video/api/videos/${VIDEO_EVENT_ID}`, {
       headers: { accept: 'application/json' },
     })

@@ -62,6 +62,13 @@ export type Env = {
   ENABLE_TIKTOK?: string
   ENABLE_X?: string
   ENABLE_YOUTUBE?: string
+  /**
+   * Overrides the crosspost attribution appended to every caption.
+   * Supports {handle} and {url}; an empty string switches attribution off.
+   * A template without {url} is ignored, since a crosspost with no route back
+   * is the failure this exists to prevent.
+   */
+  CROSSPOST_ATTRIBUTION_TEMPLATE?: string
   YOUTUBE_DEFAULT_PRIVACY_STATUS?: string
   GITHUB_TOKEN?: string
   YOUTUBE_API_KEY?: string
