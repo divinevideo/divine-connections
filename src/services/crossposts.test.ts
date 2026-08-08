@@ -90,9 +90,12 @@ describe('crosspost service', () => {
       videoEventId: VIDEO_EVENT_ID,
       sourceMediaUrl: 'https://media.divine.video/video.mp4',
       sourceMediaHash: 'abc123',
-      caption: 'six seconds of weird human internet',
       status: 'queued',
     })
+    // Every job carries attribution: without it a crosspost hands content to
+    // another platform with no creator credit and no route back to Divine.
+    expect(result.jobs[0].caption).toContain('six seconds of weird human internet')
+    expect(result.jobs[0].caption).toContain(`https://divine.video/video/${VIDEO_EVENT_ID}`)
     expect(result.jobs[0].expiresAt - result.jobs[0].createdAt).toBe(48 * 60 * 60)
     expect(queueSend).toHaveBeenCalledTimes(2)
     expect(queueSend).toHaveBeenNthCalledWith(1, { jobId: result.jobs[0].id })
