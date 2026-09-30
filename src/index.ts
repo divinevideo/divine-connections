@@ -30,7 +30,7 @@ crossposterApp.route('/', crossposts)
 crossposterApp.route('/', webhooks)
 
 // The verifier public surface: public verification API, badge reads, landing
-// page, and the same keycast-authenticated connection routes on this domain.
+// page, and the same authenticated connection routes on this domain.
 const verifierApp = new Hono<{ Bindings: Env }>()
 verifierApp.use('*', cors({ origin: '*' }))
 verifierApp.route('/', landing)
