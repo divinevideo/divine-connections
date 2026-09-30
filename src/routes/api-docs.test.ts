@@ -46,6 +46,10 @@ describe('API reference page', () => {
     expect(docs).not.toContain('https://verifier.divine.video/verify')
   })
 
+  it('shows a NIP-98 signed request for the authenticated connection route', () => {
+    expect(docs).toContain('Authorization: Nostr')
+  })
+
   it('points readers back to the page where they can actually verify', () => {
     expect(docs).toContain('href="/#verify-here"')
   })

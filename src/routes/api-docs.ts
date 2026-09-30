@@ -125,8 +125,9 @@ GET ${origin}/verify/mastodon/mastodon.social/@alice/109876543210?pubkey=7e7e...
 
       <h3>Start a connection</h3>
       <pre>POST ${origin}/connections/x/start
-Authorization: Bearer &lt;keycast token&gt;
+Authorization: Nostr &lt;base64 of a signed kind-27235 event&gt;
 { "returnUrl": "${origin}/" }</pre>
+      <p>Sign each request with <a href="https://github.com/nostr-protocol/nips/blob/master/98.md">NIP-98</a>: the event's <code>u</code> tag is the exact request URL, <code>method</code> is the HTTP method, and <code>payload</code> is the hex SHA-256 of the body. A Keycast access token sent as <code>Authorization: Bearer</code> is still accepted.</p>
 
       <h3>Read verified badges</h3>
       <pre>GET ${origin}/verified/&lt;64-hex pubkey&gt;</pre>
