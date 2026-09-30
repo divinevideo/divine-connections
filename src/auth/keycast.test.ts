@@ -34,7 +34,7 @@ describe('authenticateRequest', () => {
     vi.unstubAllGlobals()
   })
 
-  it('rejects missing and non-Bearer authorization locally with 401', async () => {
+  it('rejects a missing header and an unsupported scheme locally with 401', async () => {
     await expect(authenticateRequest(request(), env())).rejects.toMatchObject({ status: 401 })
     await expect(authenticateRequest(request('Basic token'), env())).rejects.toMatchObject({ status: 401 })
     expect(fetchMock).not.toHaveBeenCalled()
