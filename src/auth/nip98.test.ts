@@ -4,7 +4,7 @@ import { schnorr } from '@noble/curves/secp256k1.js'
 import { describe, expect, it } from 'vitest'
 import { VIDEO_EVENT_ID } from '../db/test-helpers'
 import { verifyNip98Request } from './nip98'
-import { NIP98_TEST_PUBKEY, NIP98_TEST_SECRET_KEY, nip98Header, signNip98Event } from './test-helpers'
+import { NIP98_TEST_PUBKEY, nip98Header, signEventFields, signNip98Event, toHex, type EventFields } from './test-helpers'
 
 const NOW = 1_800_000_000
 const OTHER_EVENT_ID = 'd'.repeat(64)
@@ -38,37 +38,21 @@ async function rejection(request: Request, event: Record<string, unknown>): Prom
   )
 }
 
-function toHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
+type RawEvent = Partial<EventFields>
 
-type RawEvent = { pubkey?: unknown; created_at?: unknown; kind?: unknown; tags?: unknown; content?: unknown }
-
-/**
- * Signs an event with exactly these field values, whatever their types, so the signature is
- * genuine and only the verifier's own checks can be what rejects the event.
- */
-async function signRaw(fields: RawEvent = {}, secretKey: Uint8Array = NIP98_TEST_SECRET_KEY) {
-  const event = {
+/** A signed GET for URL_WITH_QUERY with any of its fields replaced, whatever their types. */
+async function signRaw(fields: RawEvent = {}) {
+  return signEventFields({
     pubkey: NIP98_TEST_PUBKEY,
     created_at: NOW,
     kind: 27235,
     tags: [
       ['u', URL_WITH_QUERY],
       ['method', 'GET'],
-    ] as unknown,
+    ],
     content: '',
     ...fields,
-  }
-  const digest = new Uint8Array(
-    await crypto.subtle.digest(
-      'SHA-256',
-      new TextEncoder().encode(
-        JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]),
-      ),
-    ),
-  )
-  return { id: toHex(digest), ...event, sig: toHex(schnorr.sign(digest, secretKey)) } as Record<string, unknown>
+  })
 }
 
 describe('verifyNip98Request', () => {
