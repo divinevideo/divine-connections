@@ -18,8 +18,12 @@ Background: Divine runs a crossposting service at https://crossposter.divine.vid
 platform account (Instagram Reels live now; X ready; TikTok/YouTube staged) and picks
 a posting mode per platform. The service owns all OAuth and publishing server-side.
 
-Auth: every API call uses the same Divine/Keycast bearer token the app already holds
-for login.divine.video — header `Authorization: Bearer <token>`. No new login flow.
+Auth: sign every API call with NIP-98 through the app's existing Nip98AuthService —
+header `Authorization: Nostr <base64 event>`, with `u` set to the exact request URL,
+`method` to the HTTP method, and `payload` to the SHA-256 of the exact body bytes. Sign a
+fresh event per request; the server allows 60 seconds of clock skew. No new login flow.
+The Keycast bearer token still works, but new clients should not send it: it can sign any
+event for the user. Full rules: "Authentication" in the divine-connections README.
 
 API contract (base https://crossposter.divine.video, all JSON):
 - GET /platforms?format=json
@@ -72,7 +76,8 @@ to connected external platforms (Instagram Reels live today). Manual mode means 
 user triggers each crosspost per video. Jobs are idempotent server-side — repeat
 requests return the existing job, never double-post.
 
-Auth: `Authorization: Bearer <token>` — the app's existing Divine/Keycast token.
+Auth: NIP-98, `Authorization: Nostr <base64 event>` signed per request for the exact
+URL, method and body bytes — the same as the settings prompt. Not the Keycast bearer token.
 
 API contract (base https://crossposter.divine.video, all JSON):
 - GET /connections (auth) -> which platforms the user has connected (status "connected").
