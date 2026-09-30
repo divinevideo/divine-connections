@@ -207,6 +207,13 @@ describe('verifyNip98Request', () => {
       await expect(verify(getRequest(), event)).rejects.toMatchObject({ status: 401 })
     })
 
+    it('a u tag signed for http when the request arrived over https', async () => {
+      const event = await signNip98Event({ url: URL_WITH_QUERY.replace('https:', 'http:'), method: 'GET', createdAt: NOW })
+      const error = await rejection(getRequest(), event)
+      expect(error).toMatchObject({ status: 401 })
+      expect(error.message).toContain('url does not match')
+    })
+
     it('an empty u tag', async () => {
       const withoutU = await signNip98Event({ url: '', method: 'GET', createdAt: NOW })
       await expect(verify(getRequest(), withoutU)).rejects.toMatchObject({ status: 401 })
@@ -227,6 +234,15 @@ describe('verifyNip98Request', () => {
       await expect(verify(postRequest(JSON.stringify({ platforms: ['tiktok'] })), event)).rejects.toMatchObject({
         status: 401,
       })
+    })
+
+    // A payload tag that is present is always checked, so a header signed for a body cannot be
+    // replayed with that body stripped.
+    it('a bodyless request whose payload tag is the hash of a body it does not carry', async () => {
+      const event = await signNip98Event({ url: POST_URL, method: 'POST', createdAt: NOW, body: BODY })
+      const error = await rejection(new Request(POST_URL, { method: 'POST' }), event)
+      expect(error).toMatchObject({ status: 401 })
+      expect(error.message).toContain('payload hash does not match')
     })
 
     it('a malformed payload tag', async () => {
