@@ -1034,7 +1034,7 @@ export function renderHome(env: Env): string {
       }
 
       function instagramVideoDestination(videoId) {
-        return instagramVideoDestinations[videoId] || preferences.find((item) => item.platform === 'instagram')?.instagramDestination || 'reel';
+        return instagramVideoDestinations[videoId] || preferences.find((item) => item.platform === 'instagram')?.instagramDestination || '';
       }
 
       function instagramDestinationLabel(value) {
@@ -1224,7 +1224,7 @@ export function renderHome(env: Env): string {
       async function triggerCrosspost(videoId, platform) {
         const data = await api('/videos/' + videoId + '/crossposts', {
           method: 'POST',
-          body: JSON.stringify({ platforms: [platform], ...(platform === 'instagram' ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
+          body: JSON.stringify({ platforms: [platform], ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
         });
         videoJobs[videoId] = data.jobs || [];
         renderVideoRows();

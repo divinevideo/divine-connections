@@ -94,3 +94,12 @@ describe('Instagram draft selection follows account settings', () => {
     expect(html).toContain('job.externalAccountId === connection.externalAccountId')
   })
 })
+
+describe('Instagram per-video choice without a saved default', () => {
+  it('keeps the legacy Reel request instead of sending an explicit destination', () => {
+    const fallback = html.split('function instagramVideoDestination(videoId)')[1]?.split('}')[0] ?? ''
+    expect(fallback).toContain("?.instagramDestination || ''")
+    expect(fallback).not.toContain("|| 'reel'")
+    expect(html).toContain("platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination")
+  })
+})
