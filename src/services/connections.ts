@@ -1,3 +1,5 @@
+// ABOUTME: Manages provider account connections and crossposting settings.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { authenticateRequest } from '../auth/keycast'
 import {
   completeConnectionSetup,
@@ -21,13 +23,14 @@ import type {
   OAuthAttemptStatus,
   OAuthStateRecord,
   Platform,
+  InstagramDestination,
   PreferenceMode,
   PreferenceRecord,
 } from '../types'
 import { decryptToken, encryptToken, generatePKCE, generateRandomId } from '../utils/crypto'
 import { HttpError } from '../utils/http'
 import { sanitizeProviderMetadata } from '../utils/provider-metadata'
-import { assertAllowedReturnUrl, parsePlatform, parsePreferenceMode } from '../utils/validation'
+import { assertAllowedReturnUrl, parsePlatform, parsePreferenceMode, parseInstagramDestination } from '../utils/validation'
 
 const OAUTH_STATE_TTL_SECONDS = 10 * 60
 
@@ -45,6 +48,7 @@ type ConnectionSummary = {
 }
 
 type PreferenceSummary = {
+  instagramDestination?: InstagramDestination | null
   platform: Platform
   connectionId: string | null
   mode: PreferenceMode
@@ -78,6 +82,7 @@ function connectionSummary(connection: ConnectionRecord): ConnectionSummary {
 
 function preferenceSummary(preference: PreferenceRecord): PreferenceSummary {
   return {
+    ...(preference.platform === 'instagram' ? { instagramDestination: preference.instagramDestination ?? null } : {}),
     platform: preference.platform,
     connectionId: preference.connectionId,
     mode: preference.mode,
@@ -428,8 +433,10 @@ export async function updatePreference(
   env: Env,
   platformValue: string,
   modeValue: unknown,
+  destinationValue?: unknown,
 ): Promise<PreferenceSummary> {
   const platform = parsePlatform(platformValue)
+  const instagramDestination = parseInstagramDestination(destinationValue, platform === 'instagram')
   const mode = parsePreferenceMode(String(modeValue))
   const { pubkey } = await authenticateRequest(request, env)
   const now = nowSeconds()
@@ -447,6 +454,7 @@ export async function updatePreference(
   }
 
   const preference = await setPreference(env.DB, {
+    instagramDestination,
     pubkey,
     platform,
     connectionId,

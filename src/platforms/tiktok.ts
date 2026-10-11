@@ -1,3 +1,5 @@
+// ABOUTME: Connects creator accounts and publishes videos through the tiktok API.
+// ABOUTME: Validates provider responses before persisting credentials or publish results.
 import { PlatformAdapterError, asRecord, expectProviderOk } from './adapter'
 import type { PlatformAdapter, PublishResult, TokenSet } from './adapter'
 
@@ -9,9 +11,12 @@ type TikTokConfig = {
 const API_BASE = 'https://open.tiktokapis.com/v2'
 
 function tokenSetFromResponse(response: Record<string, unknown>): TokenSet {
+  if (typeof response.access_token !== 'string' || !response.access_token.trim()) {
+    throw new PlatformAdapterError('tiktok', 'unknown_platform_error', 'tiktok token response missing access token')
+  }
   const expiresIn = typeof response.expires_in === 'number' ? response.expires_in : undefined
   return {
-    accessToken: String(response.access_token ?? ''),
+    accessToken: response.access_token,
     refreshToken: typeof response.refresh_token === 'string' ? response.refresh_token : undefined,
     expiresAt: expiresIn ? Math.floor(Date.now() / 1000) + expiresIn : undefined,
     scopes: typeof response.scope === 'string' ? response.scope.split(',').map((scope) => scope.trim()) : [],
@@ -149,7 +154,12 @@ export function createTikTokAdapter(config: TikTokConfig): PlatformAdapter {
         body: JSON.stringify({ publish_id: publishId }),
       })
       const body = asRecord(await expectProviderOk('tiktok', response))
-      const status = tiktokStatus(body) === 'PUBLISH_COMPLETE' ? 'posted' : 'processing'
+      const providerStatus = tiktokStatus(body)
+      if (providerStatus === 'FAILED') {
+        const code = tiktokData(body).fail_reason === 'auth_removed' ? 'needs_reauth' : 'media_rejected'
+        throw new PlatformAdapterError('tiktok', code, 'TikTok publishing failed')
+      }
+      const status = providerStatus === 'PUBLISH_COMPLETE' ? 'posted' : 'processing'
       return { status, externalPostId: publishId, providerResponse: { ...body, publish_id: publishId } }
     },
   }

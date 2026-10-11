@@ -1,3 +1,5 @@
+// ABOUTME: Creates and reads creator-owned crosspost jobs.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { Hono } from 'hono'
 import { authenticateRequest } from '../auth/keycast'
 import {
@@ -39,6 +41,7 @@ crossposts.post('/videos/:event_id/crossposts', async (c) => {
         pubkey: auth.pubkey,
         eventId: c.req.param('event_id'),
         platforms: platformBody(body),
+        instagramDestination: (body as { instagramDestination?: unknown }).instagramDestination,
       }),
     )
   } catch (error) {

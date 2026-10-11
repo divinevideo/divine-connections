@@ -1,7 +1,10 @@
-import { allPrepared, firstPrepared, runPrepared } from './client'
-import type { Platform, PreferenceMode, PreferenceRecord } from '../types'
+// ABOUTME: Manages authenticated crossposting preferences.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
+import { allPrepared, firstPrepared } from './client'
+import type { InstagramDestination, Platform, PreferenceMode, PreferenceRecord } from '../types'
 
 type PreferenceRow = {
+  instagram_destination?: InstagramDestination | null
   pubkey: string
   platform: Platform
   connection_id: string | null
@@ -13,6 +16,7 @@ type PreferenceRow = {
 
 function mapPreference(row: PreferenceRow): PreferenceRecord {
   return {
+    ...(row.platform === 'instagram' ? { instagramDestination: row.instagram_destination ?? null } : {}),
     pubkey: row.pubkey,
     platform: row.platform,
     connectionId: row.connection_id,
@@ -26,7 +30,7 @@ function mapPreference(row: PreferenceRow): PreferenceRecord {
 export async function getPreferences(db: D1Database, pubkey: string): Promise<PreferenceRecord[]> {
   const rows = await allPrepared<PreferenceRow>(
     db,
-    'SELECT * FROM preferences WHERE pubkey = ? ORDER BY platform ASC',
+    'SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination FROM preferences WHERE pubkey = ? ORDER BY platform ASC',
     pubkey,
   )
   return rows.map(mapPreference)
@@ -35,8 +39,7 @@ export async function getPreferences(db: D1Database, pubkey: string): Promise<Pr
 export async function setPreference(db: D1Database, input: PreferenceRecord): Promise<PreferenceRecord> {
   const automaticEnabledAt = input.mode === 'automatic' ? input.automaticEnabledAt ?? input.updatedAt : null
 
-  await runPrepared(
-    db,
+  const statement = db.prepare(
     `INSERT INTO preferences (
       pubkey, platform, connection_id, mode, automatic_enabled_at, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -44,7 +47,7 @@ export async function setPreference(db: D1Database, input: PreferenceRecord): Pr
       connection_id = excluded.connection_id,
       mode = excluded.mode,
       automatic_enabled_at = excluded.automatic_enabled_at,
-      updated_at = excluded.updated_at`,
+      updated_at = excluded.updated_at`).bind(
     input.pubkey,
     input.platform,
     input.connectionId,
@@ -54,9 +57,17 @@ export async function setPreference(db: D1Database, input: PreferenceRecord): Pr
     input.updatedAt,
   )
 
+  const statements = [statement]
+  if (input.platform === 'instagram' && input.instagramDestination != null) {
+    statements.push(db.prepare(`INSERT INTO instagram_preferences (pubkey, destination, updated_at)
+      VALUES (?, ?, ?) ON CONFLICT(pubkey) DO UPDATE SET destination = excluded.destination, updated_at = excluded.updated_at`)
+      .bind(input.pubkey, input.instagramDestination, input.updatedAt))
+  }
+  await db.batch(statements)
+
   const row = await firstPrepared<PreferenceRow>(
     db,
-    'SELECT * FROM preferences WHERE pubkey = ? AND platform = ?',
+    'SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination FROM preferences WHERE pubkey = ? AND platform = ?',
     input.pubkey,
     input.platform,
   )
@@ -86,7 +97,7 @@ export async function listAutomaticPreferences(
 ): Promise<PreferenceRecord[]> {
   const rows = await allPrepared<PreferenceRow>(
     db,
-    `SELECT * FROM preferences
+    `SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination FROM preferences
     WHERE mode = 'automatic'
     ORDER BY updated_at ASC, pubkey ASC, platform ASC
     LIMIT ? OFFSET ?`,

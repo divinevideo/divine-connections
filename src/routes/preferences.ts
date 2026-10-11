@@ -1,3 +1,5 @@
+// ABOUTME: Manages authenticated crossposting preferences.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { Hono } from 'hono'
 import { listPreferenceSummaries, updatePreference } from '../services/connections'
 import type { Env } from '../types'
@@ -15,8 +17,8 @@ preferences.get('/preferences', async (c) => {
 
 preferences.put('/preferences/:platform', async (c) => {
   try {
-    const body = (await c.req.raw.clone().json().catch(() => ({}))) as { mode?: unknown }
-    return jsonResponse({ preference: await updatePreference(c.req.raw, c.env, c.req.param('platform'), body.mode) })
+    const body = (await c.req.raw.clone().json().catch(() => ({}))) as { mode?: unknown; instagramDestination?: unknown }
+    return jsonResponse({ preference: await updatePreference(c.req.raw, c.env, c.req.param('platform'), body.mode, body.instagramDestination) })
   } catch (error) {
     return errorResponse(error)
   }

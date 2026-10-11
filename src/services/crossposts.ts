@@ -1,3 +1,5 @@
+// ABOUTME: Creates and reads creator-owned crosspost jobs.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import type { DivineVideoEvent } from '../funnelcake/client'
 import { fetchVideoEvent, type DivineVideoLookup } from '../funnelcake/client'
 import { buildCrosspostCaption } from './attribution'
@@ -6,10 +8,10 @@ import { getActiveConnectionForPlatform, getConnection } from '../db/connections
 import { createOrGetJob, getJob, listJobsForVideo } from '../db/jobs'
 import { getPreferences } from '../db/preferences'
 import { getAdapter } from '../platforms/registry'
-import type { ConnectionRecord, Env, JobAttemptRecord, JobRecord, Platform, PreferenceRecord } from '../types'
+import type { ConnectionRecord, Env, InstagramDestination, JobAttemptRecord, JobRecord, Platform, PreferenceRecord } from '../types'
 import { generateRandomId } from '../utils/crypto'
 import { HttpError } from '../utils/http'
-import { isValidEventId, parsePlatform } from '../utils/validation'
+import { isValidEventId, parsePlatform, parseInstagramDestination } from '../utils/validation'
 
 export type CrosspostJobsResult = {
   jobs: JobRecord[]
@@ -161,6 +163,7 @@ async function createJobsForConnections(
     eventId: string
     snapshot: SourceSnapshot
     connections: ConnectionRecord[]
+    instagramDestination?: InstagramDestination | null
   },
 ): Promise<CrosspostJobsResult> {
   const now = Math.floor(Date.now() / 1_000)
@@ -169,6 +172,7 @@ async function createJobsForConnections(
 
   for (const connection of input.connections) {
     const result = await createOrGetJob(env.DB, {
+      instagramDestination: connection.platform === 'instagram' ? input.instagramDestination : undefined,
       id: `job_${generateRandomId()}`,
       pubkey: input.pubkey,
       videoEventId: input.eventId,
@@ -215,7 +219,7 @@ async function requireManualConnection(env: Env, pubkey: string, platform: Platf
 
 export async function createManualCrossposts(
   env: Env,
-  input: { pubkey: string; eventId: string; platforms: string[] },
+  input: { pubkey: string; eventId: string; platforms: string[]; instagramDestination?: unknown },
 ): Promise<CrosspostJobsResult> {
   const eventId = ensureEventId(input.eventId)
   if (!Array.isArray(input.platforms) || input.platforms.length === 0) {
@@ -223,9 +227,11 @@ export async function createManualCrossposts(
   }
 
   const platforms = uniquePlatforms(input.platforms)
+  const override = parseInstagramDestination(input.instagramDestination, platforms.includes('instagram'))
   const connections = await Promise.all(platforms.map((platform) => requireManualConnection(env, input.pubkey, platform)))
   const snapshot = validateEvent(await fetchVideoEvent(env, eventId), input.pubkey, eventId)
-  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections })
+  const saved = (await getPreferences(env.DB, input.pubkey)).find((preference) => preference.platform === 'instagram')
+  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, instagramDestination: override ?? saved?.instagramDestination })
 }
 
 function isAutomaticPreference(preference: PreferenceRecord): boolean {
@@ -254,7 +260,7 @@ export async function createAutomaticCrossposts(
     }
   }
 
-  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections })
+  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, instagramDestination: preferences.find((preference) => preference.platform === 'instagram')?.instagramDestination })
 }
 
 export async function listVideoCrossposts(

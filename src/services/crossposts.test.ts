@@ -1,3 +1,5 @@
+// ABOUTME: Verifies crossposting persistence and API behavior.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAutomaticCrossposts, createManualCrossposts } from './crossposts'
 import { upsertConnection } from '../db/connections'
@@ -70,6 +72,27 @@ describe('crosspost service', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it.each(['story', 'reel', 'reel_feed'] as const)('uses saved Instagram %s for automatic posts and explicit overrides for manual posts', async (destination) => {
+    await addConnectedPlatform(db, 'instagram', 'conn_instagram')
+    const env = { ...testEnv(db, queueSend), ENABLE_INSTAGRAM: 'true', INSTAGRAM_CLIENT_ID: 'client', INSTAGRAM_CLIENT_SECRET: 'secret' }
+    await setPreference(db, { pubkey: PUBKEY_A, platform: 'instagram', connectionId: 'conn_instagram', mode: 'automatic', automaticEnabledAt: 1000, createdAt: 1000, updatedAt: 1000, instagramDestination: destination })
+    fetchMock.mockImplementation(async () => Response.json({ event: event() }))
+    const auto = await createAutomaticCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID })
+    expect(auto.jobs[0].instagramDestination).toBe(destination)
+    const duplicate = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['instagram'], instagramDestination: 'reel_feed' })
+    expect(duplicate.jobs[0].instagramDestination).toBe(destination)
+    expect(queueSend).toHaveBeenCalledTimes(1)
+    fetchMock.mockImplementation(async () => Response.json({ event: event({ id: YOUTUBE_EVENT_ID }) }))
+    const manual = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: YOUTUBE_EVENT_ID, platforms: ['instagram'], instagramDestination: 'story' })
+    expect(manual.jobs[0].instagramDestination).toBe('story')
+  })
+
+  it('rejects a destination without Instagram before provider lookup or queue dispatch', async () => {
+    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['tiktok'], instagramDestination: 'story' })).rejects.toMatchObject({ status: 400, code: 'invalid_instagram_destination' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(queueSend).not.toHaveBeenCalled()
   })
 
   it('manual crosspost creates one job per selected connected platform', async () => {
