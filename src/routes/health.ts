@@ -674,6 +674,7 @@ export function renderHome(env: Env): string {
       let connections = [];
       let preferences = [];
       let instagramVideoDestinations = {};
+      let preferenceSaves = Promise.resolve();
       let accountLoaded = false;
 
       function $(id) {
@@ -1299,17 +1300,23 @@ export function renderHome(env: Env): string {
           return;
         }
         if (!target?.dataset?.preference && !target?.dataset?.instagramDefault) return;
-        try {
-          if (target.dataset.instagramDefault) {
-            const mode = preferences.find((item) => item.platform === 'instagram')?.mode || 'disabled';
-            await updatePreference('instagram', mode, target.value);
-          } else {
-            await updatePreference(target.dataset.preference, target.value);
+        const platform = target.dataset.instagramDefault ? 'instagram' : target.dataset.preference;
+        const value = target.value;
+        // Saves run one at a time so a destination save reads the mode the previous save stored.
+        preferenceSaves = preferenceSaves.then(async () => {
+          try {
+            if (target.dataset.instagramDefault) {
+              const mode = preferences.find((item) => item.platform === 'instagram')?.mode || 'disabled';
+              await updatePreference('instagram', mode, value);
+            } else {
+              await updatePreference(platform, value);
+            }
+          } catch (err) {
+            setStatus(err.message || 'Could not update crossposting setting.', 'error');
+            await refreshAccount().catch(() => undefined);
           }
-        } catch (err) {
-          setStatus(err.message || 'Could not update crossposting setting.', 'error');
-          await refreshAccount().catch(() => undefined);
-        }
+        });
+        await preferenceSaves;
       });
 
       (async function boot() {

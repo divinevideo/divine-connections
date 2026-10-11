@@ -103,3 +103,14 @@ describe('Instagram per-video choice without a saved default', () => {
     expect(html).toContain("platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination")
   })
 })
+
+describe('Instagram default destination saves', () => {
+  it('queues preference saves so a destination save cannot resend a stale mode', () => {
+    const listener = html.split("document.addEventListener('change'")[1]?.split('(async function boot()')[0] ?? ''
+    const queued = listener.indexOf('preferenceSaves = preferenceSaves.then(')
+    const modeRead = listener.indexOf("preferences.find((item) => item.platform === 'instagram')?.mode")
+    expect(html).toContain('let preferenceSaves = Promise.resolve()')
+    expect(queued).toBeGreaterThan(-1)
+    expect(modeRead).toBeGreaterThan(queued)
+  })
+})
