@@ -67,3 +67,29 @@ describe('tiktok adapter fetchAccount', () => {
     }
   })
 })
+
+
+describe('TikTok publish outcomes', () => {
+  afterEach(() => vi.unstubAllGlobals())
+  const adapter = createTikTokAdapter({ clientKey: 'client', clientSecret: 'secret' })
+
+  it.each([
+    ['duration_check_failed', 'media_rejected'],
+    ['spam_risk', 'media_rejected'],
+    ['auth_removed', 'needs_reauth'],
+  ])('reports terminal %s instead of continuing to poll', async (reason, code) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      data: { status: 'FAILED', fail_reason: reason }, error: { code: 'ok' },
+    })))
+    await expect(adapter.pollPublishStatus!({ accessToken: 'access', providerResponse: { publish_id: 'publish-1' } }))
+      .rejects.toMatchObject({ code })
+  })
+
+  it.each([{}, { access_token: '' }, { access_token: '  ' }, { access_token: 123 }])(
+    'rejects an unusable token response: %j', async (body) => {
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json(body)))
+      await expect(adapter.exchangeCallback({ code: 'code', redirectUri: 'https://example.test/callback' }))
+        .rejects.toMatchObject({ code: 'unknown_platform_error' })
+    },
+  )
+})

@@ -64,3 +64,33 @@ describe('crossposter setup copy describes the product, not our rollout', () => 
     expect(html).toContain('also verifies it on your Divine profile')
   })
 })
+
+describe('Instagram destination controls', () => {
+  it('offers saved and per-video Story, Reel, and Reel + feed choices', () => {
+    expect(html).toContain('data-instagram-default')
+    expect(html).toContain('data-instagram-video')
+    expect(html).toContain("['story', 'Story']")
+    expect(html).toContain("['reel', 'Reel']")
+    expect(html).toContain("['reel_feed', 'Reel + feed']")
+    expect(html).toContain('Professional Instagram account required')
+    expect(html).toContain('Stories expire after 24 hours')
+  })
+  it('sends the selected per-video destination and preserves it across rerenders', () => {
+    expect(html).toContain('instagramVideoDestinations[videoId]')
+    expect(html).toContain('instagramDestination: instagramVideoDestination(videoId)')
+    expect(html).toContain('instagramVideoDestinations[target.dataset.instagramVideo] = target.value')
+    expect(html).toContain('job.instagramDestination')
+  })
+})
+
+describe('Instagram draft selection follows account settings', () => {
+  it('derives untouched video choices from the current default without storing a draft override', () => {
+    const rendering = html.split('function renderVideoRows()')[1]?.split('async function pollJobs')[0] || ''
+    expect(rendering).not.toContain('instagramVideoDestinations[video.id] =')
+    expect(rendering).toContain('instagramVideoDestination(video.id)')
+    expect(html).toContain("instagramVideoDestinations[videoId] || preferences.find")
+  })
+  it('matches an existing job to the connected external account', () => {
+    expect(html).toContain('job.externalAccountId === connection.externalAccountId')
+  })
+})

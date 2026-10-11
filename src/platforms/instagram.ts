@@ -1,3 +1,5 @@
+// ABOUTME: Connects Instagram accounts and publishes selected video destinations.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { asRecord, expectProviderOk, PlatformAdapterError } from './adapter'
 import type { PlatformAccount, PlatformAdapter, PublishInput, PublishResult, TokenSet } from './adapter'
 
@@ -28,9 +30,17 @@ function longLivedTokenSet(response: Record<string, unknown>): TokenSet {
   }
 }
 
+function requireInstagramId(value: unknown, published = false): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new PlatformAdapterError('instagram', published ? 'ambiguous_post_result' : 'unknown_platform_error',
+      published ? 'Instagram publish response missing media id; check the account before retrying' : 'Instagram response missing container id')
+  }
+  return value.trim()
+}
+
 function instagramCreationId(providerResponse: Record<string, unknown>): string {
   const container = asRecord(providerResponse.container)
-  return String(providerResponse.creationId ?? providerResponse.id ?? providerResponse.creation_id ?? container.id ?? '')
+  return requireInstagramId(providerResponse.creationId ?? providerResponse.id ?? providerResponse.creation_id ?? container.id)
 }
 
 function instagramExternalAccountId(providerResponse: Record<string, unknown>): string {
@@ -131,13 +141,18 @@ export function createInstagramAdapter(config: InstagramConfig): PlatformAdapter
     },
     async publishVideo(input: PublishInput): Promise<PublishResult> {
       const createBody = new URLSearchParams({
-        media_type: 'REELS',
+        media_type: input.instagramDestination === 'story' ? 'STORIES' : 'REELS',
         video_url: input.videoUrl,
-        caption: input.caption,
         access_token: input.accessToken,
       })
+      if (input.instagramDestination !== 'story') {
+        createBody.set('caption', input.caption)
+        if (input.instagramDestination != null) {
+          createBody.set('share_to_feed', String(input.instagramDestination === 'reel_feed'))
+        }
+      }
       const container = await postForm(`${GRAPH_BASE}/${input.externalAccountId}/media`, createBody)
-      const creationId = String(container.id ?? '')
+      const creationId = requireInstagramId(container.id)
       const status = await fetchContainerStatus(creationId, input.accessToken)
 
       if (status.status_code !== 'FINISHED') {
@@ -158,7 +173,7 @@ export function createInstagramAdapter(config: InstagramConfig): PlatformAdapter
         `${GRAPH_BASE}/${input.externalAccountId}/media_publish`,
         new URLSearchParams({ creation_id: creationId, access_token: input.accessToken }),
       )
-      const externalPostId = String(published.id ?? creationId)
+      const externalPostId = requireInstagramId(published.id, true)
       const externalPostUrl = await fetchPublishedPermalink(externalPostId, input.accessToken)
       return {
         status: 'posted',
@@ -190,7 +205,7 @@ export function createInstagramAdapter(config: InstagramConfig): PlatformAdapter
         `${GRAPH_BASE}/${externalAccountId}/media_publish`,
         new URLSearchParams({ creation_id: creationId, access_token: accessToken }),
       )
-      const externalPostId = String(published.id ?? creationId)
+      const externalPostId = requireInstagramId(published.id, true)
       const externalPostUrl = await fetchPublishedPermalink(externalPostId, accessToken)
       return {
         status: 'posted',

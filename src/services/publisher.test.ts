@@ -1,7 +1,10 @@
+// ABOUTME: Exercises publishing claims, provider outcomes, and retry handling.
+// ABOUTME: Uses real adapters with upstream requests stubbed at the fetch boundary.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, upsertConnection } from '../db/connections'
 import { createOrGetJob, getJob, updateJobStatus } from '../db/jobs'
+import { setPreference } from '../db/preferences'
 import { applyMigrations, connection, job, PUBKEY_A } from '../db/test-helpers'
 import type { Env, Platform } from '../types'
 import { encryptToken } from '../utils/crypto'
@@ -154,6 +157,36 @@ describe('publisher service', () => {
     db = await applyMigrations()
     fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
+  })
+
+  it('publishes the immutable Instagram destination after its saved default changes', async () => {
+    await seedConnectedJob(db, 'instagram', { instagramDestination: 'story' })
+    await setPreference(db, { pubkey: PUBKEY_A, platform: 'instagram', connectionId: 'conn_1', mode: 'manual', automaticEnabledAt: null, createdAt: 1000, updatedAt: 2000, instagramDestination: 'reel_feed' })
+    fetchMock.mockResolvedValueOnce(Response.json({ id: 'story-container' }))
+      .mockResolvedValueOnce(Response.json({ status_code: 'IN_PROGRESS' }))
+    expect(await processCrosspostJob(platformEnv(db, 'instagram'), 'job_1', { now: 2000 })).toMatchObject({ status: 'processing' })
+    const containerBody = fetchMock.mock.calls[0][1].body as URLSearchParams
+    expect(containerBody.get('media_type')).toBe('STORIES')
+    expect(containerBody.has('caption')).toBe(false)
+    expect(containerBody.has('share_to_feed')).toBe(false)
+    fetchMock.mockResolvedValueOnce(Response.json({ status_code: 'FINISHED' }))
+      .mockResolvedValueOnce(Response.json({ id: 'published-story' }))
+      .mockResolvedValueOnce(Response.json({ permalink: 'https://www.instagram.com/stories/example/1/' }))
+    expect(await processCrosspostJob(platformEnv(db, 'instagram'), 'job_1', { now: 2100 })).toMatchObject({ status: 'posted' })
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/media'))).toHaveLength(1)
+    expect(await getJob(db, 'job_1')).toMatchObject({ instagramDestination: 'story', externalPostId: 'published-story' })
+  })
+
+  it('does not retry an Instagram publish whose successful response has no media ID', async () => {
+    await seedConnectedJob(db, 'instagram', { instagramDestination: 'story' })
+    fetchMock.mockResolvedValueOnce(Response.json({ id: 'story-container' }))
+      .mockResolvedValueOnce(Response.json({ status_code: 'FINISHED' }))
+      .mockResolvedValueOnce(Response.json({}))
+    expect(await processCrosspostJob(platformEnv(db, 'instagram'), 'job_1', { now: 2000 })).toMatchObject({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: 'ambiguous_post_result', nextRetryAt: null })
+    const requests = fetchMock.mock.calls.length
+    await processCrosspostJob(platformEnv(db, 'instagram'), 'job_1', { now: 3000 })
+    expect(fetchMock).toHaveBeenCalledTimes(requests)
   })
 
   it('marks a successful publish as posted and records an attempt', async () => {
@@ -393,13 +426,12 @@ describe('publisher service', () => {
         }
         return new Response(new Uint8Array([4, 5, 6]))
       }
-      if (url === 'https://api.x.com/2/media/upload') {
-        const command = (init?.body as FormData).get('command')
-        if (command === 'INIT') {
+      if (url.startsWith('https://api.x.com/2/media/upload/')) {
+        if (url.endsWith('/initialize')) {
           initRequests += 1
           return Response.json({ data: { id: initRequests === 1 ? 'current-media-id' : 'stale-media-id' } })
         }
-        if (command === 'APPEND') return new Response(null, { status: 204 })
+        if (url.endsWith('/append')) return new Response(null, { status: 204 })
         return Response.json({ data: { id: initRequests === 1 ? 'current-media-id' : 'stale-media-id' } })
       }
       if (url === 'https://api.x.com/2/tweets') {
@@ -450,10 +482,9 @@ describe('publisher service', () => {
         }
         return new Response(new Uint8Array([4, 5, 6]))
       }
-      if (url === 'https://api.x.com/2/media/upload') {
-        const command = (init?.body as FormData).get('command')
-        if (command === 'INIT') return Response.json({ data: { id: 'current-media-id' } })
-        if (command === 'APPEND') return new Response(null, { status: 204 })
+      if (url.startsWith('https://api.x.com/2/media/upload/')) {
+        if (url.endsWith('/initialize')) return Response.json({ data: { id: 'current-media-id' } })
+        if (url.endsWith('/append')) return new Response(null, { status: 204 })
         return Response.json({ data: { id: 'current-media-id' } })
       }
       if (url === 'https://api.x.com/2/tweets') {
@@ -527,6 +558,21 @@ describe('publisher service', () => {
     })
     expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.x.com/2/media/upload?command=STATUS&media_id=media-id')
     expect(fetchMock.mock.calls.filter((call) => String(call[0]) === 'https://api.x.com/2/tweets')).toHaveLength(1)
+  })
+
+  it.each([
+    ['duration_check_failed', 'failed', 'media_rejected'],
+    ['auth_removed', 'needs_reauth', 'needs_reauth'],
+  ])('finishes a TikTok processing job on %s without scheduling another poll', async (reason, status, errorCode) => {
+    await seedConnectedJob(db, 'tiktok', {
+      status: 'processing', externalPostId: 'publish-id', nextRetryAt: 2_000,
+    })
+    fetchMock.mockResolvedValueOnce(Response.json({
+      data: { status: 'FAILED', fail_reason: reason }, error: { code: 'ok' },
+    }))
+    await expect(processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2_000 }))
+      .resolves.toEqual({ status })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status, errorCode, nextRetryAt: null })
   })
 
   it('sanitizes a legacy raw provider attempt before TikTok polling', async () => {

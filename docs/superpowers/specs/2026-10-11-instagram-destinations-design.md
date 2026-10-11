@@ -1,6 +1,6 @@
 # Instagram destination choices
 
-Status: design direction approved; written specification awaiting Rabble's review.
+Status: implemented from Rabble's approved design direction; live provider verification pending.
 
 ## Outcome
 
@@ -42,7 +42,7 @@ Keep the current Instagram Login host and permissions. Map explicit choices as f
 
 The destination is fixed at container creation. Resume processing by container ID without creating another container or consulting updated preferences. Validate container and published-media IDs before reporting success. Keep permalink lookup best-effort after successful publication. Provider account/media failures are surfaced; no automatic destination substitution.
 
-Story media must meet Meta's documented limits (3–60 seconds, at most 100 MB and supported video encoding). Use available trusted media metadata for preflight validation, and let Meta enforce constraints that cannot be established without adding a transcoder. Do not truncate or transcode in this worker.
+Story media must meet Meta's documented limits (3–60 seconds, at most 100 MB and supported video encoding). Use available trusted media metadata for preflight validation, and let Meta enforce constraints that cannot be established without adding a transcoder. The current source snapshot has no verified duration or encoding metadata, so these checks remain with Meta. Do not truncate or transcode in this worker.
 
 ## Tests and acceptance
 

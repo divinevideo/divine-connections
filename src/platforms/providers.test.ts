@@ -1,3 +1,5 @@
+// ABOUTME: Verifies provider HTTP contracts and safe publishing behavior.
+// ABOUTME: Uses real adapters with upstream requests stubbed at the fetch boundary.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetchVideoBytes, PlatformAdapterError } from './adapter'
 import { createInstagramAdapter } from './instagram'
@@ -55,6 +57,38 @@ describe('provider adapters', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it.each([
+    ['story', 'STORIES', null, null],
+    ['reel', 'REELS', 'false', 'caption'],
+    ['reel_feed', 'REELS', 'true', 'caption'],
+    [undefined, 'REELS', null, 'caption'],
+  ] as const)('maps Instagram destination %s to container parameters', async (instagramDestination, mediaType, shareToFeed, caption) => {
+    const adapter = createInstagramAdapter({ clientId: 'client', clientSecret: 'secret' })
+    fetchMock.mockResolvedValueOnce(Response.json({ id: 'container-id' }))
+      .mockResolvedValueOnce(Response.json({ status_code: 'IN_PROGRESS' }))
+    expect(await adapter.publishVideo({ ...publishInput(), instagramDestination })).toMatchObject({ status: 'processing', externalPostId: 'container-id' })
+    const body = fetchMock.mock.calls[0][1].body as URLSearchParams
+    expect(body.get('media_type')).toBe(mediaType)
+    expect(body.get('share_to_feed')).toBe(shareToFeed)
+    expect(body.get('caption')).toBe(caption)
+  })
+
+  it.each([undefined, '', ' ', 123, {}])('rejects malformed Instagram container IDs before polling: %s', async (id) => {
+    fetchMock.mockResolvedValueOnce(Response.json({ id }))
+    const adapter = createInstagramAdapter({ clientId: 'client', clientSecret: 'secret' })
+    await expect(adapter.publishVideo(publishInput())).rejects.toMatchObject({ code: 'unknown_platform_error' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not substitute the container ID when Instagram omits the published media ID', async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({ id: 'container-id' }))
+      .mockResolvedValueOnce(Response.json({ status_code: 'FINISHED' }))
+      .mockResolvedValueOnce(Response.json({}))
+    const adapter = createInstagramAdapter({ clientId: 'client', clientSecret: 'secret' })
+    await expect(adapter.publishVideo(publishInput())).rejects.toMatchObject({ code: 'ambiguous_post_result' })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('builds Instagram-login OAuth URLs with business scopes', () => {
@@ -507,7 +541,7 @@ describe('provider adapters', () => {
     })
   })
 
-  it('uploads X video bytes with v2 multipart INIT, APPEND, FINALIZE, then creates a post behind the fence', async () => {
+  it('uploads X video bytes with v2 initialize, multipart append, and finalize endpoints, then creates a post behind the fence', async () => {
     const adapter = createXAdapter({ clientId: 'client', clientSecret: 'secret' })
     const events: string[] = []
     fetchMock
@@ -535,32 +569,25 @@ describe('provider adapters', () => {
     })
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://cdn.divine.video/video.mp4')
-    expect(String(fetchMock.mock.calls[1][0])).toBe('https://api.x.com/2/media/upload')
-    const init = bodyAsFormData(fetchMock.mock.calls[1])
-    expect(
-      Object.fromEntries([...init.entries()].filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
-    ).toEqual({
-      command: 'INIT',
-      total_bytes: String(VIDEO_BYTES.byteLength),
+    expect(String(fetchMock.mock.calls[1][0])).toBe('https://api.x.com/2/media/upload/initialize')
+    await expect(bodyAsJson(fetchMock.mock.calls[1])).resolves.toEqual({
+      total_bytes: VIDEO_BYTES.byteLength,
       media_type: 'video/mp4',
       media_category: 'tweet_video',
     })
-    expect(new Headers((fetchMock.mock.calls[1][1] as RequestInit).headers).has('content-type')).toBe(false)
+    expect(new Headers((fetchMock.mock.calls[1][1] as RequestInit).headers).get('content-type')).toBe('application/json')
 
-    expect(String(fetchMock.mock.calls[2][0])).toBe('https://api.x.com/2/media/upload')
+    expect(String(fetchMock.mock.calls[2][0])).toBe('https://api.x.com/2/media/upload/media-id/append')
     const append = bodyAsFormData(fetchMock.mock.calls[2])
-    expect(formText(append, 'command')).toBe('APPEND')
-    expect(formText(append, 'media_id')).toBe('media-id')
+    expect([...append.keys()].sort()).toEqual(['media', 'segment_index'])
     expect(formText(append, 'segment_index')).toBe('0')
     const media = formBlob(append, 'media')
     expect(media.size).toBe(VIDEO_BYTES.byteLength)
     expect(Reflect.get(media, 'name')).toBe('video-chunk')
     expect(new Headers((fetchMock.mock.calls[2][1] as RequestInit).headers).has('content-type')).toBe(false)
 
-    expect(String(fetchMock.mock.calls[3][0])).toBe('https://api.x.com/2/media/upload')
-    const finalize = bodyAsFormData(fetchMock.mock.calls[3])
-    expect(Object.fromEntries(finalize.entries())).toEqual({ command: 'FINALIZE', media_id: 'media-id' })
-    expect(new Headers((fetchMock.mock.calls[3][1] as RequestInit).headers).has('content-type')).toBe(false)
+    expect(String(fetchMock.mock.calls[3][0])).toBe('https://api.x.com/2/media/upload/media-id/finalize')
+    expect((fetchMock.mock.calls[3][1] as RequestInit).body).toBeUndefined()
     expect(fetchMock).toHaveBeenNthCalledWith(
       5,
       'https://api.x.com/2/tweets',
@@ -588,7 +615,7 @@ describe('provider adapters', () => {
 
     const appends = fetchMock.mock.calls.filter((call) => {
       const init = call[1] as RequestInit | undefined
-      return init?.body instanceof FormData && formText(init.body, 'command') === 'APPEND'
+      return init?.body instanceof FormData && String(call[0]).endsWith('/append')
     })
     expect(appends).toHaveLength(2)
     expect(appends.map((call) => formText(bodyAsFormData(call), 'segment_index'))).toEqual(['0', '1'])

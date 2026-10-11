@@ -1,3 +1,5 @@
+// ABOUTME: Verifies crossposting persistence and API behavior.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { beforeEach, describe, expect, it } from 'vitest'
 import { upsertConnection } from './connections'
 import {
@@ -31,63 +33,14 @@ describe('job repository', () => {
     expect(duplicate.job).toMatchObject({ id: 'job_original', caption: 'six seconds of weird human internet' })
   })
 
-  it('returns the existing job when a concurrent duplicate insert wins the race', async () => {
-    const existingRow = {
-      id: 'job_existing',
-      pubkey: PUBKEY_A,
-      video_event_id: VIDEO_EVENT_ID,
-      platform: 'tiktok',
-      connection_id: 'conn_1',
-      external_account_id: 'external-account-1',
-      source_media_url: 'https://cdn.divine.video/video.mp4',
-      source_media_hash: 'sha256:example',
-      caption: 'already inserted by another callback',
-      status: 'queued',
-      error_code: null,
-      error_message: null,
-      external_post_id: null,
-      external_post_url: null,
-      retry_count: 0,
-      next_retry_at: null,
-      expires_at: 174_000,
-      created_at: 1_000,
-      updated_at: 1_000,
-    }
-    let selectCount = 0
-    const racingDb = {
-      prepare(query: string) {
-        return {
-          bind() {
-            return {
-              async first() {
-                if (query.includes('SELECT * FROM jobs')) {
-                  selectCount += 1
-                  return selectCount === 1 ? null : existingRow
-                }
-                return null
-              },
-              async run() {
-                if (query.includes('INSERT OR IGNORE INTO jobs')) {
-                  return { meta: { changes: 0 }, success: true }
-                }
-                if (query.includes('INSERT INTO jobs')) {
-                  throw new Error('UNIQUE constraint failed: jobs.pubkey, jobs.video_event_id, jobs.platform, jobs.external_account_id')
-                }
-                return { meta: { changes: 0 }, success: true }
-              },
-            }
-          },
-        }
-      },
-    } as unknown as D1Database
-
-    await expect(createOrGetJob(racingDb, job({ id: 'job_loser' }))).resolves.toEqual({
-      created: false,
-      job: expect.objectContaining({
-        id: 'job_existing',
-        caption: 'already inserted by another callback',
-      }),
-    })
+  it('returns the same job when concurrent duplicate inserts race', async () => {
+    const results = await Promise.all([
+      createOrGetJob(db, job({ id: 'job_first' })),
+      createOrGetJob(db, job({ id: 'job_second' })),
+    ])
+    expect(results.filter((result) => result.created)).toHaveLength(1)
+    expect(results[0].job.id).toBe(results[1].job.id)
+    expect(await listJobsForVideo(db, PUBKEY_A, VIDEO_EVENT_ID)).toHaveLength(1)
   })
 
   it('lists jobs for a video and runnable queued jobs', async () => {

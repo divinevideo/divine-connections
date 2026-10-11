@@ -1,3 +1,5 @@
+// ABOUTME: Verifies crossposting persistence and API behavior.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '../index'
 import { upsertConnection } from '../db/connections'
@@ -39,6 +41,24 @@ describe('preference routes', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('saves and returns an Instagram destination and preserves it on a mode-only update', async () => {
+    await upsertConnection(db, connection({ id: 'conn_instagram', platform: 'instagram' }))
+    fetchMock.mockImplementation(async () => authResponse())
+    const put = (body: unknown) => app.request('/preferences/instagram', { method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' }, body: JSON.stringify(body) }, testEnv(db))
+    const first = await put({ mode: 'manual', instagramDestination: 'story' })
+    expect(first.status).toBe(200)
+    expect(await first.json()).toMatchObject({ preference: { instagramDestination: 'story' } })
+    const second = await put({ mode: 'automatic' })
+    expect(await second.json()).toMatchObject({ preference: { mode: 'automatic', instagramDestination: 'story' } })
+  })
+
+  it.each([['instagram', 'post'], ['instagram', null], ['tiktok', 'story']])('rejects invalid destination %s %s without saving a preference', async (platform, instagramDestination) => {
+    fetchMock.mockImplementation(async () => authResponse())
+    const response = await app.request('/preferences/' + platform, { method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'disabled', instagramDestination }) }, testEnv(db))
+    expect(response.status).toBe(400)
+    expect(await getPreferences(db, PUBKEY_A)).toEqual([])
   })
 
   it('lists authenticated preferences', async () => {

@@ -1,3 +1,5 @@
+// ABOUTME: Connects X accounts and uploads videos through the OAuth 2.0 API.
+// ABOUTME: Keeps media processing separate from fenced post creation.
 import { asRecord, expectProviderOk, fetchVideoBytes, PlatformAdapterError } from './adapter'
 import type { PlatformAdapter, PublishResult, TokenSet } from './adapter'
 
@@ -95,14 +97,17 @@ function mediaForm(fields: Record<string, string>, media?: Blob): FormData {
   return form
 }
 
-async function postMediaForm(accessToken: string, form: FormData): Promise<Record<string, unknown>> {
+async function postMedia(accessToken: string, path: string, body?: FormData | string): Promise<Record<string, unknown>> {
   return asRecord(
     await expectProviderOk(
       'x',
-      await fetch(UPLOAD_BASE, {
+      await fetch(`${UPLOAD_BASE}${path}`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${accessToken}` },
-        body: form,
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          ...(typeof body === 'string' ? { 'content-type': 'application/json' } : {}),
+        },
+        body,
       }),
     ),
   )
@@ -180,11 +185,11 @@ export function createXAdapter(config: XConfig): PlatformAdapter {
     },
     async publishVideo({ accessToken, videoUrl, caption, beforeExternalPost }): Promise<PublishResult> {
       const video = await fetchVideoBytes('x', videoUrl, X_MAX_VIDEO_BYTES)
-      const init = await postMediaForm(
+      const init = await postMedia(
         accessToken,
-        mediaForm({
-          command: 'INIT',
-          total_bytes: String(video.bytes.byteLength),
+        '/initialize',
+        JSON.stringify({
+          total_bytes: video.bytes.byteLength,
           media_type: video.contentType,
           media_category: 'tweet_video',
         }),
@@ -197,20 +202,18 @@ export function createXAdapter(config: XConfig): PlatformAdapter {
       let segmentIndex = 0
       for (let offset = 0; offset < video.bytes.byteLength; offset += X_UPLOAD_CHUNK_BYTES) {
         const chunk = video.bytes.slice(offset, Math.min(offset + X_UPLOAD_CHUNK_BYTES, video.bytes.byteLength))
-        await postMediaForm(
+        await postMedia(
           accessToken,
+          `/${encodeURIComponent(mediaId)}/append`,
           mediaForm(
-            { command: 'APPEND', media_id: mediaId, segment_index: String(segmentIndex) },
+            { segment_index: String(segmentIndex) },
             new Blob([chunk], { type: video.contentType }),
           ),
         )
         segmentIndex += 1
       }
 
-      const finalize = await postMediaForm(
-        accessToken,
-        mediaForm({ command: 'FINALIZE', media_id: mediaId }),
-      )
+      const finalize = await postMedia(accessToken, `/${encodeURIComponent(mediaId)}/finalize`)
       if (!isMediaReady(finalize)) {
         return {
           status: 'processing',
