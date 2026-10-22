@@ -11,7 +11,7 @@ The codebase is a TypeScript Worker built on [Hono](https://hono.dev), using D1 
 ## Features
 
 - **Opt-in only.** No video leaves Divine until a creator connects an account and picks a posting mode. Automatic mode applies only to Divine videos created after the creator turned it on.
-- **Supported platforms.** Instagram Reels, TikTok, X, and YouTube Shorts, each behind its own adapter. A platform reports as enabled only when its `ENABLE_*` flag is `true` and matching OAuth credentials are configured, so an operator can stage a provider before exposing it.
+- **Supported platforms.** Instagram Stories/Reels, TikTok, X, and YouTube Shorts, each behind its own adapter. A platform reports as enabled only when its `ENABLE_*` flag is `true` and matching OAuth credentials are configured, so an operator can stage a provider before exposing it.
 - **Manual and automatic posting.** Manual jobs are created when the creator asks. Automatic jobs are created after a Divine publish, either from a client push or from the scheduled reconciler.
 - **Idempotent jobs.** Jobs are keyed by `(pubkey, video_event_id, platform, external_account_id)`, so duplicate requests return the existing job instead of double-posting.
 - **Built-in setup UI.** `GET /` serves a self-contained web app where a creator signs in with their Divine/Nostr account, connects platforms, and sets posting switches. `GET /platforms` shows provider readiness (HTML, or JSON with `?format=json`).
@@ -145,7 +145,7 @@ ${OAUTH_REDIRECT_BASE}/connections/youtube/callback
 
 Provider notes:
 
-- Instagram Reels uses Meta content publishing: create a Reels media container from a public video URL, wait for processing, then publish.
+- Instagram uses Meta content publishing: create a Story or Reel container from a public video URL, wait for processing, then publish.
 - TikTok Direct Post requires publish consent and may require app review before public posting.
 - X uses OAuth 2.0 plus chunked media upload before post creation. In the X Developer Portal, configure the production application as an **OAuth 2.0 confidential web application** with **Read and write** permission, callback `https://crossposter.divine.video/connections/x/callback`, and scopes `tweet.read tweet.write users.read media.write offline.access`. The portal client ID and client secret must be the pair installed as the `TWITTER_CLIENT_ID` and `TWITTER_CLIENT_SECRET` Worker secrets.
 - YouTube Shorts uses the YouTube Data API upload flow; Shorts classification depends on video format, duration, and metadata conventions.
@@ -460,3 +460,39 @@ Use Cloudflare logs/tail when validating OAuth callbacks, queue processing, and 
 ---
 
 Part of [Divine](https://divine.video) — your playground for human creativity · [Brand guidelines](https://github.com/divinevideo/brand-guidelines)
+
+### Instagram destinations
+
+The hosted crossposter offers a saved destination and an override on each video:
+
+| API value | Result |
+| --- | --- |
+| `story` | Story; no caption or link sticker, expires after 24 hours |
+| `reel` | Reel with `share_to_feed=false` |
+| `reel_feed` | Reel with `share_to_feed=true` |
+
+Save a default with authenticated `PUT /preferences/instagram`:
+
+```json
+{"mode":"automatic","instagramDestination":"story"}
+```
+
+Override it for one manual video with authenticated `POST /videos/:event_id/crossposts`:
+
+```json
+{"platforms":["instagram"],"instagramDestination":"reel_feed"}
+```
+
+Omitting the field on a preference update preserves its saved value. Manual posts use the override, then the saved default; automatic posts use the saved default. Existing preferences and jobs with no destination retain the previous Reel request. Invalid values and a destination without Instagram return HTTP 400. Jobs expose `instagramDestination` (null for legacy jobs). Each job stores its choice before queue dispatch, so later preference changes or duplicate submissions cannot change it.
+
+Migration `0007_instagram_destinations.sql` adds two side tables; it does not alter the shared tables. Apply it before deploying the new Worker. Native clients can use the same additive API fields; their controls require a separate mobile integration.
+
+Instagram Login requires a professional Creator or Business account. Stories must satisfy Meta's video limits (3–60 seconds, at most 100 MB, supported encoding). This service currently has no verified duration/encoding metadata, so Meta validates those constraints; the Worker does not transcode or silently switch formats. Verify placement with an authorized test account/video before declaring live rollout complete.
+
+### Provider rollout checks
+
+- **X:** Use the OAuth 2.0 client ID/secret, not the OAuth 1.0 consumer key/secret. Video uploads use `/2/media/upload/initialize`, `/{id}/append`, and `/{id}/finalize`; status polling uses `/2/media/upload`. Confirm app access and available API credits separately.
+- **YouTube:** The OAuth grant needs both `youtube.upload` and `youtube.readonly`: upload permission alone cannot read the connected channel via `channels.list`. Existing grants must reconnect to add the channel-read scope. The OAuth client must be a web application with the exact YouTube callback above; enabling the Data API or installing an API key is insufficient.
+- **TikTok:** Terminal `FAILED` upload status stops polling; `auth_removed` requests reconnection. Keep rollout disabled until Direct Post approval, credentials, verified source domain, and the required creator controls are ready. The existing posting flow still uses `SELF_ONLY`; it needs fresh creator info, explicit per-post privacy selection, preview/caption and interaction controls, and required consent before public rollout. Failure-handling fixes alone do not make that flow ready.
+
+Official contracts: [X media upload](https://docs.x.com/x-api/media/initialize-media-upload), [YouTube channel lookup](https://developers.google.com/youtube/v3/docs/channels/list), [TikTok publishing status](https://developers.tiktok.com/doc/content-posting-api-reference-get-video-status), [TikTok creator controls](https://developers.tiktok.com/doc/content-sharing-guidelines).

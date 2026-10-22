@@ -1,4 +1,6 @@
-import type { ErrorCode, Platform } from '../types'
+// ABOUTME: Defines provider publishing contracts and normalized errors.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
+import type { ErrorCode, InstagramDestination, Platform } from '../types'
 
 export type PlatformAccount = {
   id: string
@@ -15,6 +17,7 @@ export type TokenSet = {
 }
 
 export type PublishInput = {
+  instagramDestination?: InstagramDestination | null
   accessToken: string
   videoUrl: string
   mediaHash: string

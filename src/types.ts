@@ -1,3 +1,5 @@
+// ABOUTME: Defines shared Worker API, storage and publishing types.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 export type Platform = 'instagram' | 'tiktok' | 'x' | 'youtube'
 
 export type VerificationPlatform =
@@ -14,6 +16,8 @@ export interface VerificationRecord {
   verifiedAt: number
   revokedAt: number | null
 }
+
+export type InstagramDestination = 'story' | 'reel' | 'reel_feed'
 
 export type PreferenceMode = 'manual' | 'automatic' | 'disabled'
 export type JobStatus =
@@ -139,6 +143,7 @@ export type ConnectionRecord = {
 }
 
 export type PreferenceRecord = {
+  instagramDestination?: InstagramDestination | null
   pubkey: string
   platform: Platform
   connectionId: string | null
@@ -156,6 +161,7 @@ export type AutoCursorRecord = {
 }
 
 export type JobRecord = {
+  instagramDestination?: InstagramDestination | null
   id: string
   pubkey: string
   videoEventId: string

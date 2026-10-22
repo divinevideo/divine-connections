@@ -1,9 +1,12 @@
+// ABOUTME: Stores crosspost jobs and controls their publishing lifecycle.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { allPrepared, changes, firstPrepared, runPrepared } from './client'
-import type { CreateJobInput, ErrorCode, JobRecord, JobStatus, Platform, UpdateJobStatusInput } from '../types'
+import type { CreateJobInput, ErrorCode, InstagramDestination, JobRecord, JobStatus, Platform, UpdateJobStatusInput } from '../types'
 
 export const MAX_RETRY_COUNT = 5
 
 type JobRow = {
+  instagram_destination?: InstagramDestination | null
   id: string
   pubkey: string
   video_event_id: string
@@ -27,6 +30,7 @@ type JobRow = {
 
 function mapJob(row: JobRow): JobRecord {
   return {
+    instagramDestination: row.instagram_destination ?? null,
     id: row.id,
     pubkey: row.pubkey,
     videoEventId: row.video_event_id,
@@ -52,7 +56,7 @@ function mapJob(row: JobRow): JobRecord {
 async function findByIdempotencyKey(db: D1Database, input: CreateJobInput): Promise<JobRecord | null> {
   const row = await firstPrepared<JobRow>(
     db,
-    `SELECT * FROM jobs
+    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs
     WHERE pubkey = ? AND video_event_id = ? AND platform = ? AND external_account_id = ?`,
     input.pubkey,
     input.videoEventId,
@@ -71,14 +75,13 @@ export async function createOrGetJob(
     return { job: existing, created: false }
   }
 
-  const result = await runPrepared(
-    db,
+  const statement = db.prepare(
     `INSERT OR IGNORE INTO jobs (
       id, pubkey, video_event_id, platform, connection_id, external_account_id,
       source_media_url, source_media_hash, caption, status, error_code, error_message,
       external_post_id, external_post_url, retry_count, next_retry_at, expires_at,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
     input.id,
     input.pubkey,
     input.videoEventId,
@@ -100,6 +103,14 @@ export async function createOrGetJob(
     input.updatedAt,
   )
 
+  const statements = [statement]
+  if (input.platform === 'instagram' && input.instagramDestination != null) {
+    statements.push(db.prepare(`INSERT INTO instagram_job_options (job_id, destination)
+      SELECT ?, ? WHERE changes() = 1`)
+      .bind(input.id, input.instagramDestination))
+  }
+  const [result] = await db.batch(statements)
+
   const job = changes(result) > 0 ? await getJob(db, input.id) : await findByIdempotencyKey(db, input)
   if (!job) {
     throw new Error('failed to create or find job')
@@ -114,7 +125,7 @@ export async function listJobsForVideo(
 ): Promise<JobRecord[]> {
   const rows = await allPrepared<JobRow>(
     db,
-    `SELECT * FROM jobs
+    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs
     WHERE pubkey = ? AND video_event_id = ?
     ORDER BY created_at ASC, id ASC`,
     pubkey,
@@ -125,8 +136,8 @@ export async function listJobsForVideo(
 
 export async function getJob(db: D1Database, id: string, pubkey?: string): Promise<JobRecord | null> {
   const row = pubkey
-    ? await firstPrepared<JobRow>(db, 'SELECT * FROM jobs WHERE id = ? AND pubkey = ?', id, pubkey)
-    : await firstPrepared<JobRow>(db, 'SELECT * FROM jobs WHERE id = ?', id)
+    ? await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs WHERE id = ? AND pubkey = ?', id, pubkey)
+    : await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs WHERE id = ?', id)
   return row ? mapJob(row) : null
 }
 
@@ -174,7 +185,7 @@ export async function updateClaimedJobStatus(
     `UPDATE jobs
     SET ${assignments.join(', ')}
     WHERE id = ? AND status = ? AND updated_at = ?
-    RETURNING *`,
+    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,
     ...bindings,
     input.id,
     expected.status,
@@ -192,7 +203,7 @@ export async function claimJobForPublish(db: D1Database, id: string, now: number
       AND status IN ('queued', 'failed')
       AND expires_at > ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)
-    RETURNING *`,
+    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,
     now,
     id,
     now,
@@ -210,7 +221,7 @@ export async function claimJobForStatusPoll(db: D1Database, id: string, now: num
       AND status = 'processing'
       AND expires_at > ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)
-    RETURNING *`,
+    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,
     now,
     id,
     now,
@@ -243,7 +254,7 @@ export async function transitionClaimToDispatching(
 export async function listRunnableJobs(db: D1Database, now: number, limit: number): Promise<JobRecord[]> {
   const rows = await allPrepared<JobRow>(
     db,
-    `SELECT * FROM jobs
+    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs
     WHERE (
         (status IN ('queued', 'processing') AND (next_retry_at IS NULL OR next_retry_at <= ?))
         OR (

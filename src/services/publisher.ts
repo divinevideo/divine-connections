@@ -1,3 +1,5 @@
+// ABOUTME: Claims queued crosspost jobs and publishes them through provider adapters.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, markConnectionNeedsReauth, upsertConnection } from '../db/connections'
 import {
@@ -574,6 +576,7 @@ export async function processCrosspostJob(
       }
 
       const result = await adapter.publishVideo({
+        instagramDestination: job.instagramDestination,
         accessToken,
         videoUrl: job.sourceMediaUrl,
         mediaHash: job.sourceMediaHash,

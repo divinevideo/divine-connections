@@ -1,3 +1,5 @@
+// ABOUTME: Renders the hosted crossposter setup and manual publishing controls.
+// ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { Hono } from 'hono'
 import { getProviderSummaries } from '../platforms/registry'
 import type { Env } from '../types'
@@ -16,7 +18,7 @@ function htmlResponse(body: string): Response {
 function platformName(platform: string): string {
   switch (platform) {
     case 'instagram':
-      return 'Instagram Reels'
+      return 'Instagram'
     case 'tiktok':
       return 'TikTok'
     case 'x':
@@ -671,6 +673,8 @@ export function renderHome(env: Env): string {
       let profile = null;
       let connections = [];
       let preferences = [];
+      let instagramVideoDestinations = {};
+      let preferenceSaves = Promise.resolve();
       let accountLoaded = false;
 
       function $(id) {
@@ -884,6 +888,7 @@ export function renderHome(env: Env): string {
         profile = null;
         connections = [];
         preferences = [];
+        instagramVideoDestinations = {};
         accountLoaded = false;
         localStorage.removeItem(SESSION_KEY);
         renderAuthControls();
@@ -1029,6 +1034,21 @@ export function renderHome(env: Env): string {
         }).join('');
       }
 
+      function instagramVideoDestination(videoId) {
+        return instagramVideoDestinations[videoId] || preferences.find((item) => item.platform === 'instagram')?.instagramDestination || '';
+      }
+
+      function instagramDestinationLabel(value) {
+        return { story: 'Story', reel: 'Reel', reel_feed: 'Reel + feed' }[value] || 'Existing Reel setting';
+      }
+
+      function instagramDestinationSelect(value, attributes, disabled) {
+        const choices = [['story', 'Story'], ['reel', 'Reel'], ['reel_feed', 'Reel + feed']];
+        return '<select aria-label="Instagram destination" ' + attributes + (disabled ? ' disabled' : '') + '>' +
+          (!value ? '<option value="" selected disabled>Existing Reel setting</option>' : '') +
+          choices.map(([key, label]) => '<option value="' + key + '" ' + (value === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select>';
+      }
+
       function renderPreferenceRows() {
         const list = $('preference-list');
         if (!list) return;
@@ -1054,12 +1074,15 @@ export function renderHome(env: Env): string {
               '<option value="manual" ' + (current === 'manual' ? 'selected' : '') + '>Manual</option>' +
               '<option value="automatic" ' + (current === 'automatic' ? 'selected' : '') + '>Automatic</option>' +
             '</select>' +
+            (platform.platform === 'instagram' ? '<span style="grid-column: 1 / -1"><label>Default destination ' +
+              instagramDestinationSelect(pref?.instagramDestination, 'data-instagram-default="true"', disabled) + '</label>' +
+              '<small>Professional Instagram account required (Creator or Business). Stories expire after 24 hours, without the caption or a link sticker. Story videos must be 3–60 seconds and at most 100 MB. Reel + feed also shares your Reel to the feed.</small></span>' : '') +
           '</div>';
         }).join('');
       }
 
       function platformName(platform) {
-        if (platform === 'instagram') return 'Instagram Reels';
+        if (platform === 'instagram') return 'Instagram';
         if (platform === 'tiktok') return 'TikTok';
         if (platform === 'x') return 'X';
         if (platform === 'youtube') return 'YouTube Shorts';
@@ -1157,13 +1180,19 @@ export function renderHome(env: Env): string {
           const when = video.created_at ? new Date(video.created_at * 1000).toLocaleDateString() : '';
           const jobs = videoJobs[video.id] || [];
           const statusLine = jobs.length
-            ? '<small>' + jobs.map(jobLabel).join(' ') + '</small>'
+            ? '<small>' + jobs.map((job) => jobLabel(job) + (job.platform === 'instagram' ? ' (' + instagramDestinationLabel(job.instagramDestination) + ')' : '')).join(' ') + '</small>'
             : '';
           const buttons = connected.map((connection) => {
-            const busy = jobs.some((job) => job.platform === connection.platform &&
-              (job.status === 'queued' || job.status === 'uploading' || job.status === 'processing'));
-            return '<button class="mini-button" data-crosspost-video="' + escapeHtml(video.id) + '" data-crosspost-platform="' + escapeHtml(connection.platform) + '" ' + (busy ? 'disabled' : '') + '>' +
-              (busy ? 'Sending…' : 'Post to ' + escapeHtml(platformName(connection.platform))) + '</button>';
+            const existing = jobs.find((job) => job.platform === connection.platform && job.externalAccountId === connection.externalAccountId);
+            const busy = existing && ['queued', 'uploading', 'processing', 'dispatching'].includes(existing.status);
+            const posted = existing?.status === 'posted';
+            let selector = '';
+            if (connection.platform === 'instagram') {
+              selector = instagramDestinationSelect(existing ? existing.instagramDestination : instagramVideoDestination(video.id),
+                'data-instagram-video="' + escapeHtml(video.id) + '"', !!existing) + ' ';
+            }
+            return selector + '<button class="mini-button" data-crosspost-video="' + escapeHtml(video.id) + '" data-crosspost-platform="' + escapeHtml(connection.platform) + '" ' + (busy || posted ? 'disabled' : '') + '>' +
+              (busy ? 'Sending…' : posted ? 'Posted to ' + escapeHtml(platformName(connection.platform)) : 'Post to ' + escapeHtml(platformName(connection.platform))) + '</button>';
           }).join(' ');
           const thumb = typeof video.thumbnail === 'string' && video.thumbnail.startsWith('https://')
             ? '<img class="video-thumb" src="' + escapeHtml(video.thumbnail) + '" alt="" loading="lazy">'
@@ -1196,7 +1225,7 @@ export function renderHome(env: Env): string {
       async function triggerCrosspost(videoId, platform) {
         const data = await api('/videos/' + videoId + '/crossposts', {
           method: 'POST',
-          body: JSON.stringify({ platforms: [platform] }),
+          body: JSON.stringify({ platforms: [platform], ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
         });
         videoJobs[videoId] = data.jobs || [];
         renderVideoRows();
@@ -1213,10 +1242,10 @@ export function renderHome(env: Env): string {
         window.location.href = data.authorizationUrl;
       }
 
-      async function updatePreference(platform, mode) {
+      async function updatePreference(platform, mode, instagramDestination) {
         await api('/preferences/' + platform, {
           method: 'PUT',
-          body: JSON.stringify({ mode }),
+          body: JSON.stringify({ mode, ...(instagramDestination ? { instagramDestination } : {}) }),
         });
         setStatus(platformName(platform) + ' crossposting set to ' + mode + '.');
         await refreshAccount();
@@ -1266,13 +1295,28 @@ export function renderHome(env: Env): string {
 
       document.addEventListener('change', async (event) => {
         const target = event.target;
-        if (!target?.dataset?.preference) return;
-        try {
-          await updatePreference(target.dataset.preference, target.value);
-        } catch (err) {
-          setStatus(err.message || 'Could not update crossposting setting.', 'error');
-          await refreshAccount().catch(() => undefined);
+        if (target?.dataset?.instagramVideo) {
+          instagramVideoDestinations[target.dataset.instagramVideo] = target.value;
+          return;
         }
+        if (!target?.dataset?.preference && !target?.dataset?.instagramDefault) return;
+        const platform = target.dataset.instagramDefault ? 'instagram' : target.dataset.preference;
+        const value = target.value;
+        // Saves run one at a time so a destination save reads the mode the previous save stored.
+        preferenceSaves = preferenceSaves.then(async () => {
+          try {
+            if (target.dataset.instagramDefault) {
+              const mode = preferences.find((item) => item.platform === 'instagram')?.mode || 'disabled';
+              await updatePreference('instagram', mode, value);
+            } else {
+              await updatePreference(platform, value);
+            }
+          } catch (err) {
+            setStatus(err.message || 'Could not update crossposting setting.', 'error');
+            await refreshAccount().catch(() => undefined);
+          }
+        });
+        await preferenceSaves;
       });
 
       (async function boot() {

@@ -1,3 +1,5 @@
+// ABOUTME: Connects creator accounts and publishes videos through the youtube API.
+// ABOUTME: Validates provider responses before persisting credentials or publish results.
 import { PlatformAdapterError, asRecord, expectProviderOk, fetchVideoBytes } from './adapter'
 import type { PlatformAdapter, PublishResult, TokenSet } from './adapter'
 import type { YouTubePrivacyStatus } from '../config'
@@ -8,12 +10,18 @@ type YouTubeConfig = {
   defaultPrivacyStatus?: YouTubePrivacyStatus
 }
 
-const SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
+const SCOPES = [
+  'https://www.googleapis.com/auth/youtube.upload',
+  'https://www.googleapis.com/auth/youtube.readonly',
+]
 
 function tokenSetFromResponse(response: Record<string, unknown>): TokenSet {
+  if (typeof response.access_token !== 'string' || !response.access_token.trim()) {
+    throw new PlatformAdapterError('youtube', 'unknown_platform_error', 'youtube token response missing access token')
+  }
   const expiresIn = typeof response.expires_in === 'number' ? response.expires_in : undefined
   return {
-    accessToken: String(response.access_token ?? ''),
+    accessToken: response.access_token,
     refreshToken: typeof response.refresh_token === 'string' ? response.refresh_token : undefined,
     expiresAt: expiresIn ? Math.floor(Date.now() / 1000) + expiresIn : undefined,
     scopes: typeof response.scope === 'string' ? response.scope.split(' ') : SCOPES,
