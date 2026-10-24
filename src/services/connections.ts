@@ -31,6 +31,7 @@ import type {
 import { decryptToken, encryptToken, generatePKCE, generateRandomId } from '../utils/crypto'
 import { HttpError } from '../utils/http'
 import { sanitizeProviderMetadata } from '../utils/provider-metadata'
+import { providerErrorDiagnostics } from '../utils/provider-error-diagnostics'
 import { assertAllowedReturnUrl, parsePlatform, parsePreferenceMode, parseInstagramDestination } from '../utils/validation'
 
 const OAUTH_STATE_TTL_SECONDS = 10 * 60
@@ -173,8 +174,13 @@ export async function transitionAttempt(
     providerStatus: providerStatus(error),
     updatedAt: nowSeconds(),
   })
+  const diagnostic = providerErrorDiagnostics(error)
+  const invalidGrant = status === 'token_exchange_failed' && (
+    diagnostic?.type === 'invalid_grant' ||
+    /invalid (?:authorization |verification )?code|error validating verification code|code (?:has expired|has been used)/i.test(diagnostic?.message ?? '')
+  )
   await recordDiagnostic(env, { reference: attemptId, platform, operation: 'connect', stage: status,
-    outcome: status === 'connected' ? 'succeeded' : status === 'expired' || status === 'provider_denied' ? 'abandoned' : 'failed', now: nowSeconds(), error })
+    outcome: status === 'connected' ? 'succeeded' : status === 'expired' || status === 'provider_denied' || (status === 'callback_failed' && !error) || invalidGrant ? 'abandoned' : 'failed', now: nowSeconds(), error })
   logAttemptTransition(attemptId, platform, status, failureCode, error)
 }
 

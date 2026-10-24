@@ -96,3 +96,30 @@ it('pins TikTok client_key and rejects a changed TikTok application before token
  expect(result.searchParams.get('reason')).toBe('callback_failed')
  expect(provider).not.toHaveBeenCalled()
 })
+
+it('retains incomplete callbacks without treating them as observed provider failures', async () => {
+ for (let i = 0; i < 3; i++) {
+  const started = await startConnection(new Request('https://crossposter.divine.video/connections/instagram/start', { headers: { authorization: 'Bearer example' } }), env, 'instagram', 'https://crossposter.divine.video/')
+  await completeConnectionCallback(env, 'instagram', null, started.state)
+ }
+ const { providerHealth, recentDiagnostics } = await import('../services/reliability')
+ const rows = await recentDiagnostics(env.DB)
+ expect(rows.filter(row => row.stage === 'callback_failed')).toHaveLength(3)
+ expect(rows.filter(row => row.stage === 'callback_failed').every(row => row.outcome === 'abandoned')).toBe(true)
+ expect((await providerHealth(env.DB, Math.floor(Date.now() / 1000))).instagram.connection).toBe('unknown')
+})
+
+it.each([
+ { error: 'invalid_grant', error_description: 'The authorization grant is invalid.' },
+ { error_type: 'OAuthException', code: 400, error_message: 'Invalid authorization code' },
+])('retains rejected authorization grants without degrading observed health: %j', async body => {
+ for (let i = 0; i < 3; i++) {
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ result: PUBKEY_A })))
+  const started = await startConnection(new Request('https://crossposter.divine.video/connections/instagram/start', { headers: { authorization: 'Bearer example' } }), env, 'instagram', 'https://crossposter.divine.video/')
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json(body, { status: 400 })))
+  await completeConnectionCallback(env, 'instagram', 'synthetic-code', started.state)
+ }
+ const { providerHealth, recentDiagnostics } = await import('../services/reliability')
+ expect((await recentDiagnostics(env.DB)).filter(row => row.stage === 'token_exchange_failed' && row.outcome === 'abandoned')).toHaveLength(3)
+ expect((await providerHealth(env.DB, Math.floor(Date.now() / 1000))).instagram.connection).toBe('unknown')
+})

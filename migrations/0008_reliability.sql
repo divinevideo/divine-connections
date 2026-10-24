@@ -23,7 +23,7 @@ CREATE TABLE reliability_alerts (
 -- Preserve recent known outcomes, explicitly marking missing historical details.
 INSERT INTO operation_diagnostics
  SELECT 'legacy-oauth:' || id,id,platform,'connect',status,
- CASE WHEN status='connected' THEN 'succeeded' ELSE 'failed' END,
+ CASE WHEN status='connected' THEN 'succeeded' WHEN status='callback_failed' THEN 'abandoned' ELSE 'failed' END,
  provider_status,'{"note":"Historical provider details were not retained"}','unknown',updated_at
  FROM oauth_attempts WHERE updated_at >= unixepoch()-2592000
  AND status IN ('connected','token_exchange_failed','account_lookup_failed','callback_failed','storage_failed');
