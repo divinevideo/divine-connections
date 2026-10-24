@@ -117,7 +117,7 @@ it.each(['x', 'instagram'] as const)('alerts when expired %s credentials cannot 
  const { upsertConnection } = await import('../db/connections')
  const { connection } = await import('../db/test-helpers')
  await upsertConnection(db, connection({ platform, tokenExpiresAt: 1000, encryptedRefreshToken: platform === 'instagram' ? 'synthetic-self-refresh-token' : null }))
- const fetchMock = vi.fn(async () => new Response()); vi.stubGlobal('fetch', fetchMock)
+ const fetchMock = vi.fn<typeof fetch>(async () => new Response()); vi.stubGlobal('fetch', fetchMock)
  await checkProviderReliability({ DB: db, OPS_ALERT_WEBHOOK_URL: 'https://alerts.example/secret' } as Env, 1001)
  expect(fetchMock).toHaveBeenCalledOnce()
  expect(String(fetchMock.mock.calls[0][1]?.body)).toContain('expired_credentials')
