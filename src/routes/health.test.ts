@@ -114,3 +114,12 @@ describe('Instagram default destination saves', () => {
     expect(modeRead).toBeGreaterThan(queued)
   })
 })
+
+it('shows reconnect requirements and provider trouble in the signed-in connection list', () => {
+  const source = html.split('function renderConnectRows() {')[1].split('function instagramVideoDestination')[0]
+  const list = { innerHTML: '' }
+  const render = new Function('platforms', 'connections', 'session', 'providerObservations', '$', 'platformName', 'escapeHtml', 'function renderConnectRows() {' + source + ';renderConnectRows();')
+  render([{ platform: 'instagram', enabled: true }], [{ platform: 'instagram', status: 'needs_reauth' }], {}, { instagram: { connection: 'degraded', publishing: 'unknown' } }, () => list, () => 'Instagram', (value: string) => value)
+  expect(list.innerHTML).toContain('Reconnect')
+  expect(list.innerHTML).toContain('Provider is having trouble')
+})

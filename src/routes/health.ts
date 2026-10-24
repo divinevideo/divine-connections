@@ -672,6 +672,7 @@ export function renderHome(env: Env): string {
       let pubkey = null;
       let profile = null;
       let connections = [];
+      let providerObservations = {};
       let preferences = [];
       let instagramVideoDestinations = {};
       let preferenceSaves = Promise.resolve();
@@ -1018,15 +1019,18 @@ export function renderHome(env: Env): string {
         list.innerHTML = platforms.map((platform) => {
           const connection = connections.find((item) => item.platform === platform.platform && item.status === 'connected');
           const disabled = !session || !platform.enabled || !!connection;
-          const label = connection ? 'Connected' : platform.enabled ? 'Connect' : 'Waiting';
+          const reconnect = connections.some((item) => item.platform === platform.platform && item.status === 'needs_reauth');
+          const observation = providerObservations[platform.platform];
+          const trouble = observation?.connection === 'degraded' || observation?.publishing === 'degraded';
+          const label = connection ? 'Connected' : platform.enabled ? (reconnect ? 'Reconnect' : 'Connect') : 'Waiting';
           const accountLabel = connection
             ? (connection.externalAccountName || 'Connected account')
             : platform.enabled
-              ? 'Ready when you are.'
+              ? (reconnect ? 'Sign in again to resume publishing.' : 'Ready when you are.')
               : 'Provider keys are not configured yet.';
           return '<div class="connect-row">' +
             '<span><strong>' + escapeHtml(platformName(platform.platform)) + '</strong><small>' +
-            escapeHtml(accountLabel) +
+            escapeHtml(accountLabel + (trouble ? ' Provider is having trouble; connecting or publishing may fail.' : '')) +
             '</small></span>' +
             '<button class="mini-button" data-connect="' + escapeHtml(platform.platform) + '" ' + (disabled ? 'disabled' : '') + '>' + escapeHtml(label) + '</button>' +
           '</div>';
@@ -1323,6 +1327,8 @@ export function renderHome(env: Env): string {
         renderConnectRows();
         renderPreferenceRows();
         fetch('/provider-health').then(response => { if (!response.ok) throw new Error(); return response.json(); }).then(data => {
+          providerObservations = Object.fromEntries(data.platforms.map(provider => [provider.platform, provider]));
+          renderConnectRows();
           for (const provider of data.platforms) {
             const row = document.querySelector('[data-provider-status="' + provider.platform + '"]');
             if (!row || !provider.enabled) continue;
