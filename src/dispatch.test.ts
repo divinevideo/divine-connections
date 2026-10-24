@@ -131,7 +131,7 @@ describe('host dispatch', () => {
       expect(html).toContain('<title>Divine Crossposter</title>')
 
       const healthRes = await hostRequest(`${CROSSPOSTER}/health`, {}, dispatchEnv())
-      await expect(healthRes.json()).resolves.toEqual({ ok: true, service: 'divine-connections' })
+      await expect(healthRes.json()).resolves.toEqual({ ok: true, service: 'divine-connections', release: 'unknown' })
 
       const platformsRes = await hostRequest(`${CROSSPOSTER}/platforms?format=json`, {}, dispatchEnv())
       const body = (await platformsRes.json()) as { platforms: Array<{ platform: string; enabled: boolean }> }

@@ -1,0 +1,35 @@
+name: Production health
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check deployed release and operational readiness
+        env:
+          EXPECTED_RELEASE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for host in crossposter.divine.video verify.divine.video; do
+            curl --fail --silent --show-error --connect-timeout 5 --max-time 20 "https://$host/health" > "$RUNNER_TEMP/health.json"
+            jq -e --arg release "$EXPECTED_RELEASE" '.service == "divine-connections" and .release == $release' "$RUNNER_TEMP/health.json" > /dev/null
+          done
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 'https://crossposter.divine.video/readiness' > "$RUNNER_TEMP/readiness.json"
+          jq -e '.ok == true' "$RUNNER_TEMP/readiness.json" > /dev/null
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 'https://crossposter.divine.video/provider-health' > "$RUNNER_TEMP/providers.json"
+          jq -e 'all(.platforms[]; .enabled == false or (.connection != "degraded" and .publishing != "degraded"))' "$RUNNER_TEMP/providers.json" > /dev/null
+      - name: Notify failed production probe
+        if: failure()
+        env:
+          OPS_ALERT_WEBHOOK_URL: ${{ secrets.OPS_ALERT_WEBHOOK_URL }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -n "$OPS_ALERT_WEBHOOK_URL" || { echo '::error::Production probe failed and notification webhook is missing'; exit 1; }
+          payload="$(jq -cn --arg url "$RUN_URL" '{service:"divine-connections",issue:"production_probe_failed",runUrl:$url}')"
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 --retry 2 --header 'content-type: application/json' --data-binary "$payload" "$OPS_ALERT_WEBHOOK_URL"

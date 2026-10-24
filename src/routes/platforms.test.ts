@@ -41,7 +41,7 @@ describe('platforms route', () => {
     expect(html).toContain('di<span>V</span>ine Crossposter')
     expect(html).toContain('Provider status')
     expect(html).toContain('TikTok')
-    expect(html).toContain('Ready')
+    expect(html).toContain('Configured')
     expect(html).toContain('Waiting on keys')
     expect(html).toContain('Back to setup')
   })

@@ -1,5 +1,6 @@
 // ABOUTME: Manages provider account connections and crossposting settings.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
+import { recordDiagnostic, recordDiagnosticSafely } from './reliability'
 import { authenticateRequest } from '../auth/keycast'
 import {
   completeConnectionSetup,
@@ -104,10 +105,13 @@ function redirectWithResult(
   platform: Platform,
   result: 'connected' | 'failed',
   reason?: ConnectionFailureReason,
+  support?: string | null,
 ): string {
   const url = new URL(returnUrl)
   url.searchParams.set('connection', result)
   url.searchParams.set('platform', platform)
+  url.searchParams.delete('support')
+  if (support) url.searchParams.set('support', support)
   url.searchParams.delete('reason')
   if (reason) {
     url.searchParams.set('reason', reason)
@@ -169,6 +173,8 @@ export async function transitionAttempt(
     providerStatus: providerStatus(error),
     updatedAt: nowSeconds(),
   })
+  await recordDiagnostic(env, { reference: attemptId, platform, operation: 'connect', stage: status,
+    outcome: status === 'connected' ? 'succeeded' : status === 'expired' || status === 'provider_denied' ? 'abandoned' : 'failed', now: nowSeconds(), error })
   logAttemptTransition(attemptId, platform, status, failureCode, error)
 }
 
@@ -180,9 +186,9 @@ async function failureRedirect(
   error?: unknown,
 ): Promise<string> {
   const attemptId = attemptIdFromState(state)
-  await transitionAttempt(env, attemptId, state.platform, reason, reason, error).catch(() => undefined)
+  await transitionAttempt(env, attemptId, state.platform, reason, reason, error).catch(() => { console.error('operation_diagnostic_write_failed') })
   const redirectReason = attemptId || reason === 'provider_denied' ? reason : undefined
-  return redirectWithResult(state.returnUrl, redirectPlatform, 'failed', redirectReason)
+  return redirectWithResult(state.returnUrl, redirectPlatform, 'failed', redirectReason, attemptId)
 }
 
 export async function startConnection(
@@ -208,6 +214,8 @@ export async function startConnection(
   const attemptId = `oauth_attempt_${generateRandomId(16)}`
   const pkce = await generatePKCE()
   const expiresAt = now + OAUTH_STATE_TTL_SECONDS
+  const redirectUri = callbackRedirectUri(env, platform)
+  const clientId = new URL(adapter.buildAuthorizationUrl({ state, redirectUri, codeChallenge: pkce.challenge })).searchParams.get('client_id')
 
   await createOAuthAttempt(env.DB, {
     id: attemptId,
@@ -222,6 +230,7 @@ export async function startConnection(
   })
 
   try {
+    await recordDiagnostic(env, { reference: attemptId, platform, operation: 'connect', stage: 'authorization_started', outcome: 'started', now, configuration: { callbackUri: redirectUri, clientId } })
     await createOAuthState(env.DB, {
       stateId: state,
       pubkey,
@@ -230,7 +239,7 @@ export async function startConnection(
       returnUrl,
       createdAt: now,
       expiresAt,
-      metadataJson: JSON.stringify({ attemptId }),
+      metadataJson: JSON.stringify({ attemptId, redirectUri, clientId, release: env.RELEASE_SHA ?? 'unknown' }),
     })
   } catch (error) {
     await transitionAttempt(env, attemptId, platform, 'storage_failed', 'storage_failed', error).catch(() => undefined)
@@ -241,7 +250,7 @@ export async function startConnection(
     state,
     authorizationUrl: adapter.buildAuthorizationUrl({
       state,
-      redirectUri: callbackRedirectUri(env, platform),
+      redirectUri,
       codeChallenge: pkce.challenge,
     }),
   }
@@ -284,7 +293,14 @@ export async function completeConnectionCallback(
   let redirectUri: string
   try {
     adapter = getAdapter(env, platform)
-    redirectUri = callbackRedirectUri(env, platform)
+    const metadata = JSON.parse(state.metadataJson || '{}')
+    redirectUri = typeof metadata.redirectUri === 'string' ? metadata.redirectUri : callbackRedirectUri(env, platform)
+    if (adapter && metadata.clientId) {
+      const currentClient = new URL(adapter.buildAuthorizationUrl({ state: '', redirectUri })).searchParams.get('client_id')
+      if (currentClient !== metadata.clientId) {
+        return failureRedirect(env, state, platform, 'callback_failed', new PlatformAdapterError(platform, 'unknown_platform_error', 'OAuth configuration changed', undefined, { error: { message: 'OAuth application changed during login. Start a new connection.' } }))
+      }
+    }
   } catch {
     return failureRedirect(env, state, platform, 'callback_failed')
   }
@@ -366,6 +382,7 @@ export async function completeConnectionCallback(
       verificationIdentity: verificationIdentityForConnection(connectionInput),
     })
     if (attemptId) {
+      await recordDiagnosticSafely(env, { reference: attemptId, platform, operation: 'connect', stage: 'connected', outcome: 'succeeded', now })
       logAttemptTransition(attemptId, platform, 'connected', null)
     }
     return redirectWithResult(state.returnUrl, platform, 'connected')

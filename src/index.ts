@@ -3,6 +3,7 @@
 // and scheduled handlers.
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { operations } from './routes/operations'
 import { connections } from './routes/connections'
 import { crossposts } from './routes/crossposts'
 import { health } from './routes/health'
@@ -17,11 +18,13 @@ import { platformsInfoHandler } from './verify/platforms-info'
 import { webhooks } from './routes/webhooks'
 import { processCrosspostJob, PublisherRetryError } from './services/publisher'
 import { runAutoCrosspostReconciliation } from './services/reconciler'
+import { checkProviderReliability } from './services/reliability'
 import { runOperationalChecks } from './services/operations'
 import type { Env } from './types'
 
 // The crossposter publishing API, exactly as served today on crossposter.divine.video.
 const crossposterApp = new Hono<{ Bindings: Env }>()
+crossposterApp.route('/', operations)
 crossposterApp.route('/', health)
 crossposterApp.route('/', platforms)
 crossposterApp.route('/', connections)
@@ -39,7 +42,7 @@ verifierApp.route('/verify', verify)
 verifierApp.route('/', verified)
 verifierApp.route('/nip05', nip05)
 verifierApp.get('/platforms', platformsInfoHandler)
-verifierApp.get('/health', (c) => c.json({ status: 'ok', service: 'divine-connections', timestamp: Math.floor(Date.now() / 1000) }))
+verifierApp.get('/health', (c) => c.json({ status: 'ok', service: 'divine-connections', release: c.env.RELEASE_SHA ?? 'unknown', timestamp: Math.floor(Date.now() / 1000) }))
 verifierApp.route('/', connections)
 
 // Alias: POST /api/verify → single claim verification (divine-web compatibility)
@@ -109,6 +112,11 @@ export default {
     } catch (error) {
       failures.push(error)
     }
+    try {
+      const checkedAt = Math.floor(Date.now() / 1000)
+      await checkProviderReliability(env, checkedAt)
+      if (failures.length === 0) await env.DB.prepare('INSERT INTO reliability_monitor(id,checked_at) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET checked_at=excluded.checked_at').bind(checkedAt).run()
+    } catch (error) { failures.push(error) }
     if (failures.length === 1) throw failures[0]
     if (failures.length > 1) {
       throw new AggregateError(failures, 'scheduled reconciliation and operational checks failed')

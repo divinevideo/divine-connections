@@ -57,6 +57,7 @@ export class PlatformAdapterError extends Error {
     message: string,
     public readonly providerStatus?: number,
     public readonly providerResponse?: unknown,
+    public readonly providerEndpoint?: string,
   ) {
     super(message)
   }
@@ -86,11 +87,11 @@ export async function readProviderResponse(response: Response): Promise<unknown>
   }
 }
 
-export async function normalizeProviderError(platform: Platform, response: Response): Promise<PlatformAdapterError> {
+export async function normalizeProviderError(platform: Platform, response: Response, endpoint?: string): Promise<PlatformAdapterError> {
   const providerResponse = await readProviderResponse(response)
   let code: ErrorCode = 'unknown_platform_error'
 
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401 || response.status === 403 || (platform === 'instagram' && Number(asRecord(asRecord(providerResponse).error).code) === 190)) {
     code = 'needs_reauth'
   } else if (response.status === 429) {
     code = 'rate_limited'
@@ -98,7 +99,7 @@ export async function normalizeProviderError(platform: Platform, response: Respo
     code = 'media_rejected'
   }
 
-  return new PlatformAdapterError(platform, code, `${platform} provider request failed`, response.status, providerResponse)
+  return new PlatformAdapterError(platform, code, `${platform} provider request failed`, response.status, providerResponse, endpoint)
 }
 
 function normalizeTikTokErrorCode(providerResponse: unknown): ErrorCode | null {
@@ -126,15 +127,15 @@ function normalizeTikTokErrorCode(providerResponse: unknown): ErrorCode | null {
   return 'unknown_platform_error'
 }
 
-export async function expectProviderOk(platform: Platform, response: Response): Promise<unknown> {
+export async function expectProviderOk(platform: Platform, response: Response, endpoint?: string): Promise<unknown> {
   if (!response.ok) {
-    throw await normalizeProviderError(platform, response)
+    throw await normalizeProviderError(platform, response, endpoint)
   }
   const providerResponse = await readProviderResponse(response)
   if (platform === 'tiktok') {
     const code = normalizeTikTokErrorCode(providerResponse)
     if (code) {
-      throw new PlatformAdapterError(platform, code, `${platform} provider request failed`, response.status, providerResponse)
+      throw new PlatformAdapterError(platform, code, `${platform} provider request failed`, response.status, providerResponse, endpoint)
     }
   }
   return providerResponse

@@ -37,13 +37,13 @@ export function renderHome(env: Env): string {
   const platformRows = platforms
     .map(
       (platform) => `
-        <li class="platform-row">
+        <li class="platform-row" data-provider-status="${platform.platform}">
           <span class="platform-mark" aria-hidden="true"></span>
           <span>
             <strong>${platformName(platform.platform)}</strong>
-            <small>${platform.enabled ? 'Ready for opt-in publishing' : 'Waiting on provider keys'}</small>
+            <small>${platform.enabled ? 'Configured for opt-in publishing' : 'Waiting on provider keys'}</small>
           </span>
-          <span class="status ${platform.enabled ? 'ready' : 'waiting'}">${platform.enabled ? 'Ready' : 'Soon'}</span>
+          <span class="status ${platform.enabled ? 'ready' : 'waiting'}">${platform.enabled ? 'Configured' : 'Soon'}</span>
         </li>
       `,
     )
@@ -599,7 +599,7 @@ export function renderHome(env: Env): string {
           <div class="panel-head">
             <span>
               <strong>Publishing rails</strong>
-              <small>${readyCount} of ${platforms.length} providers ready</small>
+              <small>${readyCount} of ${platforms.length} providers configured</small>
             </span>
             <span class="count">${readyCount}/${platforms.length}</span>
           </div>
@@ -1323,6 +1323,14 @@ export function renderHome(env: Env): string {
         renderAuthControls();
         renderConnectRows();
         renderPreferenceRows();
+        fetch('/provider-health').then(response => { if (!response.ok) throw new Error(); return response.json(); }).then(data => {
+          for (const provider of data.platforms) {
+            const row = document.querySelector('[data-provider-status="' + provider.platform + '"]');
+            if (!row || !provider.enabled) continue;
+            row.querySelector('small').textContent = 'Connection: ' + provider.connection + '. Publishing: ' + provider.publishing + '.';
+            row.querySelector('.status').textContent = provider.connection === 'degraded' || provider.publishing === 'degraded' ? 'Having trouble' : 'Configured';
+          }
+        }).catch(() => { /* Configured is not a claim of observed health. */ });
         await handleLoginCallback();
         await refreshAccount().catch((err) => {
           if (session) setStatus(err.message || 'Could not load your crossposting setup.', 'error');
@@ -1332,12 +1340,13 @@ export function renderHome(env: Env): string {
           setStatus(platformName(params.get('platform')) + ' connected.');
         }
         if (params.get('connection') === 'failed') {
-          setStatus(connectionFailureMessage(params.get('platform'), params.get('reason')), 'error');
+          setStatus(connectionFailureMessage(params.get('platform'), params.get('reason')) + (params.get('support') ? ' Support reference: ' + params.get('support') : ''), 'error');
         }
         if (params.has('connection')) {
           params.delete('connection');
           params.delete('platform');
           params.delete('reason');
+          params.delete('support');
           window.history.replaceState({}, '', window.location.pathname + (params.toString() ? '?' + params.toString() : ''));
         }
       })();
@@ -1347,4 +1356,4 @@ export function renderHome(env: Env): string {
 }
 
 health.get('/', (c) => htmlResponse(renderHome(c.env)))
-health.get('/health', (c) => c.json({ ok: true, service: 'divine-connections' }))
+health.get('/health', (c) => c.json({ ok: true, service: 'divine-connections', release: c.env.RELEASE_SHA ?? 'unknown' }))
