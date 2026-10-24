@@ -252,6 +252,7 @@ async function scheduleRetry(
       errorMessage: message,
       nextRetryAt: null,
     })
+    await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: code, outcome: 'failed', now })
     return null
   }
 
@@ -530,6 +531,7 @@ export async function processCrosspostJob(
       errorCode: 'not_connected',
       errorMessage: 'platform is not enabled',
     })
+    await recordDiagnosticSafely(env, { reference: existing.id, platform: existing.platform, operation: 'publish', stage: 'platform_disabled', outcome: 'failed', now })
     return { status: 'failed' }
   }
 
