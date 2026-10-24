@@ -692,11 +692,10 @@ export function renderHome(env: Env): string {
 
       function connectionFailureMessage(platform, reason) {
         if (reason === 'provider_denied') return platformName(platform) + ' authorization was canceled or denied.';
-        if (platform !== 'x') return 'Platform connection failed. Try again when you are ready.';
-        if (reason === 'callback_failed') return 'X did not return a usable authorization response. Try again.';
-        if (reason === 'token_exchange_failed') return 'X did not complete authorization. Check the callback setting and try again.';
-        if (reason === 'account_lookup_failed') return 'X authorized, but the account could not be loaded. Try again.';
-        if (reason === 'storage_failed') return 'X authorized, but Crossposter could not save the connection. Try again.';
+        if (reason === 'callback_failed') return platformName(platform) + ' did not finish sign-in. Start a new connection.';
+        if (reason === 'token_exchange_failed') return platformName(platform) + ' could not finish connecting. Contact support with the reference below.';
+        if (reason === 'account_lookup_failed') return platformName(platform) + ' authorized, but the account could not be loaded. Contact support with the reference below.';
+        if (reason === 'storage_failed') return platformName(platform) + ' authorized, but we could not save the connection. Try again.';
         return 'Platform connection failed. Try again when you are ready.';
       }
 
