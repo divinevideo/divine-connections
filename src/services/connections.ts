@@ -174,14 +174,14 @@ export async function transitionAttempt(
     providerStatus: providerStatus(error),
     updatedAt: nowSeconds(),
   })
+  logAttemptTransition(attemptId, platform, status, failureCode, error)
   const diagnostic = providerErrorDiagnostics(error)
   const invalidGrant = status === 'token_exchange_failed' && (
     diagnostic?.type === 'invalid_grant' ||
     /invalid (?:authorization |verification )?code|error validating verification code|code (?:has expired|has been used)/i.test(diagnostic?.message ?? '')
   )
-  await recordDiagnostic(env, { reference: attemptId, platform, operation: 'connect', stage: status,
+  await recordDiagnosticSafely(env, { reference: attemptId, platform, operation: 'connect', stage: status,
     outcome: status === 'connected' ? 'succeeded' : status === 'expired' || status === 'provider_denied' || (status === 'callback_failed' && !error) || invalidGrant ? 'abandoned' : 'failed', now: nowSeconds(), error })
-  logAttemptTransition(attemptId, platform, status, failureCode, error)
 }
 
 async function failureRedirect(
@@ -192,7 +192,7 @@ async function failureRedirect(
   error?: unknown,
 ): Promise<string> {
   const attemptId = attemptIdFromState(state)
-  await transitionAttempt(env, attemptId, state.platform, reason, reason, error).catch(() => { console.error('operation_diagnostic_write_failed') })
+  await transitionAttempt(env, attemptId, state.platform, reason, reason, error).catch(() => { console.error('oauth_attempt_transition_failed') })
   const redirectReason = attemptId || reason === 'provider_denied' ? reason : undefined
   return redirectWithResult(state.returnUrl, redirectPlatform, 'failed', redirectReason, attemptId)
 }

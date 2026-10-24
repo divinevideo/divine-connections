@@ -524,6 +524,22 @@ describe('connection routes', () => {
     }
   })
 
+  it('preserves transition logs when diagnostic storage fails', async () => {
+    await createTrackedState(db, { attemptId: 'oauth_attempt_diagnostic_failure', stateId: 'synthetic-state-diagnostic' })
+    await db.prepare("CREATE TRIGGER reject_diagnostic_insert BEFORE INSERT ON operation_diagnostics BEGIN SELECT RAISE(FAIL, 'forced'); END").run()
+    const logSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      await expect(transitionAttempt(testEnv(db), 'oauth_attempt_diagnostic_failure', 'x', 'callback_failed', 'callback_failed')).resolves.toBeUndefined()
+      expect(logSpy).toHaveBeenCalledOnce()
+      expect(JSON.parse(String(logSpy.mock.calls[0][0]))).toMatchObject({ event: 'oauth_callback_transition', status: 'callback_failed' })
+      expect(errorSpy).toHaveBeenCalledWith('operation_diagnostic_write_failed')
+      expect(await getOAuthAttempt(db, 'oauth_attempt_diagnostic_failure')).toMatchObject({ status: 'callback_failed' })
+    } finally {
+      await db.prepare('DROP TRIGGER reject_diagnostic_insert').run()
+    }
+  })
+
   it('records storage_failed without a connection or preference when token encryption is misconfigured', async () => {
     await createTrackedState(db, { attemptId: 'oauth_attempt_bad_key', stateId: 'private-state-bad-key' })
     mockSuccessfulXCallback(fetchMock)
