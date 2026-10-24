@@ -52,12 +52,12 @@ describe('health route', () => {
     expect(html).toContain('clearRejectedSession(resp)')
     expect(html).not.toContain("url.searchParams.set('default_register', 'true')")
     expect(html).toContain("platformName(platform) + ' authorization was canceled or denied.'")
-    expect(html).toContain('X did not return a usable authorization response. Try again.')
-    expect(html).toContain('X did not complete authorization. Check the callback setting and try again.')
-    expect(html).toContain('X authorized, but the account could not be loaded. Try again.')
-    expect(html).toContain('X authorized, but Crossposter could not save the connection. Try again.')
+    expect(html).toContain(' did not finish sign-in. Start a new connection.')
+    expect(html).toContain(' could not finish connecting. Contact support with the reference below.')
+    expect(html).toContain(' authorized, but the account could not be loaded. Contact support with the reference below.')
+    expect(html).toContain(' authorized, but we could not save the connection. Try again.')
     expect(html).toContain('Platform connection failed. Try again when you are ready.')
-    expect(html).toContain("if (platform !== 'x') return 'Platform connection failed. Try again when you are ready.';")
+    expect(html).not.toContain("if (platform !== 'x') return 'Platform connection failed. Try again when you are ready.';")
     expect(html).toContain("connectionFailureMessage(params.get('platform'), params.get('reason'))")
     expect(html).not.toContain("platformName(params.get('platform')) + ' authorization was canceled or denied.'")
   })
@@ -66,7 +66,7 @@ describe('health route', () => {
     const res = await crossposterRequest('/health', env())
 
     expect(res.status).toBe(200)
-    await expect(res.json()).resolves.toEqual({ ok: true, service: 'divine-connections' })
+    await expect(res.json()).resolves.toEqual({ ok: true, service: 'divine-connections', release: 'unknown' })
   })
 })
 
@@ -75,7 +75,7 @@ describe('scheduled handler', () => {
     const db = await applyMigrations()
     const now = Math.floor(Date.now() / 1_000)
     const trace: string[] = []
-    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x' }))
+    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x', tokenExpiresAt: now + 86400 }))
     await createOrGetJob(
       db,
       job({
@@ -130,7 +130,7 @@ describe('scheduled handler', () => {
   it('consumes a one-shot notification only after metrics and webhook success', async () => {
     const db = await applyMigrations()
     const now = Math.floor(Date.now() / 1_000)
-    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x' }))
+    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x', tokenExpiresAt: now + 86400 }))
     await createOrGetJob(
       db,
       job({
@@ -198,7 +198,7 @@ describe('scheduled handler', () => {
   it('runs the watchdog after reconciliation enqueue fails and rethrows the reconciliation failure', async () => {
     const db = await applyMigrations()
     const now = Math.floor(Date.now() / 1_000)
-    await upsertConnection(db, connection())
+    await upsertConnection(db, connection({ tokenExpiresAt: now + 86400 }))
     await createOrGetJob(db, job({ id: 'queued_for_watchdog', expiresAt: now + 10_000 }))
     const reconciliationFailure = new Error('reconciliation queue unavailable')
     const trace: string[] = []
@@ -238,7 +238,7 @@ describe('scheduled handler', () => {
   it('keeps reconciler recovery persisted when the watchdog webhook fails', async () => {
     const db = await applyMigrations()
     const now = Math.floor(Date.now() / 1_000)
-    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x' }))
+    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x', tokenExpiresAt: now + 86400 }))
     await createOrGetJob(
       db,
       job({
@@ -282,7 +282,7 @@ describe('scheduled handler', () => {
   it('surfaces both reconciliation and watchdog failures', async () => {
     const db = await applyMigrations()
     const now = Math.floor(Date.now() / 1_000)
-    await upsertConnection(db, connection())
+    await upsertConnection(db, connection({ tokenExpiresAt: now + 86400 }))
     await createOrGetJob(db, job({ id: 'queued_for_double_failure', expiresAt: now + 10_000 }))
     const reconciliationFailure = new Error('reconciliation failed')
     const watchdogFailure = new Error('watchdog metrics failed')

@@ -1,3 +1,6 @@
+// ABOUTME: Serves provider configuration and aggregate observed health.
+// ABOUTME: Keeps individual connection diagnostics behind authentication.
+import { providerHealth } from '../services/reliability'
 import { Hono } from 'hono'
 import { getProviderSummaries } from '../platforms/registry'
 import type { Env } from '../types'
@@ -49,9 +52,9 @@ function renderPlatforms(env: Env): string {
           <span class="mark" aria-hidden="true"></span>
           <span>
             <strong>${platformName(platform.platform)}</strong>
-            <small>${platform.enabled ? 'Ready for opt-in publishing' : 'Waiting on keys'}</small>
+            <small>${platform.enabled ? 'Configured for opt-in publishing' : 'Waiting on keys'}</small>
           </span>
-          <span class="status ${platform.enabled ? 'ready' : 'waiting'}">${platform.enabled ? 'Ready' : 'Waiting'}</span>
+          <span class="status ${platform.enabled ? 'ready' : 'waiting'}">${platform.enabled ? 'Configured' : 'Waiting'}</span>
         </li>
       `,
     )
@@ -315,7 +318,7 @@ function renderPlatforms(env: Env): string {
               <a class="button secondary" href="/platforms?format=json">JSON</a>
             </div>
           </div>
-          <div class="count" aria-label="${readyCount} of ${summaries.length} providers ready">${readyCount}/${summaries.length}</div>
+          <div class="count" aria-label="${readyCount} of ${summaries.length} providers configured">${readyCount}/${summaries.length}</div>
         </section>
 
         <ul class="platforms">
@@ -347,3 +350,8 @@ platforms.get('/platforms', (c) => {
 // JSON alias of /platforms?format=json; survives on the fallback host where the
 // verifier surface owns /platforms.
 platforms.get('/api/providers', (c) => platformJsonResponse({ platforms: getProviderSummaries(c.env) }))
+
+platforms.get('/provider-health', async c => {
+  const health = await providerHealth(c.env.DB, Math.floor(Date.now()/1000))
+  return platformJsonResponse({ platforms: getProviderSummaries(c.env).map(p => ({ ...p, connection: health[p.platform].connection, publishing: health[p.platform].publishing })) })
+})

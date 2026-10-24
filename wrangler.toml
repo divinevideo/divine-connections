@@ -73,3 +73,10 @@ dead_letter_queue = "divine-crossposter-jobs-dlq"
 # split deployment risked cannot happen.
 [triggers]
 crons = ["* * * * *"]
+
+# Retain sanitized console diagnostics; OAuth callback query strings must not
+# be captured by automatic invocation logs.
+[observability]
+enabled = true
+[observability.logs]
+invocation_logs = false

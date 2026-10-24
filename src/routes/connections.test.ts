@@ -340,7 +340,7 @@ describe('connection routes', () => {
 
     expect(response.status).toBe(302)
     expect(response.headers.get('location')).toBe(
-      'https://divine.video/settings/crossposting?connection=failed&platform=x&reason=provider_denied',
+      `https://divine.video/settings/crossposting?connection=failed&platform=x&support=${attemptId}&reason=provider_denied`,
     )
     await expect(
       db.prepare('SELECT state_id FROM oauth_states WHERE state_id = ?').bind(stateId).first(),
@@ -367,7 +367,7 @@ describe('connection routes', () => {
     )
 
     expect(response.headers.get('location')).toBe(
-      'https://divine.video/settings/crossposting?connection=failed&platform=x&reason=callback_failed',
+      'https://divine.video/settings/crossposting?connection=failed&platform=x&support=oauth_attempt_server_error&reason=callback_failed',
     )
     const attempt = await getOAuthAttempt(db, attemptId)
     expect(attempt).toMatchObject({ status: 'callback_failed', failureCode: 'callback_failed', providerStatus: null })

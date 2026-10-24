@@ -37,13 +37,13 @@ export function renderHome(env: Env): string {
   const platformRows = platforms
     .map(
       (platform) => `
-        <li class="platform-row">
+        <li class="platform-row" data-provider-status="${platform.platform}">
           <span class="platform-mark" aria-hidden="true"></span>
           <span>
             <strong>${platformName(platform.platform)}</strong>
-            <small>${platform.enabled ? 'Ready for opt-in publishing' : 'Waiting on provider keys'}</small>
+            <small>${platform.enabled ? 'Configured for opt-in publishing' : 'Waiting on provider keys'}</small>
           </span>
-          <span class="status ${platform.enabled ? 'ready' : 'waiting'}">${platform.enabled ? 'Ready' : 'Soon'}</span>
+          <span class="status ${platform.enabled ? 'ready' : 'waiting'}">${platform.enabled ? 'Configured' : 'Soon'}</span>
         </li>
       `,
     )
@@ -599,7 +599,7 @@ export function renderHome(env: Env): string {
           <div class="panel-head">
             <span>
               <strong>Publishing rails</strong>
-              <small>${readyCount} of ${platforms.length} providers ready</small>
+              <small>${readyCount} of ${platforms.length} providers configured</small>
             </span>
             <span class="count">${readyCount}/${platforms.length}</span>
           </div>
@@ -672,6 +672,7 @@ export function renderHome(env: Env): string {
       let pubkey = null;
       let profile = null;
       let connections = [];
+      let providerObservations = {};
       let preferences = [];
       let instagramVideoDestinations = {};
       let preferenceSaves = Promise.resolve();
@@ -692,11 +693,10 @@ export function renderHome(env: Env): string {
 
       function connectionFailureMessage(platform, reason) {
         if (reason === 'provider_denied') return platformName(platform) + ' authorization was canceled or denied.';
-        if (platform !== 'x') return 'Platform connection failed. Try again when you are ready.';
-        if (reason === 'callback_failed') return 'X did not return a usable authorization response. Try again.';
-        if (reason === 'token_exchange_failed') return 'X did not complete authorization. Check the callback setting and try again.';
-        if (reason === 'account_lookup_failed') return 'X authorized, but the account could not be loaded. Try again.';
-        if (reason === 'storage_failed') return 'X authorized, but Crossposter could not save the connection. Try again.';
+        if (reason === 'callback_failed') return platformName(platform) + ' did not finish sign-in. Start a new connection.';
+        if (reason === 'token_exchange_failed') return platformName(platform) + ' could not finish connecting. Contact support with the reference below.';
+        if (reason === 'account_lookup_failed') return platformName(platform) + ' authorized, but the account could not be loaded. Contact support with the reference below.';
+        if (reason === 'storage_failed') return platformName(platform) + ' authorized, but we could not save the connection. Try again.';
         return 'Platform connection failed. Try again when you are ready.';
       }
 
@@ -1019,15 +1019,18 @@ export function renderHome(env: Env): string {
         list.innerHTML = platforms.map((platform) => {
           const connection = connections.find((item) => item.platform === platform.platform && item.status === 'connected');
           const disabled = !session || !platform.enabled || !!connection;
-          const label = connection ? 'Connected' : platform.enabled ? 'Connect' : 'Waiting';
+          const reconnect = connections.some((item) => item.platform === platform.platform && item.status === 'needs_reauth');
+          const observation = providerObservations[platform.platform];
+          const trouble = observation?.connection === 'degraded' || observation?.publishing === 'degraded';
+          const label = connection ? 'Connected' : platform.enabled ? (reconnect ? 'Reconnect' : 'Connect') : 'Waiting';
           const accountLabel = connection
             ? (connection.externalAccountName || 'Connected account')
             : platform.enabled
-              ? 'Ready when you are.'
+              ? (reconnect ? 'Sign in again to resume publishing.' : 'Ready when you are.')
               : 'Provider keys are not configured yet.';
           return '<div class="connect-row">' +
             '<span><strong>' + escapeHtml(platformName(platform.platform)) + '</strong><small>' +
-            escapeHtml(accountLabel) +
+            escapeHtml(accountLabel + (trouble ? ' Provider is having trouble; connecting or publishing may fail.' : '')) +
             '</small></span>' +
             '<button class="mini-button" data-connect="' + escapeHtml(platform.platform) + '" ' + (disabled ? 'disabled' : '') + '>' + escapeHtml(label) + '</button>' +
           '</div>';
@@ -1323,6 +1326,16 @@ export function renderHome(env: Env): string {
         renderAuthControls();
         renderConnectRows();
         renderPreferenceRows();
+        fetch('/provider-health').then(response => { if (!response.ok) throw new Error(); return response.json(); }).then(data => {
+          providerObservations = Object.fromEntries(data.platforms.map(provider => [provider.platform, provider]));
+          renderConnectRows();
+          for (const provider of data.platforms) {
+            const row = document.querySelector('[data-provider-status="' + provider.platform + '"]');
+            if (!row || !provider.enabled) continue;
+            row.querySelector('small').textContent = 'Connection: ' + provider.connection + '. Publishing: ' + provider.publishing + '.';
+            row.querySelector('.status').textContent = provider.connection === 'degraded' || provider.publishing === 'degraded' ? 'Having trouble' : 'Configured';
+          }
+        }).catch(() => { /* Configured is not a claim of observed health. */ });
         await handleLoginCallback();
         await refreshAccount().catch((err) => {
           if (session) setStatus(err.message || 'Could not load your crossposting setup.', 'error');
@@ -1332,12 +1345,13 @@ export function renderHome(env: Env): string {
           setStatus(platformName(params.get('platform')) + ' connected.');
         }
         if (params.get('connection') === 'failed') {
-          setStatus(connectionFailureMessage(params.get('platform'), params.get('reason')), 'error');
+          setStatus(connectionFailureMessage(params.get('platform'), params.get('reason')) + (params.get('support') ? ' Support reference: ' + params.get('support') : ''), 'error');
         }
         if (params.has('connection')) {
           params.delete('connection');
           params.delete('platform');
           params.delete('reason');
+          params.delete('support');
           window.history.replaceState({}, '', window.location.pathname + (params.toString() ? '?' + params.toString() : ''));
         }
       })();
@@ -1347,4 +1361,4 @@ export function renderHome(env: Env): string {
 }
 
 health.get('/', (c) => htmlResponse(renderHome(c.env)))
-health.get('/health', (c) => c.json({ ok: true, service: 'divine-connections' }))
+health.get('/health', (c) => c.json({ ok: true, service: 'divine-connections', release: c.env.RELEASE_SHA ?? 'unknown' }))
