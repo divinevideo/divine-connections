@@ -69,7 +69,7 @@ export async function checkProviderReliability(env: Env, now: number): Promise<v
   await pruneDiagnostics(env.DB, now)
   const providers = await providerHealth(env.DB, now)
   const expired = await allPrepared<{ platform: Platform; status: string; count: number }>(env.DB,
-    "SELECT platform,status,COUNT(*) AS count FROM connections WHERE status='needs_reauth' OR (status='connected' AND token_expires_at IS NOT NULL AND token_expires_at < ?) GROUP BY platform,status", now)
+    "SELECT platform,status,COUNT(*) AS count FROM connections WHERE status='needs_reauth' OR (status='connected' AND token_expires_at IS NOT NULL AND token_expires_at < ? AND (encrypted_refresh_token IS NULL OR platform='instagram')) GROUP BY platform,status", now)
   const issues: { key: string; platform: Platform; issue: string; count: number }[] = []
   for (const [platform, h] of Object.entries(providers) as [Platform, typeof providers[Platform]][]) {
     if (h.connection === 'degraded') issues.push({ key: platform+':connect', platform, issue:'connection_failures', count:h.connectionFailures })

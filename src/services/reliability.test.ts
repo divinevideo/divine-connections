@@ -97,3 +97,28 @@ it('alerts when a connection requires reauthorization, including after refresh f
  expect(fetchMock).toHaveBeenCalledOnce()
  expect(String(fetchMock.mock.calls[0][1]?.body)).toContain('reconnect_required')
 })
+
+it('does not alert for idle access tokens that can refresh on the next publish', async () => {
+ const db = await applyMigrations()
+ const { upsertConnection } = await import('../db/connections')
+ const { connection } = await import('../db/test-helpers')
+ for (const platform of ['x', 'youtube', 'tiktok'] as const) {
+  await upsertConnection(db, connection({ id: 'conn_' + platform, platform, tokenExpiresAt: 1000 }))
+ }
+ const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock)
+ const env = { DB: db, OPS_ALERT_WEBHOOK_URL: 'https://alerts.example/secret' } as Env
+ await checkProviderReliability(env, 1001)
+ await checkProviderReliability(env, 5000)
+ expect(fetchMock).not.toHaveBeenCalled()
+})
+
+it.each(['x', 'instagram'] as const)('alerts when expired %s credentials cannot refresh', async platform => {
+ const db = await applyMigrations()
+ const { upsertConnection } = await import('../db/connections')
+ const { connection } = await import('../db/test-helpers')
+ await upsertConnection(db, connection({ platform, tokenExpiresAt: 1000, encryptedRefreshToken: platform === 'instagram' ? 'synthetic-self-refresh-token' : null }))
+ const fetchMock = vi.fn(async () => new Response()); vi.stubGlobal('fetch', fetchMock)
+ await checkProviderReliability({ DB: db, OPS_ALERT_WEBHOOK_URL: 'https://alerts.example/secret' } as Env, 1001)
+ expect(fetchMock).toHaveBeenCalledOnce()
+ expect(String(fetchMock.mock.calls[0][1]?.body)).toContain('expired_credentials')
+})
