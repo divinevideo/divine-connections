@@ -123,3 +123,24 @@ it.each([
  expect((await recentDiagnostics(env.DB)).filter(row => row.stage === 'token_exchange_failed' && row.outcome === 'abandoned')).toHaveLength(3)
  expect((await providerHealth(env.DB, Math.floor(Date.now() / 1000))).instagram.connection).toBe('unknown')
 })
+
+it.each([
+ { error: { code: 100, error_subcode: 36008, type: 'OAuthException', message: 'Error validating verification code. Please make sure your redirect_uri is identical to the one you used in the OAuth dialog request.' } },
+ { error: 'invalid_grant', error_description: 'The redirect_uri does not match the authorization request.' },
+])('preserves provider configuration failures in health and alerts: %j', async body => {
+ for (let i = 0; i < 3; i++) {
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ result: PUBKEY_A })))
+  const started = await startConnection(new Request('https://crossposter.divine.video/connections/instagram/start', { headers: { authorization: 'Bearer example' } }), env, 'instagram', 'https://crossposter.divine.video/')
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json(body, { status: 400 })))
+  await completeConnectionCallback(env, 'instagram', 'synthetic-code', started.state)
+ }
+ const { checkProviderReliability, providerHealth } = await import('../services/reliability')
+ const now = Math.floor(Date.now() / 1000)
+ expect((await providerHealth(env.DB, now)).instagram.connection).toBe('degraded')
+ const alerts = vi.fn<typeof fetch>(async () => new Response())
+ vi.stubGlobal('fetch', alerts)
+ env.OPS_ALERT_WEBHOOK_URL = 'https://alerts.example/secret'
+ await checkProviderReliability(env, now)
+ expect(alerts).toHaveBeenCalledOnce()
+ expect(String(alerts.mock.calls[0][1]?.body)).toContain('connection_failures')
+})

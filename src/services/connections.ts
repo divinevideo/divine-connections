@@ -176,7 +176,8 @@ export async function transitionAttempt(
   })
   logAttemptTransition(attemptId, platform, status, failureCode, error)
   const diagnostic = providerErrorDiagnostics(error)
-  const invalidGrant = status === 'token_exchange_failed' && (
+  const configurationError = diagnostic?.subcode === 36008 || /redirect_uri|redirect uri|callback/i.test(diagnostic?.message ?? '')
+  const invalidGrant = status === 'token_exchange_failed' && !configurationError && (
     diagnostic?.type === 'invalid_grant' ||
     /invalid (?:authorization |verification )?code|error validating verification code|code (?:has expired|has been used)/i.test(diagnostic?.message ?? '')
   )
