@@ -215,7 +215,7 @@ export async function startConnection(
   const pkce = await generatePKCE()
   const expiresAt = now + OAUTH_STATE_TTL_SECONDS
   const redirectUri = callbackRedirectUri(env, platform)
-  const clientId = new URL(adapter.buildAuthorizationUrl({ state, redirectUri, codeChallenge: pkce.challenge })).searchParams.get('client_id')
+  const clientId = new URL(adapter.buildAuthorizationUrl({ state, redirectUri, codeChallenge: pkce.challenge })).searchParams.get(platform === 'tiktok' ? 'client_key' : 'client_id')
 
   await createOAuthAttempt(env.DB, {
     id: attemptId,
@@ -296,7 +296,7 @@ export async function completeConnectionCallback(
     const metadata = JSON.parse(state.metadataJson || '{}')
     redirectUri = typeof metadata.redirectUri === 'string' ? metadata.redirectUri : callbackRedirectUri(env, platform)
     if (adapter && metadata.clientId) {
-      const currentClient = new URL(adapter.buildAuthorizationUrl({ state: '', redirectUri })).searchParams.get('client_id')
+      const currentClient = new URL(adapter.buildAuthorizationUrl({ state: '', redirectUri })).searchParams.get(platform === 'tiktok' ? 'client_key' : 'client_id')
       if (currentClient !== metadata.clientId) {
         return failureRedirect(env, state, platform, 'callback_failed', new PlatformAdapterError(platform, 'unknown_platform_error', 'OAuth configuration changed', undefined, { error: { message: 'OAuth application changed during login. Start a new connection.' } }))
       }

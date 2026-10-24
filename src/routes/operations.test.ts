@@ -86,3 +86,13 @@ it('reports readiness failure for a missing scheduler heartbeat or alert configu
  expect(ready.status).toBe(200)
  expect(await ready.text()).not.toContain('alerts.example')
 })
+
+it('pins TikTok client_key and rejects a changed TikTok application before token exchange',async()=>{
+ Object.assign(env,{ENABLE_TIKTOK:'true',TIKTOK_CLIENT_KEY:'first-client',TIKTOK_CLIENT_SECRET:'test-secret'})
+ const started=await startConnection(new Request('https://crossposter.divine.video/connections/tiktok/start',{headers:{authorization:'Bearer example'}}),env,'tiktok','https://crossposter.divine.video/')
+ env.TIKTOK_CLIENT_KEY='second-client'
+ const provider=vi.fn();vi.stubGlobal('fetch',provider)
+ const result=new URL(await completeConnectionCallback(env,'tiktok','secret-code',started.state))
+ expect(result.searchParams.get('reason')).toBe('callback_failed')
+ expect(provider).not.toHaveBeenCalled()
+})
