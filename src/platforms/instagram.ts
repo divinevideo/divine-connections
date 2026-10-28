@@ -49,11 +49,11 @@ function instagramExternalAccountId(providerResponse: Record<string, unknown>): 
 
 async function postForm(url: string, body: URLSearchParams): Promise<Record<string, unknown>> {
   const response = await fetch(url, { method: 'POST', body })
-  return asRecord(await expectProviderOk('instagram', response))
+  return asRecord(await expectProviderOk('instagram', response, url === SHORT_LIVED_TOKEN_URL ? 'code_exchange' : url.endsWith('/media_publish') ? 'media_publish' : 'media_create'))
 }
 
 async function getJson(url: URL): Promise<Record<string, unknown>> {
-  return asRecord(await expectProviderOk('instagram', await fetch(url.toString())))
+  return asRecord(await expectProviderOk('instagram', await fetch(url.toString()), url.pathname === '/access_token' ? 'long_lived_exchange' : url.pathname === '/refresh_access_token' ? 'token_refresh' : 'account_or_media_lookup'))
 }
 
 async function fetchContainerStatus(creationId: string, accessToken: string): Promise<Record<string, unknown>> {
@@ -61,7 +61,6 @@ async function fetchContainerStatus(creationId: string, accessToken: string): Pr
   url.searchParams.set('fields', 'status_code,status')
   url.searchParams.set('access_token', accessToken)
   const status = await getJson(url)
-  console.log(`instagram container ${creationId} status ${String(status.status_code ?? 'unknown')}`)
   if (status.status_code === 'ERROR' || status.status_code === 'EXPIRED') {
     throw new PlatformAdapterError(
       'instagram',

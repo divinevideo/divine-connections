@@ -1,5 +1,6 @@
 // ABOUTME: Claims queued crosspost jobs and publishes them through provider adapters.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
+import { recordDiagnosticSafely } from './reliability'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, markConnectionNeedsReauth, upsertConnection } from '../db/connections'
 import {
@@ -171,8 +172,10 @@ async function accessTokenForJob(
         token: sanitizeProviderMetadata(refreshed.metadata),
       }),
     })
+    await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'refresh', stage: 'token_refresh', outcome: 'succeeded', now })
     return refreshed.accessToken
   } catch (error) {
+    await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'refresh', stage: 'token_refresh', outcome: 'failed', now, error })
     if (error instanceof PlatformAdapterError && error.code === 'needs_reauth') {
       await updateOwnedJob(env, job.id, ownership, {
         status: 'needs_reauth',
@@ -249,6 +252,7 @@ async function scheduleRetry(
       errorMessage: message,
       nextRetryAt: null,
     })
+    await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: code, outcome: 'failed', now })
     return null
   }
 
@@ -293,6 +297,7 @@ async function markResult(
       status: result.status,
       now,
     })
+    await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: 'posted', outcome: 'succeeded', now })
     return { status: 'posted' }
   }
 
@@ -526,6 +531,7 @@ export async function processCrosspostJob(
       errorCode: 'not_connected',
       errorMessage: 'platform is not enabled',
     })
+    await recordDiagnosticSafely(env, { reference: existing.id, platform: existing.platform, operation: 'publish', stage: 'platform_disabled', outcome: 'failed', now })
     return { status: 'failed' }
   }
 
@@ -551,7 +557,10 @@ export async function processCrosspostJob(
   try {
     try {
       const accessToken = await accessTokenForJob(env, job, ownership, now)
-      if (!accessToken) return { status: 'needs_reauth' }
+      if (!accessToken) {
+        await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: 'needs_reauth', outcome: 'failed', now })
+        return { status: 'needs_reauth' }
+      }
 
       const isProcessingPoll = existing.status === 'processing'
       if (isProcessingPoll) {
@@ -587,6 +596,7 @@ export async function processCrosspostJob(
       return markResult(env, job, result, now, ownership)
     } catch (error) {
       if (error instanceof PublishClaimLostError) throw error
+      await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: dispatchFenceRaised ? 'ambiguous_dispatch' : existing.status === 'processing' ? 'poll' : 'publish', outcome: 'failed', now, error })
       if (dispatchFenceRaised) {
         return await handleAmbiguousPostResult(env, job, ownership, error, now)
       }

@@ -35,3 +35,8 @@ describe('platform adapter errors', () => {
     ).resolves.toMatchObject({ code: 'unknown_platform_error', providerStatus: 500, platform: 'x' })
   })
 })
+
+it('recognizes Instagram invalid or expired tokens even when Meta returns HTTP 400', async () => {
+  const error = await normalizeProviderError('instagram', Response.json({ error: { code: 190, error_subcode: 463, message: 'Session has expired' } }, { status: 400 }))
+  expect(error.code).toBe('needs_reauth')
+})

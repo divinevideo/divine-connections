@@ -340,7 +340,7 @@ describe('connection routes', () => {
 
     expect(response.status).toBe(302)
     expect(response.headers.get('location')).toBe(
-      'https://divine.video/settings/crossposting?connection=failed&platform=x&reason=provider_denied',
+      `https://divine.video/settings/crossposting?connection=failed&platform=x&support=${attemptId}&reason=provider_denied`,
     )
     await expect(
       db.prepare('SELECT state_id FROM oauth_states WHERE state_id = ?').bind(stateId).first(),
@@ -367,7 +367,7 @@ describe('connection routes', () => {
     )
 
     expect(response.headers.get('location')).toBe(
-      'https://divine.video/settings/crossposting?connection=failed&platform=x&reason=callback_failed',
+      'https://divine.video/settings/crossposting?connection=failed&platform=x&support=oauth_attempt_server_error&reason=callback_failed',
     )
     const attempt = await getOAuthAttempt(db, attemptId)
     expect(attempt).toMatchObject({ status: 'callback_failed', failureCode: 'callback_failed', providerStatus: null })
@@ -521,6 +521,22 @@ describe('connection routes', () => {
       expect(logSpy).not.toHaveBeenCalled()
     } finally {
       await db.prepare('DROP TRIGGER reject_attempt_transition').run()
+    }
+  })
+
+  it('preserves transition logs when diagnostic storage fails', async () => {
+    await createTrackedState(db, { attemptId: 'oauth_attempt_diagnostic_failure', stateId: 'synthetic-state-diagnostic' })
+    await db.prepare("CREATE TRIGGER reject_diagnostic_insert BEFORE INSERT ON operation_diagnostics BEGIN SELECT RAISE(FAIL, 'forced'); END").run()
+    const logSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      await expect(transitionAttempt(testEnv(db), 'oauth_attempt_diagnostic_failure', 'x', 'callback_failed', 'callback_failed')).resolves.toBeUndefined()
+      expect(logSpy).toHaveBeenCalledOnce()
+      expect(JSON.parse(String(logSpy.mock.calls[0][0]))).toMatchObject({ event: 'oauth_callback_transition', status: 'callback_failed' })
+      expect(errorSpy).toHaveBeenCalledWith('operation_diagnostic_write_failed')
+      expect(await getOAuthAttempt(db, 'oauth_attempt_diagnostic_failure')).toMatchObject({ status: 'callback_failed' })
+    } finally {
+      await db.prepare('DROP TRIGGER reject_diagnostic_insert').run()
     }
   })
 

@@ -48,6 +48,8 @@ export type Env = {
   CACHE_KV: KVNamespace
   CROSSPOST_QUEUE: Queue<{ jobId: string }>
   CROSSPOST_DLQ?: Queue<unknown>
+  RELEASE_SHA?: string
+  OPS_OPERATOR_PUBKEYS?: string
   OPS_ALERT_WEBHOOK_URL?: string
   KEYCAST_URL: string
   FUNNELCAKE_URL: string

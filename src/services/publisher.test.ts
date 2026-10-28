@@ -735,6 +735,20 @@ describe('publisher service', () => {
       errorCode: 'processing_timeout',
       nextRetryAt: null,
     })
+    const { recentDiagnostics } = await import('./reliability')
+    expect(await recentDiagnostics(db, 'job_1')).toEqual([
+      expect.objectContaining({ stage: 'processing_timeout', outcome: 'failed', operation: 'publish' }),
+    ])
+  })
+
+  it('retains disabled-platform failures without asking the user to reconnect', async () => {
+    await seedConnectedJob(db, 'tiktok')
+    await expect(processCrosspostJob(env(db), 'job_1', { now: 2_000 })).resolves.toEqual({ status: 'failed' })
+    const { recentDiagnostics } = await import('./reliability')
+    expect(await recentDiagnostics(db, 'job_1')).toEqual([
+      expect.objectContaining({ stage: 'platform_disabled', outcome: 'failed' }),
+    ])
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('keeps processing jobs in poll mode after transient poll failures', async () => {
