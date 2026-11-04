@@ -28,19 +28,24 @@ export { app }
 
 // verify.divine.video served the verification copy this worker used to carry.
 // It now redirects every request to the live verifier, keeping the path. The
-// query is dropped: sign-in codes and crossposting connection details still
-// arrive here in it, and must not be passed to another service. 308 keeps a
-// POST and its body. Preflights and redirects carry the CORS headers this host
-// sent before, so browser callers reach the redirect. /connections answers 404
-// instead: a crossposting page left open here makes authenticated calls there,
-// and they must not follow to the verifier.
+// query is dropped on / only, the one path sign-in codes arrive at (Keycast
+// returns to the bare origin), so a code is never passed to another service.
+// Every other path keeps its query, since GET calls such as /nip05/verify
+// answer 400 without it. 308 keeps a POST and its body. Preflights and
+// redirects carry the CORS headers this host sent before, so browser callers
+// reach the redirect. /connections answers 404 instead: a crossposting page
+// left open here makes authenticated calls there, and they must not follow to
+// the verifier.
 // TODO(#2): remove once Keycast no longer returns here and the domain is dropped.
 const LEGACY_VERIFY_HOST = 'verify.divine.video'
 const legacyVerifyApp = new Hono<{ Bindings: Env }>()
 legacyVerifyApp.use('*', cors({ origin: '*' }))
 // Hono's /connections/* also matches /connections itself.
 legacyVerifyApp.all('/connections/*', (c) => c.notFound())
-legacyVerifyApp.all('*', (c) => c.redirect(`https://verifier.divine.video${new URL(c.req.url).pathname}`, 308))
+legacyVerifyApp.all('*', (c) => {
+  const { pathname, search } = new URL(c.req.url)
+  return c.redirect(`https://verifier.divine.video${pathname}${pathname === '/' ? '' : search}`, 308)
+})
 
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> | Response {

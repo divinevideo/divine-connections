@@ -73,12 +73,21 @@ describe('every host', () => {
       expect(response.headers.get('location')).toBe(`https://verifier.divine.video/verified/${PUBKEY_A}`)
     })
 
-    // Sign-in codes and crossposting connection details arrive in the query
-    // here; they must not be handed to another service.
-    it('drops the query string when redirecting', async () => {
-      const response = await hostRequest(`${VERIFY}/?code=abc&state=x`, {}, testEnv())
+    // Sign-in codes arrive at / only; they must not be handed to another
+    // service.
+    it('drops the query string on /', async () => {
+      const response = await hostRequest(`${VERIFY}/?code=x&state=y`, {}, testEnv())
       expect(response.status).toBe(308)
       expect(response.headers.get('location')).toBe('https://verifier.divine.video/')
+    })
+
+    // GET calls elsewhere need their query to be answered at all.
+    it('keeps the query string on any other path', async () => {
+      const response = await hostRequest(`${VERIFY}/nip05/verify?name=alice&pubkey=${PUBKEY_A}`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe(
+        `https://verifier.divine.video/nip05/verify?name=alice&pubkey=${PUBKEY_A}`,
+      )
     })
 
     it('redirects a POST with 308 so the method and body are kept', async () => {
