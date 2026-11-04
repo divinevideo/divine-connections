@@ -14,14 +14,13 @@ const ANY_HOSTS = [
   'unknown.example',
 ]
 
-function dispatchEnv(overrides: Partial<Env> = {}): Env {
+function testEnv(): Env {
   return {
     ...(env as Env),
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
     TOKEN_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef',
-    ...overrides,
   }
 }
 
@@ -40,15 +39,11 @@ describe('every host', () => {
   })
 
   describe('crossposter.divine.video', () => {
-    it('serves its own home, health, and platforms shapes', async () => {
-      const home = await hostRequest(`${CROSSPOSTER}/`, {}, dispatchEnv())
-      const html = await home.text()
-      expect(html).toContain('<title>Divine Crossposter</title>')
-
-      const healthRes = await hostRequest(`${CROSSPOSTER}/health`, {}, dispatchEnv())
+    it('serves its own health and platforms shapes', async () => {
+      const healthRes = await hostRequest(`${CROSSPOSTER}/health`, {}, testEnv())
       await expect(healthRes.json()).resolves.toEqual({ ok: true, service: 'divine-connections', release: 'unknown' })
 
-      const platformsRes = await hostRequest(`${CROSSPOSTER}/platforms?format=json`, {}, dispatchEnv())
+      const platformsRes = await hostRequest(`${CROSSPOSTER}/platforms?format=json`, {}, testEnv())
       const body = (await platformsRes.json()) as { platforms: Array<{ platform: string; enabled: boolean }> }
       expect(Array.isArray(body.platforms)).toBe(true)
       expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube'])
@@ -56,7 +51,7 @@ describe('every host', () => {
 
     // CI's post-deploy check reads /api/providers.
     it('serves provider JSON at /api/providers', async () => {
-      const providers = await hostRequest(`${CROSSPOSTER}/api/providers`, {}, dispatchEnv())
+      const providers = await hostRequest(`${CROSSPOSTER}/api/providers`, {}, testEnv())
       expect(providers.status).toBe(200)
       const body = (await providers.json()) as { platforms: Array<{ platform: string }> }
       expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube'])
@@ -64,7 +59,7 @@ describe('every host', () => {
   })
 
   it.each(ANY_HOSTS)('serves the crossposter home page on %s', async (host) => {
-    const home = await hostRequest(`https://${host}/`, {}, dispatchEnv())
+    const home = await hostRequest(`https://${host}/`, {}, testEnv())
     expect(home.status).toBe(200)
     await expect(home.text()).resolves.toContain('<title>Divine Crossposter</title>')
   })
@@ -82,7 +77,7 @@ describe('every host', () => {
       ['GET', '/docs'],
       ['POST', '/api/verify'],
     ] as const) {
-      const response = await hostRequest(`https://${host}${path}`, { method }, dispatchEnv())
+      const response = await hostRequest(`https://${host}${path}`, { method }, testEnv())
       expect(response.status, `${method} ${path}`).toBe(404)
     }
   })
