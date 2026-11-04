@@ -2,7 +2,7 @@
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '../index'
-import { upsertConnection } from '../db/connections'
+import { listConnections, upsertConnection } from '../db/connections'
 import { getPreferences, setPreference } from '../db/preferences'
 import { applyMigrations, connection, PUBKEY_A } from '../db/test-helpers'
 import type { Env } from '../types'
@@ -67,6 +67,44 @@ describe('preference routes', () => {
     expect(await first.json()).toMatchObject({ preference: { instagramDestination: 'story' } })
     const second = await put({ mode: 'automatic' })
     expect(await second.json()).toMatchObject({ preference: { mode: 'automatic', instagramDestination: 'story' } })
+  })
+
+  it('saves Stories before connecting without creating a connection or opting into posting', async () => {
+    fetchMock.mockImplementation(async () => authResponse())
+    const response = await app.request('/preferences/instagram', {
+      method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'disabled', instagramDestination: 'story' }),
+    }, testEnv(db))
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ preference: {
+      mode: 'disabled', instagramDestination: 'story', connectionId: null, automaticEnabledAt: null,
+    } })
+    expect(await getPreferences(db, PUBKEY_A)).toMatchObject([{ mode: 'disabled', instagramDestination: 'story', connectionId: null }])
+    expect(await listConnections(db, PUBKEY_A)).toEqual([])
+  })
+
+  it.each(['manual', 'automatic'])('does not enable %s posting while saving Stories without a connection', async (mode) => {
+    fetchMock.mockImplementation(async () => authResponse())
+    const response = await app.request('/preferences/instagram', {
+      method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+      body: JSON.stringify({ mode, instagramDestination: 'story' }),
+    }, testEnv(db))
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: { code: 'not_connected' } })
+    expect(await getPreferences(db, PUBKEY_A)).toEqual([])
+    expect(await listConnections(db, PUBKEY_A)).toEqual([])
+  })
+
+  it('requires sign-in before saving Stories with posting off', async () => {
+    const response = await app.request('/preferences/instagram', {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'disabled', instagramDestination: 'story' }),
+    }, testEnv(db))
+
+    expect(response.status).toBe(401)
+    expect(await getPreferences(db, PUBKEY_A)).toEqual([])
   })
 
   it.each([['instagram', 'post'], ['instagram', null], ['x', 'story']])('rejects invalid destination %s %s without saving a preference', async (platform, instagramDestination) => {

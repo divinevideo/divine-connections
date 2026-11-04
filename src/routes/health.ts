@@ -1109,7 +1109,7 @@ export function renderHome(env: Env): string {
               youtubePrivacySelect(pref?.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}', 'data-youtube-default="true"', disabled) + '</label>' +
               '<small>Private is visible only to you. Unlisted can be viewed with a link. Public is visible to everyone. YouTube decides whether a video is a Short.</small></span>' : '') +
             (platform.platform === 'instagram' ? '<span style="grid-column: 1 / -1"><label>Default destination ' +
-              instagramDestinationSelect(pref?.instagramDestination, 'data-instagram-default="true"', disabled) + '</label>' +
+              instagramDestinationSelect(pref?.instagramDestination, 'data-instagram-default="true"', false) + '</label>' +
               '<small>Professional Instagram account required (Creator or Business). Stories expire after 24 hours, without the caption or a link sticker. Story videos must be 3–60 seconds and at most 100 MB. Reel + feed also shares your Reel to the feed.</small></span>' : '') +
           '</div>';
         }).join('');
@@ -1177,8 +1177,11 @@ export function renderHome(env: Env): string {
 
       function jobLabel(job) {
         if (job.status === 'posted') {
+          const linkLabel = job.platform === 'instagram' && job.instagramDestination
+            ? (job.instagramDestination === 'story' ? 'View Story' : 'View Reel')
+            : 'View post';
           const link = job.externalPostUrl
-            ? ' <a href="' + escapeHtml(job.externalPostUrl) + '" target="_blank" rel="noopener">View post</a>'
+            ? ' <a href="' + escapeHtml(job.externalPostUrl) + '" target="_blank" rel="noopener">' + linkLabel + '</a>'
             : '';
           if (job.platform === 'youtube') {
             const privacy = job.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}';
@@ -1192,6 +1195,11 @@ export function renderHome(env: Env): string {
         if (job.platform === 'tiktok' && job.status === 'processing') return 'TikTok is processing the video. This may take a few minutes…';
         if (job.platform === 'youtube' && job.status === 'processing') return 'YouTube is processing the upload…';
         if (job.status === 'failed') {
+          if (job.errorCode === 'provider_payment_required') {
+            return job.platform === 'x'
+              ? 'The X developer app is out of API credits. Contact Divine support to resolve this.'
+              : escapeHtml(platformName(job.platform)) + ' requires a billing update. Contact Divine support to resolve this.';
+          }
           return escapeHtml(platformName(job.platform)) + ' failed: ' + escapeHtml(job.errorMessage || job.errorCode || 'unknown error');
         }
         if (job.status === 'needs_reauth') {
@@ -1507,7 +1515,8 @@ export function renderHome(env: Env): string {
               const mode = preferences.find((item) => item.platform === 'youtube')?.mode || 'disabled';
               await updatePreference('youtube', mode, undefined, value);
             } else if (target.dataset.instagramDefault) {
-              const mode = preferences.find((item) => item.platform === 'instagram')?.mode || 'disabled';
+              const connected = connections.some((item) => item.platform === 'instagram' && item.status === 'connected');
+              const mode = connected ? (preferences.find((item) => item.platform === 'instagram')?.mode || 'disabled') : 'disabled';
               await updatePreference('instagram', mode, value);
             } else {
               await updatePreference(platform, value);

@@ -132,6 +132,29 @@ describe('provider adapters', () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain('access_token=short-token')
   })
 
+  it('exchanges the documented wrapped Instagram token response without losing account metadata', async () => {
+    const adapter = createInstagramAdapter({ clientId: 'client', clientSecret: 'secret' })
+    fetchMock.mockResolvedValueOnce(Response.json({ data: [{ access_token: 'wrapped-short-token', user_id: 'synthetic-ig-user', permissions: ['instagram_business_basic'] }] }))
+      .mockResolvedValueOnce(Response.json({ access_token: 'long-token', expires_in: 5184000 }))
+
+    const result = await adapter.exchangeCallback({ code: 'auth-code', redirectUri: 'https://crossposter.divine.video/connections/instagram/callback' })
+    expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('access_token')).toBe('wrapped-short-token')
+    expect(result).toMatchObject({ accessToken: 'long-token', metadata: { user_id: 'synthetic-ig-user', permissions: ['instagram_business_basic'] } })
+  })
+
+  it.each([
+    {}, { access_token: '' }, { access_token: 123 }, { data: [] },
+    { data: [{ access_token: 'first' }, { access_token: 'second' }] },
+    { access_token: 'flat', data: [{ access_token: 'wrapped' }] },
+  ])('rejects missing or ambiguous short-lived Instagram tokens before long-lived exchange: %j', async (response) => {
+    const adapter = createInstagramAdapter({ clientId: 'client', clientSecret: 'secret' })
+    fetchMock.mockResolvedValueOnce(Response.json(response))
+    await expect(adapter.exchangeCallback({ code: 'auth-code', redirectUri: 'https://crossposter.divine.video/connections/instagram/callback' })).rejects.toMatchObject({
+      platform: 'instagram', providerEndpoint: 'code_exchange', code: 'unknown_platform_error',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('refreshes a long-lived Instagram token with the ig_refresh_token grant', async () => {
     const adapter = createInstagramAdapter({ clientId: 'client', clientSecret: 'secret' })
     fetchMock.mockResolvedValueOnce(

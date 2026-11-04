@@ -64,6 +64,7 @@ export type JobStatus =
 
 export type ErrorCode =
   | 'rate_limited'
+  | 'provider_payment_required'
   | 'needs_reauth'
   | 'media_rejected'
   | 'platform_review_required'
