@@ -1,5 +1,4 @@
 import { allPrepared, changes, firstPrepared, runPrepared } from './client'
-import { upsertOauthVerificationStatement } from './verifications'
 import type { ConnectionRecord, ConnectionStatus, Platform, PreferenceRecord } from '../types'
 
 type ConnectionRow = {
@@ -97,7 +96,6 @@ export async function completeConnectionSetup(
     preference: PreferenceRecord
     attemptId: string | null
     now: number
-    verificationIdentity: string
   },
 ): Promise<void> {
   const { connection, preference } = input
@@ -169,15 +167,7 @@ export async function completeConnectionSetup(
         WHERE id = ? AND pubkey = ? AND platform = ? AND status = 'started'`,
       )
       .bind(input.now, input.attemptId, connection.pubkey, connection.platform),
-    upsertOauthVerificationStatement(db, {
-      pubkey: connection.pubkey,
-      platform: connection.platform,
-      identity: input.verificationIdentity,
-      connectionId: connection.id,
-      verifiedAt: input.now,
-    }),
   ])
-
 }
 
 export async function listConnections(db: D1Database, pubkey: string): Promise<ConnectionRecord[]> {

@@ -627,7 +627,7 @@ export function renderHome(env: Env): string {
             </div>
             <div class="flow-section">
               <h3>2. Connect a platform</h3>
-              <p>Connecting an account here also verifies it on your Divine profile, so people can see the account is really yours. Anything not ready yet says so.</p>
+              <p>Connect the account you want to crosspost to. Anything not ready yet says so.</p>
               <div class="connect-list" id="connect-list"></div>
             </div>
           </div>

@@ -8,7 +8,6 @@ import {
   markConnectionNeedsReauth,
   upsertConnection,
 } from './connections'
-import { findLiveVerification } from './verifications'
 import { applyMigrations, connection, PUBKEY_A, PUBKEY_B } from './test-helpers'
 
 describe('connection repository', () => {
@@ -42,7 +41,7 @@ describe('connection repository', () => {
     await expect(getActiveConnectionForPlatform(db, PUBKEY_A, 'tiktok')).resolves.toMatchObject({ id: 'conn_tiktok' })
   })
 
-  it('writes the oauth verification row inside the connection setup batch', async () => {
+  it('completes connection setup without writing a verifications row', async () => {
     await completeConnectionSetup(db, {
       connection: connection({ id: 'conn_1', platform: 'x' }),
       preference: {
@@ -56,15 +55,11 @@ describe('connection repository', () => {
       },
       attemptId: null,
       now: 1_500,
-      verificationIdentity: 'alice',
     })
 
-    await expect(findLiveVerification(db, PUBKEY_A, 'x', 'alice')).resolves.toMatchObject({
-      method: 'oauth',
-      connectionId: 'conn_1',
-      verifiedAt: 1_500,
-      revokedAt: null,
-    })
+    await expect(getConnection(db, 'conn_1', PUBKEY_A)).resolves.toMatchObject({ platform: 'x', status: 'connected' })
+    const { results } = await db.prepare('SELECT * FROM verifications').all()
+    expect(results).toEqual([])
   })
 
   it('marks reauth and disconnects owned connections', async () => {

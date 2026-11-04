@@ -9,12 +9,12 @@ import type { Env } from '../types'
 let env: Env
 const ctx = {} as ExecutionContext
 beforeEach(async () => {
- env = { DB: await applyMigrations(), CACHE_KV: {} as KVNamespace, CROSSPOST_QUEUE: {} as Queue<{jobId:string}>, KEYCAST_URL:'https://login.divine.video', FUNNELCAKE_URL:'https://api.divine.video', OAUTH_REDIRECT_BASE:'https://crossposter.divine.video', TOKEN_ENCRYPTION_KEY:'0123456789abcdef0123456789abcdef', ENABLE_INSTAGRAM:'true', INSTAGRAM_CLIENT_ID:'example-client', INSTAGRAM_CLIENT_SECRET:'example-secret', OPS_OPERATOR_PUBKEYS:PUBKEY_A }
+ env = { DB: await applyMigrations(), CROSSPOST_QUEUE: {} as Queue<{jobId:string}>, KEYCAST_URL:'https://login.divine.video', FUNNELCAKE_URL:'https://api.divine.video', OAUTH_REDIRECT_BASE:'https://crossposter.divine.video', TOKEN_ENCRYPTION_KEY:'0123456789abcdef0123456789abcdef', ENABLE_INSTAGRAM:'true', INSTAGRAM_CLIENT_ID:'example-client', INSTAGRAM_CLIENT_SECRET:'example-secret', OPS_OPERATOR_PUBKEYS:PUBKEY_A }
  vi.stubGlobal('fetch', vi.fn(async () => Response.json({result:PUBKEY_A})))
 })
 afterEach(() => vi.unstubAllGlobals())
-function request(path: string, auth = true, host = 'crossposter.divine.video') {
- return worker.fetch(new Request('https://'+host+path, {headers:auth?{authorization:'Bearer example'}:{}}), env, ctx)
+function request(path: string, auth = true) {
+ return worker.fetch(new Request('https://crossposter.divine.video'+path, {headers:auth?{authorization:'Bearer example'}:{}}), env, ctx)
 }
 describe('operations access', () => {
  it('requires authentication and explicit operator authorization', async () => {
@@ -23,7 +23,6 @@ describe('operations access', () => {
   expect((await request('/operations/data')).status).toBe(403)
   env.OPS_OPERATOR_PUBKEYS=PUBKEY_A
   expect((await request('/operations/data')).status).toBe(200)
-  expect((await request('/operations/data', true, 'verify.divine.video')).status).toBe(404)
  })
  it('serves a data-free page and non-cacheable private data', async () => {
   await recordDiagnostic(env,{reference:'private-reference',platform:'instagram',operation:'connect',stage:'failed',outcome:'failed',now:1000})
@@ -43,7 +42,8 @@ describe('OAuth diagnostics', () => {
    calls.push(new URLSearchParams(options.body).get('redirect_uri') ?? '')
    return Response.json({error_type:'OAuthException',code:400,error_message:'The redirect_uri does not match the authorization request.'},{status:400})
   }))
-  env.OAUTH_REDIRECT_BASE='https://verify.divine.video'
+  // A different base after start: the exchange must still send the pinned callback.
+  env.OAUTH_REDIRECT_BASE='https://changed-base.example'
   const result=new URL(await completeConnectionCallback(env,'instagram','secret-code',started.state))
   expect(calls).toEqual([initial])
   expect(result.searchParams.get('support')).toMatch(/^oauth_attempt_/)

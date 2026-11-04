@@ -62,9 +62,6 @@ describe('validation helpers', () => {
     expect(assertAllowedReturnUrl('https://crossposter.divine.video/connected', redirectBase)).toBe(
       'https://crossposter.divine.video/connected',
     )
-    expect(assertAllowedReturnUrl('https://verifier.divine.video/', redirectBase)).toBe(
-      'https://verifier.divine.video/',
-    )
     expect(assertAllowedReturnUrl('http://localhost:8787/callback', redirectBase)).toBe(
       'http://localhost:8787/callback',
     )
@@ -72,16 +69,15 @@ describe('validation helpers', () => {
       'http://127.0.0.1:8787/callback',
     )
 
+    expectThrowStatus(() => assertAllowedReturnUrl('http://divine.video/settings/crossposting', redirectBase), 400)
     expectThrowStatus(() => assertAllowedReturnUrl('https://evil.example/settings', redirectBase), 400)
     expectThrowStatus(() => assertAllowedReturnUrl('not a url', redirectBase), 400)
   })
 })
 
-// verify.divine.video is where the merged worker actually serves the
-// verification UI, and the landing page sends window.location.origin as the
-// return url. It was missing from this allowlist, so Quick Connect failed with
-// "invalid return url" for every user the moment the hostname moved.
-describe('assertAllowedReturnUrl accepts both verifier hostnames', () => {
+// These hostnames belonged to the identity-verification copy this worker no
+// longer serves, so a return URL on them is refused like any other host.
+describe('assertAllowedReturnUrl refuses the retired verifier hostnames', () => {
   const redirectBase = 'https://crossposter.divine.video'
 
   it.each([
@@ -89,16 +85,15 @@ describe('assertAllowedReturnUrl accepts both verifier hostnames', () => {
     'https://verify.divine.video/',
     'https://verify.divine.video/#verify-here',
     'https://verifier.divine.video',
-  ])('accepts %s', (url) => {
-    expect(assertAllowedReturnUrl(url, redirectBase)).toBe(url)
+    'https://verifier.divine.video/',
+  ])('refuses %s', (url) => {
+    expectThrowStatus(() => assertAllowedReturnUrl(url, redirectBase), 400)
   })
 
-  it('still refuses a lookalike host', () => {
-    expect(() => assertAllowedReturnUrl('https://verify.divine.video.evil.test/', redirectBase)).toThrow()
-    expect(() => assertAllowedReturnUrl('https://notverify.divine.video/', redirectBase)).toThrow()
-  })
-
-  it('still requires https for divine origins', () => {
-    expect(() => assertAllowedReturnUrl('http://verify.divine.video/', redirectBase)).toThrow()
+  it('still accepts the crossposter and Divine hosts', () => {
+    expect(assertAllowedReturnUrl('https://crossposter.divine.video/', redirectBase)).toBe(
+      'https://crossposter.divine.video/',
+    )
+    expect(assertAllowedReturnUrl('https://divine.video/', redirectBase)).toBe('https://divine.video/')
   })
 })

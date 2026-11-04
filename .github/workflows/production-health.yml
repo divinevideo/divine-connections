@@ -16,10 +16,8 @@ jobs:
           EXPECTED_RELEASE: ${{ github.sha }}
         run: |
           set -euo pipefail
-          for host in crossposter.divine.video verify.divine.video; do
-            curl --fail --silent --show-error --connect-timeout 5 --max-time 20 "https://$host/health" > "$RUNNER_TEMP/health.json"
-            jq -e --arg release "$EXPECTED_RELEASE" '.service == "divine-connections" and .release == $release' "$RUNNER_TEMP/health.json" > /dev/null
-          done
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 'https://crossposter.divine.video/health' > "$RUNNER_TEMP/health.json"
+          jq -e --arg release "$EXPECTED_RELEASE" '.service == "divine-connections" and .release == $release' "$RUNNER_TEMP/health.json" > /dev/null
           curl --fail --silent --show-error --connect-timeout 5 --max-time 20 'https://crossposter.divine.video/readiness' > "$RUNNER_TEMP/readiness.json"
           jq -e '.ok == true' "$RUNNER_TEMP/readiness.json" > /dev/null
           curl --fail --silent --show-error --connect-timeout 5 --max-time 20 'https://crossposter.divine.video/provider-health' > "$RUNNER_TEMP/providers.json"

@@ -1,5 +1,7 @@
 # divine-connections: merged identity verification + crossposting core
 
+> **Note (2026-11).** The copy of identity verification this design added to this repo has been removed for now. Verification runs in the verifier service at `verifier.divine.video` (`divinevideo/divine-identify-verification-service`), and how its code joins this repo is being worked out in divinevideo/divine-connections#2.
+
 Date: 2026-07-28
 Status: fresh-eyes reviewed, pre-implementation
 Decision owner: Rabble

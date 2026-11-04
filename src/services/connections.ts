@@ -12,7 +12,6 @@ import {
 import { createOAuthAttempt, updateOAuthAttempt } from '../db/oauth-attempts'
 import { consumeOAuthState, createOAuthState } from '../db/oauth-states'
 import { disablePreferenceForConnectionStatement, getPreferences, setPreference } from '../db/preferences'
-import { revokeVerificationsForConnectionStatement } from '../db/verifications'
 import { loadConfig, oauthRedirectBase } from '../config'
 import { getAdapter } from '../platforms/registry'
 import { PlatformAdapterError } from '../platforms/adapter'
@@ -386,7 +385,6 @@ export async function completeConnectionCallback(
       },
       attemptId,
       now,
-      verificationIdentity: verificationIdentityForConnection(connectionInput),
     })
     if (attemptId) {
       await recordDiagnosticSafely(env, { reference: attemptId, platform, operation: 'connect', stage: 'connected', outcome: 'succeeded', now })
@@ -396,14 +394,6 @@ export async function completeConnectionCallback(
   } catch (error) {
     return failureRedirect(env, state, platform, 'storage_failed', error)
   }
-}
-
-// Verification identity per platform: YouTube proves the channel (UC… id);
-// the other OAuth providers prove the human handle stored as the account name.
-export function verificationIdentityForConnection(connection: ConnectionRecord): string {
-  return connection.platform === 'youtube'
-    ? connection.externalAccountId
-    : connection.externalAccountName
 }
 
 export async function listConnectionSummaries(request: Request, env: Env): Promise<ConnectionSummary[]> {
@@ -442,7 +432,6 @@ export async function disconnectOwnedConnection(
   await env.DB.batch([
     disconnectConnectionStatement(env.DB, { id: connection.id, pubkey, now }),
     disablePreferenceForConnectionStatement(env.DB, { pubkey, platform, connectionId: connection.id, now }),
-    revokeVerificationsForConnectionStatement(env.DB, { connectionId: connection.id, pubkey, now }),
   ])
   return { disconnected: true }
 }

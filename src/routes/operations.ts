@@ -1,5 +1,5 @@
 // ABOUTME: Provides an operator-only diagnostic view and owner-scoped support lookups.
-// ABOUTME: Keeps private failure details off public and verifier surfaces.
+// ABOUTME: Keeps private failure details off public pages.
 import { Hono } from 'hono'
 import { authenticateRequest } from '../auth/keycast'
 import { providerHealth, recentDiagnostics } from '../services/reliability'

@@ -347,8 +347,7 @@ platforms.get('/platforms', (c) => {
   return htmlResponse(renderPlatforms(c.env))
 })
 
-// JSON alias of /platforms?format=json; survives on the fallback host where the
-// verifier surface owns /platforms.
+// JSON alias of /platforms?format=json. CI's post-deploy check reads it.
 platforms.get('/api/providers', (c) => platformJsonResponse({ platforms: getProviderSummaries(c.env) }))
 
 platforms.get('/provider-health', async c => {

@@ -4,7 +4,6 @@ import { listConnections, upsertConnection } from '../db/connections'
 import { createOAuthAttempt, getOAuthAttempt } from '../db/oauth-attempts'
 import { createOAuthState } from '../db/oauth-states'
 import { getPreferences, setPreference } from '../db/preferences'
-import { findLiveVerification, upsertOauthVerificationStatement } from '../db/verifications'
 import { NIP98_TEST_PUBKEY, nip98Header, signNip98Event } from '../auth/test-helpers'
 import { applyMigrations, connection, PUBKEY_A } from '../db/test-helpers'
 import { decryptToken } from '../utils/crypto'
@@ -14,7 +13,7 @@ import type { Env, Platform } from '../types'
 function testEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
     DB: db,
-    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
@@ -95,6 +94,13 @@ function rejectPostBatchConnectionRead(db: D1Database): D1Database {
       return typeof value === 'function' ? value.bind(target) : value
     },
   })
+}
+
+// Badge records belong to the separate verifier service, so connecting and
+// disconnecting a crossposting account must leave this table alone.
+async function verificationRows(db: D1Database): Promise<Record<string, unknown>[]> {
+  const { results } = await db.prepare('SELECT * FROM verifications ORDER BY pubkey, platform, identity_key').all()
+  return results
 }
 
 describe('connection routes', () => {
@@ -600,60 +606,77 @@ describe('connection routes', () => {
     expect(response.headers.get('location')).toContain('connection=connected')
   })
 
-  it('writes a live oauth verification row after a successful X callback', async () => {
-    await createTrackedState(db, { attemptId: 'oauth_attempt_verify_x', stateId: 'private-state-verify-x' })
-    mockSuccessfulXCallback(fetchMock)
+  // Titled through %s, which prints the name bare; $name would add quotes.
+  it.each([
+    {
+      name: 'X',
+      platform: 'x' as const,
+      externalAccountId: 'x-account-1',
+      overrides: {},
+      mockProvider: (fetchMock: ReturnType<typeof vi.fn>) => mockSuccessfulXCallback(fetchMock),
+    },
+    {
+      name: 'YouTube',
+      platform: 'youtube' as const,
+      externalAccountId: 'UCdivinechannel123',
+      overrides: { ENABLE_YOUTUBE: 'true', GOOGLE_CLIENT_ID: 'google-client', GOOGLE_CLIENT_SECRET: 'google-secret' },
+      mockProvider: (fetchMock: ReturnType<typeof vi.fn>) =>
+        fetchMock
+          .mockResolvedValueOnce(
+            Response.json({
+              access_token: 'google-access-token',
+              refresh_token: 'google-refresh-token',
+              expires_in: 3_600,
+              scope: 'https://www.googleapis.com/auth/youtube.upload',
+            }),
+          )
+          .mockResolvedValueOnce(
+            Response.json({ items: [{ id: 'UCdivinechannel123', snippet: { title: 'Divine Channel' } }] }),
+          ),
+    },
+  ].map((testCase) => [testCase.name, testCase] as const))('a completed %s connect writes no verifications row', async (_name, testCase) => {
+    const attemptId = `oauth_attempt_no_badge_${testCase.platform}`
+    const stateId = `private-state-no-badge-${testCase.platform}`
+    await createTrackedState(db, { attemptId, stateId, platform: testCase.platform })
+    testCase.mockProvider(fetchMock)
 
     const response = await app.request(
-      '/connections/x/callback?code=private-auth-code&state=private-state-verify-x',
+      `/connections/${testCase.platform}/callback?code=private-auth-code&state=${stateId}`,
+      {},
+      testEnv(db, testCase.overrides),
+    )
+
+    expect(response.headers.get('location')).toContain('connection=connected')
+    await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([
+      { platform: testCase.platform, externalAccountId: testCase.externalAccountId, status: 'connected' },
+    ])
+    await expect(getOAuthAttempt(db, attemptId)).resolves.toMatchObject({ status: 'connected' })
+    await expect(verificationRows(db)).resolves.toEqual([])
+  })
+
+  it('reconnecting the same account succeeds and writes no verifications row', async () => {
+    await createTrackedState(db, { attemptId: 'oauth_attempt_first', stateId: 'private-state-first' })
+    await createTrackedState(db, { attemptId: 'oauth_attempt_again', stateId: 'private-state-again' })
+    mockSuccessfulXCallback(fetchMock)
+    mockSuccessfulXCallback(fetchMock)
+
+    const first = await app.request(
+      '/connections/x/callback?code=private-auth-code&state=private-state-first',
+      {},
+      testEnv(db),
+    )
+    const [original] = await listConnections(db, PUBKEY_A)
+    const again = await app.request(
+      '/connections/x/callback?code=private-auth-code&state=private-state-again',
       {},
       testEnv(db),
     )
 
-    expect(response.headers.get('location')).toContain('connection=connected')
-    const [stored] = await listConnections(db, PUBKEY_A)
-    await expect(findLiveVerification(db, PUBKEY_A, 'x', 'divine')).resolves.toMatchObject({
-      method: 'oauth',
-      connectionId: stored.id,
-      revokedAt: null,
-    })
-  })
-
-  it('verifies YouTube by channel id, not channel title', async () => {
-    await createTrackedState(db, {
-      attemptId: 'oauth_attempt_verify_youtube',
-      stateId: 'private-state-verify-youtube',
-      platform: 'youtube',
-    })
-    fetchMock
-      .mockResolvedValueOnce(
-        Response.json({
-          access_token: 'google-access-token',
-          refresh_token: 'google-refresh-token',
-          expires_in: 3_600,
-          scope: 'https://www.googleapis.com/auth/youtube.upload',
-        }),
-      )
-      .mockResolvedValueOnce(
-        Response.json({ items: [{ id: 'UCdivinechannel123', snippet: { title: 'Divine Channel' } }] }),
-      )
-
-    const response = await app.request(
-      '/connections/youtube/callback?code=private-auth-code&state=private-state-verify-youtube',
-      {},
-      testEnv(db, {
-        ENABLE_YOUTUBE: 'true',
-        GOOGLE_CLIENT_ID: 'google-client',
-        GOOGLE_CLIENT_SECRET: 'google-secret',
-      }),
-    )
-
-    expect(response.headers.get('location')).toContain('connection=connected')
-    await expect(findLiveVerification(db, PUBKEY_A, 'youtube', 'UCdivinechannel123')).resolves.toMatchObject({
-      method: 'oauth',
-      revokedAt: null,
-    })
-    await expect(findLiveVerification(db, PUBKEY_A, 'youtube', 'Divine Channel')).resolves.toBeNull()
+    expect(first.headers.get('location')).toContain('connection=connected')
+    expect(again.headers.get('location')).toContain('connection=connected')
+    await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([{ id: original.id, status: 'connected' }])
+    await expect(getOAuthAttempt(db, 'oauth_attempt_again')).resolves.toMatchObject({ status: 'connected' })
+    await expect(verificationRows(db)).resolves.toEqual([])
   })
 
   it.each([
@@ -914,7 +937,7 @@ describe('connection routes', () => {
     ])
   })
 
-  it('revokes verifications atomically on explicit disconnect', async () => {
+  it('disconnect succeeds and leaves an existing verifications row untouched', async () => {
     await upsertConnection(db, connection({ id: 'conn_1', platform: 'x' }))
     await upsertConnection(db, connection({ id: 'conn_2', externalAccountId: 'external-account-2' }))
     await setPreference(db, {
@@ -926,10 +949,15 @@ describe('connection routes', () => {
       createdAt: 1_000,
       updatedAt: 1_500,
     })
-    await db.batch([
-      upsertOauthVerificationStatement(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'alice', connectionId: 'conn_1', verifiedAt: 1_000 }),
-      upsertOauthVerificationStatement(db, { pubkey: PUBKEY_A, platform: 'tiktok', identity: 'alice.t', connectionId: 'conn_2', verifiedAt: 1_000 }),
-    ])
+    // A live row left by the earlier badge writes, linked to the connection being disconnected.
+    await db
+      .prepare(
+        `INSERT INTO verifications (pubkey, platform, identity, identity_key, method, proof_url, connection_id, verified_at, revoked_at)
+        VALUES (?, 'x', 'alice', 'alice', 'oauth', NULL, 'conn_1', 1000, NULL)`,
+      )
+      .bind(PUBKEY_A)
+      .run()
+    const before = await verificationRows(db)
     fetchMock.mockResolvedValueOnce(authResponse())
 
     const response = await app.request(
@@ -947,7 +975,7 @@ describe('connection routes', () => {
     await expect(getPreferences(db, PUBKEY_A)).resolves.toMatchObject([
       { platform: 'x', connectionId: null, mode: 'disabled', automaticEnabledAt: null },
     ])
-    await expect(findLiveVerification(db, PUBKEY_A, 'x', 'alice')).resolves.toBeNull()
-    await expect(findLiveVerification(db, PUBKEY_A, 'tiktok', 'alice.t')).resolves.toMatchObject({ revokedAt: null })
+    expect(before).toMatchObject([{ connection_id: 'conn_1', revoked_at: null }])
+    await expect(verificationRows(db)).resolves.toEqual(before)
   })
 })
