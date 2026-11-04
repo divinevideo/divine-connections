@@ -169,8 +169,7 @@ describe('crosspost service', () => {
         : await createAutomaticCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID })
       expect(result.jobs).toHaveLength(2)
       for (const job of result.jobs) {
-        expect(job.caption.startsWith(expected + '\n\n')).toBe(true)
-        expect(job.caption).toContain('https://divine.video/video/' + VIDEO_EVENT_ID)
+        expect(job.caption).toBe(expected + '\n\non Divine\nhttps://divine.video/video/' + VIDEO_EVENT_ID)
       }
       expect(queueSend).toHaveBeenCalledTimes(2)
     })
