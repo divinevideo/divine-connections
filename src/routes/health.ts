@@ -1,6 +1,7 @@
 // ABOUTME: Renders the hosted crossposter setup and manual publishing controls.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { Hono } from 'hono'
+import { parseYouTubePrivacyStatus } from '../config'
 import { getProviderSummaries } from '../platforms/registry'
 import type { Env } from '../types'
 
@@ -24,7 +25,7 @@ function platformName(platform: string): string {
     case 'x':
       return 'X'
     case 'youtube':
-      return 'YouTube Shorts'
+      return 'YouTube'
     default:
       return platform
   }
@@ -675,6 +676,7 @@ export function renderHome(env: Env): string {
       let providerObservations = {};
       let preferences = [];
       let instagramVideoDestinations = {};
+      let youtubeVideoPrivacies = {};
       let preferenceSaves = Promise.resolve();
       let accountLoaded = false;
 
@@ -889,6 +891,7 @@ export function renderHome(env: Env): string {
         connections = [];
         preferences = [];
         instagramVideoDestinations = {};
+        youtubeVideoPrivacies = {};
         accountLoaded = false;
         localStorage.removeItem(SESSION_KEY);
         renderAuthControls();
@@ -1052,6 +1055,16 @@ export function renderHome(env: Env): string {
           choices.map(([key, label]) => '<option value="' + key + '" ' + (value === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select>';
       }
 
+      function youtubeVideoPrivacy(videoId) {
+        return youtubeVideoPrivacies[videoId] || preferences.find((item) => item.platform === 'youtube')?.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}';
+      }
+
+      function youtubePrivacySelect(value, attributes, disabled) {
+        const choices = [['private', 'Private'], ['unlisted', 'Unlisted'], ['public', 'Public']];
+        return '<select aria-label="YouTube visibility" ' + attributes + (disabled ? ' disabled' : '') + '>' +
+          choices.map(([key, label]) => '<option value="' + key + '" ' + (value === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select>';
+      }
+
       function renderPreferenceRows() {
         const list = $('preference-list');
         if (!list) return;
@@ -1077,6 +1090,9 @@ export function renderHome(env: Env): string {
               '<option value="manual" ' + (current === 'manual' ? 'selected' : '') + '>Manual</option>' +
               '<option value="automatic" ' + (current === 'automatic' ? 'selected' : '') + '>Automatic</option>' +
             '</select>' +
+            (platform.platform === 'youtube' ? '<span style="grid-column: 1 / -1"><label>Default visibility ' +
+              youtubePrivacySelect(pref?.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}', 'data-youtube-default="true"', disabled) + '</label>' +
+              '<small>Private is visible only to you. Unlisted can be viewed with a link. Public is visible to everyone. YouTube decides whether a video is a Short.</small></span>' : '') +
             (platform.platform === 'instagram' ? '<span style="grid-column: 1 / -1"><label>Default destination ' +
               instagramDestinationSelect(pref?.instagramDestination, 'data-instagram-default="true"', disabled) + '</label>' +
               '<small>Professional Instagram account required (Creator or Business). Stories expire after 24 hours, without the caption or a link sticker. Story videos must be 3–60 seconds and at most 100 MB. Reel + feed also shares your Reel to the feed.</small></span>' : '') +
@@ -1088,7 +1104,7 @@ export function renderHome(env: Env): string {
         if (platform === 'instagram') return 'Instagram';
         if (platform === 'tiktok') return 'TikTok';
         if (platform === 'x') return 'X';
-        if (platform === 'youtube') return 'YouTube Shorts';
+        if (platform === 'youtube') return 'YouTube';
         return platform;
       }
 
@@ -1148,8 +1164,14 @@ export function renderHome(env: Env): string {
           const link = job.externalPostUrl
             ? ' <a href="' + escapeHtml(job.externalPostUrl) + '" target="_blank" rel="noopener">View post</a>'
             : '';
+          if (job.platform === 'youtube') {
+            const privacy = job.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}';
+            const description = privacy === 'public' ? 'Published publicly to YouTube' : privacy === 'unlisted' ? 'Uploaded unlisted to YouTube' : 'Uploaded privately to YouTube';
+            return description + '.' + link;
+          }
           return 'Posted to ' + escapeHtml(platformName(job.platform)) + '.' + link;
         }
+        if (job.platform === 'youtube' && job.status === 'processing') return 'YouTube is processing the upload…';
         if (job.status === 'failed') {
           return escapeHtml(platformName(job.platform)) + ' failed: ' + escapeHtml(job.errorMessage || job.errorCode || 'unknown error');
         }
@@ -1194,6 +1216,10 @@ export function renderHome(env: Env): string {
               selector = instagramDestinationSelect(existing ? existing.instagramDestination : instagramVideoDestination(video.id),
                 'data-instagram-video="' + escapeHtml(video.id) + '"', !!existing) + ' ';
             }
+            if (connection.platform === 'youtube') {
+              selector = youtubePrivacySelect(existing ? (existing.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}') : youtubeVideoPrivacy(video.id),
+                'data-youtube-video="' + escapeHtml(video.id) + '"', !!existing) + ' ';
+            }
             return selector + '<button class="mini-button" data-crosspost-video="' + escapeHtml(video.id) + '" data-crosspost-platform="' + escapeHtml(connection.platform) + '" ' + (busy || posted ? 'disabled' : '') + '>' +
               (busy ? 'Sending…' : posted ? 'Posted to ' + escapeHtml(platformName(connection.platform)) : 'Post to ' + escapeHtml(platformName(connection.platform))) + '</button>';
           }).join(' ');
@@ -1218,7 +1244,7 @@ export function renderHome(env: Env): string {
         }
         if (options.once) return;
         const active = (videoJobs[videoId] || []).some((job) =>
-          job.status === 'queued' || job.status === 'uploading' || job.status === 'processing');
+          job.status === 'queued' || job.status === 'uploading' || job.status === 'processing' || job.status === 'dispatching');
         clearTimeout(videoPolls[videoId]);
         if (active) {
           videoPolls[videoId] = setTimeout(() => pollJobs(videoId), 5000);
@@ -1226,9 +1252,16 @@ export function renderHome(env: Env): string {
       }
 
       async function triggerCrosspost(videoId, platform) {
+        if (platform === 'youtube') {
+          const account = connections.find((item) => item.platform === 'youtube' && item.status === 'connected');
+          if (!window.confirm('Upload this Divine video to ' + (account?.externalAccountName || 'your YouTube channel') + ' with ' + youtubeVideoPrivacy(videoId) + ' visibility?')) {
+            renderVideoRows();
+            return;
+          }
+        }
         const data = await api('/videos/' + videoId + '/crossposts', {
           method: 'POST',
-          body: JSON.stringify({ platforms: [platform], ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
+          body: JSON.stringify({ platforms: [platform], ...(platform === 'youtube' ? { youtubePrivacyStatus: youtubeVideoPrivacy(videoId) } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
         });
         videoJobs[videoId] = data.jobs || [];
         renderVideoRows();
@@ -1245,10 +1278,10 @@ export function renderHome(env: Env): string {
         window.location.href = data.authorizationUrl;
       }
 
-      async function updatePreference(platform, mode, instagramDestination) {
+      async function updatePreference(platform, mode, instagramDestination, youtubePrivacyStatus) {
         await api('/preferences/' + platform, {
           method: 'PUT',
-          body: JSON.stringify({ mode, ...(instagramDestination ? { instagramDestination } : {}) }),
+          body: JSON.stringify({ mode, ...(youtubePrivacyStatus ? { youtubePrivacyStatus } : {}), ...(instagramDestination ? { instagramDestination } : {}) }),
         });
         setStatus(platformName(platform) + ' crossposting set to ' + mode + '.');
         await refreshAccount();
@@ -1302,13 +1335,20 @@ export function renderHome(env: Env): string {
           instagramVideoDestinations[target.dataset.instagramVideo] = target.value;
           return;
         }
-        if (!target?.dataset?.preference && !target?.dataset?.instagramDefault) return;
-        const platform = target.dataset.instagramDefault ? 'instagram' : target.dataset.preference;
+        if (target?.dataset?.youtubeVideo) {
+          youtubeVideoPrivacies[target.dataset.youtubeVideo] = target.value;
+          return;
+        }
+        if (!target?.dataset?.preference && !target?.dataset?.instagramDefault && !target?.dataset?.youtubeDefault) return;
+        const platform = target.dataset.youtubeDefault ? 'youtube' : target.dataset.instagramDefault ? 'instagram' : target.dataset.preference;
         const value = target.value;
         // Saves run one at a time so a destination save reads the mode the previous save stored.
         preferenceSaves = preferenceSaves.then(async () => {
           try {
-            if (target.dataset.instagramDefault) {
+            if (target.dataset.youtubeDefault) {
+              const mode = preferences.find((item) => item.platform === 'youtube')?.mode || 'disabled';
+              await updatePreference('youtube', mode, undefined, value);
+            } else if (target.dataset.instagramDefault) {
               const mode = preferences.find((item) => item.platform === 'instagram')?.mode || 'disabled';
               await updatePreference('instagram', mode, value);
             } else {

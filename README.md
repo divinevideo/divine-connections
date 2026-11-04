@@ -496,3 +496,61 @@ Instagram Login requires a professional Creator or Business account. Stories mus
 - **TikTok:** Terminal `FAILED` upload status stops polling; `auth_removed` requests reconnection. Keep rollout disabled until Direct Post approval, credentials, verified source domain, and the required creator controls are ready. The existing posting flow still uses `SELF_ONLY`; it needs fresh creator info, explicit per-post privacy selection, preview/caption and interaction controls, and required consent before public rollout. Failure-handling fixes alone do not make that flow ready.
 
 Official contracts: [X media upload](https://docs.x.com/x-api/media/initialize-media-upload), [YouTube channel lookup](https://developers.google.com/youtube/v3/docs/channels/list), [TikTok publishing status](https://developers.tiktok.com/doc/content-posting-api-reference-get-video-status), [TikTok creator controls](https://developers.tiktok.com/doc/content-sharing-guidelines).
+
+
+### YouTube visibility and processing
+
+Save a visibility default with authenticated `PUT /preferences/youtube`:
+
+```json
+{"mode":"automatic","youtubePrivacyStatus":"private"}
+```
+
+Choose an audience for one manual video with authenticated `POST /videos/:event_id/crossposts`:
+
+```json
+{"platforms":["youtube"],"youtubePrivacyStatus":"unlisted"}
+```
+
+Accepted values are `private`, `unlisted`, and `public`. Invalid values, explicit
+null, or a YouTube audience without YouTube selected return HTTP 400 before job
+creation. Mode-only preference updates preserve the saved audience. Manual
+uploads use the override, then the saved preference, then
+`YOUTUBE_DEFAULT_PRIVACY_STATUS` (private when unset). Automatic uploads use the
+saved preference or configured default. Connecting an account alone never
+publishes a video.
+
+Migration `0009_youtube_options.sql` adds side tables only; apply it before the
+Worker update. New jobs expose immutable `youtubePrivacyStatus` and
+`youtubeTitle` snapshots. Duplicate requests return the original choice. Existing
+jobs without options keep configured privacy behavior. The title comes from the
+source title or original description, without attribution, and retains whole
+Unicode graphemes within YouTube's 100-character limit. Descriptions preserve
+source text and attribution within 5000 UTF-8 bytes; longer text is shortened
+without splitting graphemes. YouTube forbids `<` and `>` in descriptions; those
+uploads fail with an actionable message rather than silently rewriting the text.
+
+An accepted upload remains `processing` until `videos.list` confirms successful
+processing, a processed upload, and the selected effective privacy. Private
+success reads “Uploaded privately,” unlisted success reads “Uploaded unlisted,”
+and public success reads “Published publicly.” Destination links use the
+canonical YouTube watch URL; private links still require authorized access.
+YouTube decides Shorts classification. Missing or unknown status never counts
+as success, and provider processing rejection or audience mismatch is a failure.
+
+The dispatch fence is persisted before the final upload request. An interruption
+or missing returned video ID requires manual reconciliation; the service will
+not blindly create another upload. Once accepted, the ID is stored before any
+poll. Poll errors and processing timeouts never cause re-upload of that video.
+Resumable session URLs must use Google's documented HTTPS upload endpoint, and
+upload redirects are rejected before credentials can be forwarded elsewhere.
+
+YouTube remains disabled in checked-in configuration. OAuth credentials,
+provider review/access restrictions, and an explicitly authorized real upload
+are still rollout dependencies. A Google project or verifier API key does not
+establish OAuth publishing readiness. No live upload was performed for this
+implementation.
+
+Contracts: [YouTube video resource](https://developers.google.com/youtube/data/reference/rest/v3/videos),
+[video status lookup](https://developers.google.com/youtube/data/reference/rest/v3/videos/list),
+and [resumable upload protocol](https://developers.google.com/youtube/data/guides/using_resumable_upload_protocol).

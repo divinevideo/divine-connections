@@ -1,5 +1,7 @@
 // ABOUTME: Creates and reads creator-owned crosspost jobs.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
+import { parseYouTubePrivacyStatus } from '../config'
+import { youtubeTitle } from '../platforms/youtube'
 import type { DivineVideoEvent } from '../funnelcake/client'
 import { fetchVideoEvent, type DivineVideoLookup } from '../funnelcake/client'
 import { buildCrosspostCaption } from './attribution'
@@ -8,10 +10,10 @@ import { getActiveConnectionForPlatform, getConnection } from '../db/connections
 import { createOrGetJob, getJob, listJobsForVideo } from '../db/jobs'
 import { getPreferences } from '../db/preferences'
 import { getAdapter } from '../platforms/registry'
-import type { ConnectionRecord, Env, InstagramDestination, JobAttemptRecord, JobRecord, Platform, PreferenceRecord } from '../types'
+import type { ConnectionRecord, Env, InstagramDestination, JobAttemptRecord, JobRecord, Platform, PreferenceRecord, YouTubePrivacyStatus } from '../types'
 import { generateRandomId } from '../utils/crypto'
 import { HttpError } from '../utils/http'
-import { isValidEventId, parsePlatform, parseInstagramDestination } from '../utils/validation'
+import { isValidEventId, parsePlatform, parseInstagramDestination, parseYouTubePrivacyOption } from '../utils/validation'
 
 export type CrosspostJobsResult = {
   jobs: JobRecord[]
@@ -25,6 +27,7 @@ export type JobWithAttemptsResult = {
 }
 
 type SourceSnapshot = {
+  title: string | null
   mediaUrl: string
   mediaHash: string
   caption: string
@@ -138,6 +141,7 @@ function validateEvent(lookup: DivineVideoLookup | null, pubkey: string, eventId
   }
 
   return {
+    title: tagValue(event.tags, 'title')?.trim() || null,
     mediaUrl: url,
     mediaHash: hash,
     caption: event.content.trim() || tagValue(event.tags, 'summary')?.trim() || tagValue(event.tags, 'title')?.trim() || '',
@@ -164,6 +168,7 @@ async function createJobsForConnections(
     snapshot: SourceSnapshot
     connections: ConnectionRecord[]
     instagramDestination?: InstagramDestination | null
+    youtubePrivacyStatus?: YouTubePrivacyStatus | null
   },
 ): Promise<CrosspostJobsResult> {
   const now = Math.floor(Date.now() / 1_000)
@@ -172,6 +177,10 @@ async function createJobsForConnections(
 
   for (const connection of input.connections) {
     const result = await createOrGetJob(env.DB, {
+      ...(connection.platform === 'youtube' ? {
+        youtubePrivacyStatus: input.youtubePrivacyStatus ?? parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS),
+        youtubeTitle: youtubeTitle(input.snapshot.title || input.snapshot.caption),
+      } : {}),
       instagramDestination: connection.platform === 'instagram' ? input.instagramDestination : undefined,
       id: `job_${generateRandomId()}`,
       pubkey: input.pubkey,
@@ -219,7 +228,7 @@ async function requireManualConnection(env: Env, pubkey: string, platform: Platf
 
 export async function createManualCrossposts(
   env: Env,
-  input: { pubkey: string; eventId: string; platforms: string[]; instagramDestination?: unknown },
+  input: { pubkey: string; eventId: string; platforms: string[]; instagramDestination?: unknown; youtubePrivacyStatus?: unknown },
 ): Promise<CrosspostJobsResult> {
   const eventId = ensureEventId(input.eventId)
   if (!Array.isArray(input.platforms) || input.platforms.length === 0) {
@@ -228,10 +237,12 @@ export async function createManualCrossposts(
 
   const platforms = uniquePlatforms(input.platforms)
   const override = parseInstagramDestination(input.instagramDestination, platforms.includes('instagram'))
+  const youtubeOverride = parseYouTubePrivacyOption(input.youtubePrivacyStatus, platforms.includes('youtube'))
   const connections = await Promise.all(platforms.map((platform) => requireManualConnection(env, input.pubkey, platform)))
   const snapshot = validateEvent(await fetchVideoEvent(env, eventId), input.pubkey, eventId)
-  const saved = (await getPreferences(env.DB, input.pubkey)).find((preference) => preference.platform === 'instagram')
-  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, instagramDestination: override ?? saved?.instagramDestination })
+  const preferences = await getPreferences(env.DB, input.pubkey)
+  const saved = preferences.find((preference) => preference.platform === 'instagram')
+  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, instagramDestination: override ?? saved?.instagramDestination, youtubePrivacyStatus: youtubeOverride ?? preferences.find((preference) => preference.platform === 'youtube')?.youtubePrivacyStatus })
 }
 
 function isAutomaticPreference(preference: PreferenceRecord): boolean {
@@ -260,7 +271,7 @@ export async function createAutomaticCrossposts(
     }
   }
 
-  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, instagramDestination: preferences.find((preference) => preference.platform === 'instagram')?.instagramDestination })
+  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, instagramDestination: preferences.find((preference) => preference.platform === 'instagram')?.instagramDestination, youtubePrivacyStatus: preferences.find((preference) => preference.platform === 'youtube')?.youtubePrivacyStatus })
 }
 
 export async function listVideoCrossposts(

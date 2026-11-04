@@ -475,7 +475,7 @@ async function handleAmbiguousPostResult(
   now: number,
 ): Promise<ProcessCrosspostResult> {
   const providerStatus = error instanceof PlatformAdapterError ? (error.providerStatus ?? null) : null
-  const errorMessage = 'X post result is ambiguous after dispatch'
+  const errorMessage = `${job.platform === 'x' ? 'X post' : 'YouTube upload'} result is ambiguous after dispatch`
   await updateOwnedJob(env, job.id, ownership, {
     status: 'failed',
     updatedAt: now,
@@ -505,6 +505,8 @@ export async function processCrosspostJob(
   const now = options.now ?? nowSeconds()
   const existing = await getJob(env.DB, jobId)
   if (!existing) return { status: 'not_found' }
+
+  if (existing.platform === 'youtube' && existing.externalPostId && existing.status === 'failed') return { status: 'failed' }
 
   if (existing.status === 'dispatching' || existing.errorCode === 'ambiguous_post_result') {
     return { status: existing.status }
@@ -579,12 +581,15 @@ export async function processCrosspostJob(
         const result = await adapter.pollPublishStatus({
           accessToken,
           providerResponse: pollProviderResponse(job, attempts),
+          youtubePrivacyStatus: job.youtubePrivacyStatus,
           beforeExternalPost,
         })
         return markResult(env, job, result, now, ownership, true)
       }
 
       const result = await adapter.publishVideo({
+        youtubePrivacyStatus: job.youtubePrivacyStatus,
+        youtubeTitle: job.youtubeTitle,
         instagramDestination: job.instagramDestination,
         accessToken,
         videoUrl: job.sourceMediaUrl,

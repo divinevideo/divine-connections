@@ -13,7 +13,7 @@ import { createOAuthAttempt, updateOAuthAttempt } from '../db/oauth-attempts'
 import { consumeOAuthState, createOAuthState } from '../db/oauth-states'
 import { disablePreferenceForConnectionStatement, getPreferences, setPreference } from '../db/preferences'
 import { revokeVerificationsForConnectionStatement } from '../db/verifications'
-import { loadConfig, oauthRedirectBase } from '../config'
+import { loadConfig, oauthRedirectBase, parseYouTubePrivacyStatus } from '../config'
 import { getAdapter } from '../platforms/registry'
 import { PlatformAdapterError } from '../platforms/adapter'
 import type { PlatformAccount, PlatformAdapter, TokenSet } from '../platforms/adapter'
@@ -25,6 +25,7 @@ import type {
   OAuthStateRecord,
   Platform,
   InstagramDestination,
+  YouTubePrivacyStatus,
   PreferenceMode,
   PreferenceRecord,
 } from '../types'
@@ -32,7 +33,7 @@ import { decryptToken, encryptToken, generatePKCE, generateRandomId } from '../u
 import { HttpError } from '../utils/http'
 import { sanitizeProviderMetadata } from '../utils/provider-metadata'
 import { providerErrorDiagnostics } from '../utils/provider-error-diagnostics'
-import { assertAllowedReturnUrl, parsePlatform, parsePreferenceMode, parseInstagramDestination } from '../utils/validation'
+import { assertAllowedReturnUrl, parsePlatform, parsePreferenceMode, parseInstagramDestination, parseYouTubePrivacyOption } from '../utils/validation'
 
 const OAUTH_STATE_TTL_SECONDS = 10 * 60
 
@@ -50,6 +51,7 @@ type ConnectionSummary = {
 }
 
 type PreferenceSummary = {
+  youtubePrivacyStatus?: YouTubePrivacyStatus | null
   instagramDestination?: InstagramDestination | null
   platform: Platform
   connectionId: string | null
@@ -84,6 +86,7 @@ function connectionSummary(connection: ConnectionRecord): ConnectionSummary {
 
 function preferenceSummary(preference: PreferenceRecord): PreferenceSummary {
   return {
+    ...(preference.platform === 'youtube' ? { youtubePrivacyStatus: preference.youtubePrivacyStatus ?? null } : {}),
     ...(preference.platform === 'instagram' ? { instagramDestination: preference.instagramDestination ?? null } : {}),
     platform: preference.platform,
     connectionId: preference.connectionId,
@@ -458,9 +461,11 @@ export async function updatePreference(
   platformValue: string,
   modeValue: unknown,
   destinationValue?: unknown,
+  options: { youtubePrivacyStatus?: unknown } = {},
 ): Promise<PreferenceSummary> {
   const platform = parsePlatform(platformValue)
   const instagramDestination = parseInstagramDestination(destinationValue, platform === 'instagram')
+  const youtubePrivacyStatus = parseYouTubePrivacyOption(options.youtubePrivacyStatus, platform === 'youtube')
   const mode = parsePreferenceMode(String(modeValue))
   const { pubkey } = await authenticateRequest(request, env)
   const now = nowSeconds()
@@ -478,6 +483,7 @@ export async function updatePreference(
   }
 
   const preference = await setPreference(env.DB, {
+    youtubePrivacyStatus: platform === 'youtube' ? youtubePrivacyStatus ?? existing?.youtubePrivacyStatus ?? parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS) : undefined,
     instagramDestination,
     pubkey,
     platform,

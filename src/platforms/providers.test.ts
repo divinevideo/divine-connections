@@ -909,11 +909,11 @@ describe('provider adapters', () => {
     const adapter = createYouTubeAdapter({ clientId: 'client', clientSecret: 'secret', defaultPrivacyStatus: 'unlisted' })
     fetchMock
       .mockResolvedValueOnce(new Response(VIDEO_BYTES))
-      .mockResolvedValueOnce(new Response(null, { status: 200, headers: { location: 'https://upload.youtube/session' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200, headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic' } }))
       .mockResolvedValueOnce(Response.json({ id: 'youtube-id' }))
 
     await expect(adapter.publishVideo(publishInput())).resolves.toMatchObject({
-      status: 'posted',
+      status: 'processing',
       externalPostId: 'youtube-id',
     })
 
@@ -932,12 +932,12 @@ describe('provider adapters', () => {
       }),
     )
     await expect(bodyAsJson(fetchMock.mock.calls[1])).resolves.toMatchObject({
-      snippet: { title: 'caption', description: 'caption' },
+      snippet: { title: 'Divine video', description: 'caption' },
       status: { privacyStatus: 'unlisted' },
     })
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      'https://upload.youtube/session',
+      'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic',
       expect.objectContaining({
         method: 'PUT',
         headers: expect.objectContaining({
@@ -953,7 +953,7 @@ describe('provider adapters', () => {
     const adapter = createYouTubeAdapter({ clientId: 'client', clientSecret: 'secret' })
     fetchMock
       .mockResolvedValueOnce(new Response(VIDEO_BYTES))
-      .mockResolvedValueOnce(new Response(null, { status: 200, headers: { location: 'https://upload.youtube/session' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200, headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic' } }))
       .mockResolvedValueOnce(Response.json({ id: 'youtube-id' }))
 
     await adapter.publishVideo(publishInput())

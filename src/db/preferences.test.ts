@@ -1,3 +1,5 @@
+// ABOUTME: Exercises preference round trips against the additive D1 schema.
+// ABOUTME: Keeps provider defaults separate from immutable job choices.
 import { beforeEach, describe, expect, it } from 'vitest'
 import { upsertConnection } from './connections'
 import { getPreferences, listAutomaticPreferences, setPreference } from './preferences'
@@ -9,6 +11,13 @@ describe('preference repository', () => {
   beforeEach(async () => {
     db = await applyMigrations()
     await upsertConnection(db, connection({ id: 'conn_tiktok' }))
+  })
+
+  it.each(['private', 'unlisted', 'public'] as const)('round trips YouTube %s without affecting legacy preferences', async (youtubePrivacyStatus) => {
+    const saved = await setPreference(db, { pubkey: PUBKEY_A, platform: 'youtube', connectionId: null, mode: 'automatic', automaticEnabledAt: 1000, createdAt: 1000, updatedAt: 1000, youtubePrivacyStatus })
+    expect(saved.youtubePrivacyStatus).toBe(youtubePrivacyStatus)
+    expect((await getPreferences(db, PUBKEY_A))[0].youtubePrivacyStatus).toBe(youtubePrivacyStatus)
+    expect((await listAutomaticPreferences(db, 10, 0))[0].youtubePrivacyStatus).toBe(youtubePrivacyStatus)
   })
 
   it('stores automatic_enabled_at when mode is automatic', async () => {

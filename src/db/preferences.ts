@@ -1,9 +1,10 @@
 // ABOUTME: Manages authenticated crossposting preferences.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { allPrepared, firstPrepared } from './client'
-import type { InstagramDestination, Platform, PreferenceMode, PreferenceRecord } from '../types'
+import type { InstagramDestination, Platform, PreferenceMode, PreferenceRecord, YouTubePrivacyStatus } from '../types'
 
 type PreferenceRow = {
+  youtube_privacy_status?: YouTubePrivacyStatus | null
   instagram_destination?: InstagramDestination | null
   pubkey: string
   platform: Platform
@@ -17,6 +18,7 @@ type PreferenceRow = {
 function mapPreference(row: PreferenceRow): PreferenceRecord {
   return {
     ...(row.platform === 'instagram' ? { instagramDestination: row.instagram_destination ?? null } : {}),
+    ...(row.platform === 'youtube' ? { youtubePrivacyStatus: row.youtube_privacy_status ?? null } : {}),
     pubkey: row.pubkey,
     platform: row.platform,
     connectionId: row.connection_id,
@@ -30,7 +32,7 @@ function mapPreference(row: PreferenceRow): PreferenceRecord {
 export async function getPreferences(db: D1Database, pubkey: string): Promise<PreferenceRecord[]> {
   const rows = await allPrepared<PreferenceRow>(
     db,
-    'SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination FROM preferences WHERE pubkey = ? ORDER BY platform ASC',
+    'SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination, (SELECT privacy_status FROM youtube_preferences WHERE pubkey = preferences.pubkey) AS youtube_privacy_status FROM preferences WHERE pubkey = ? ORDER BY platform ASC',
     pubkey,
   )
   return rows.map(mapPreference)
@@ -63,11 +65,16 @@ export async function setPreference(db: D1Database, input: PreferenceRecord): Pr
       VALUES (?, ?, ?) ON CONFLICT(pubkey) DO UPDATE SET destination = excluded.destination, updated_at = excluded.updated_at`)
       .bind(input.pubkey, input.instagramDestination, input.updatedAt))
   }
+  if (input.platform === 'youtube' && input.youtubePrivacyStatus != null) {
+    statements.push(db.prepare(`INSERT INTO youtube_preferences (pubkey, privacy_status, updated_at)
+      VALUES (?, ?, ?) ON CONFLICT(pubkey) DO UPDATE SET privacy_status = excluded.privacy_status, updated_at = excluded.updated_at`)
+      .bind(input.pubkey, input.youtubePrivacyStatus, input.updatedAt))
+  }
   await db.batch(statements)
 
   const row = await firstPrepared<PreferenceRow>(
     db,
-    'SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination FROM preferences WHERE pubkey = ? AND platform = ?',
+    'SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination, (SELECT privacy_status FROM youtube_preferences WHERE pubkey = preferences.pubkey) AS youtube_privacy_status FROM preferences WHERE pubkey = ? AND platform = ?',
     input.pubkey,
     input.platform,
   )
@@ -97,7 +104,7 @@ export async function listAutomaticPreferences(
 ): Promise<PreferenceRecord[]> {
   const rows = await allPrepared<PreferenceRow>(
     db,
-    `SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination FROM preferences
+    `SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination, (SELECT privacy_status FROM youtube_preferences WHERE pubkey = preferences.pubkey) AS youtube_privacy_status FROM preferences
     WHERE mode = 'automatic'
     ORDER BY updated_at ASC, pubkey ASC, platform ASC
     LIMIT ? OFFSET ?`,

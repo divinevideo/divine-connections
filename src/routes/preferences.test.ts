@@ -43,6 +43,21 @@ describe('preference routes', () => {
     vi.unstubAllGlobals()
   })
 
+  it.each(['private', 'unlisted', 'public'])('saves YouTube %s and preserves visibility on mode-only updates', async (youtubePrivacyStatus) => {
+    await upsertConnection(db, connection({ id: 'conn_youtube', platform: 'youtube' }))
+    fetchMock.mockImplementation(async () => authResponse())
+    const put = (body: unknown) => app.request('/preferences/youtube', { method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' }, body: JSON.stringify(body) }, testEnv(db))
+    expect(await (await put({ mode: 'manual', youtubePrivacyStatus })).json()).toMatchObject({ preference: { youtubePrivacyStatus } })
+    expect(await (await put({ mode: 'automatic' })).json()).toMatchObject({ preference: { youtubePrivacyStatus } })
+  })
+
+  it.each([['youtube', null], ['youtube', 'friends'], ['tiktok', 'public']])('rejects invalid YouTube preference %s %s', async (platform, youtubePrivacyStatus) => {
+    fetchMock.mockImplementation(async () => authResponse())
+    const response = await app.request('/preferences/' + platform, { method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'disabled', youtubePrivacyStatus }) }, testEnv(db))
+    expect(response.status).toBe(400)
+    expect(await getPreferences(db, PUBKEY_A)).toEqual([])
+  })
+
   it('saves and returns an Instagram destination and preserves it on a mode-only update', async () => {
     await upsertConnection(db, connection({ id: 'conn_instagram', platform: 'instagram' }))
     fetchMock.mockImplementation(async () => authResponse())

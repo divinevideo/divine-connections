@@ -24,6 +24,24 @@ describe('job repository', () => {
     await upsertConnection(db, connection({ id: 'conn_1' }))
   })
 
+  it('keeps one immutable YouTube option snapshot when duplicate inserts race', async () => {
+    const results = await Promise.all([
+      createOrGetJob(db, job({ id: 'job_youtube_first', platform: 'youtube', youtubePrivacyStatus: 'private', youtubeTitle: 'First title' })),
+      createOrGetJob(db, job({ id: 'job_youtube_second', platform: 'youtube', youtubePrivacyStatus: 'public', youtubeTitle: 'Second title' })),
+    ])
+    const winner = results.find((result) => result.created)!.job
+    expect(results.filter((result) => result.created)).toHaveLength(1)
+    expect(results[0].job).toEqual(results[1].job)
+    expect(await getJob(db, winner.id)).toEqual(winner)
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM youtube_job_options').first<{ count: number }>())?.count).toBe(1)
+  })
+
+  it('rolls back the YouTube job if its option snapshot cannot be persisted', async () => {
+    await db.exec("CREATE TRIGGER reject_youtube_options BEFORE INSERT ON youtube_job_options BEGIN SELECT RAISE(ABORT, 'synthetic option storage failure'); END;")
+    await expect(createOrGetJob(db, job({ platform: 'youtube', youtubePrivacyStatus: 'unlisted', youtubeTitle: 'Source title' }))).rejects.toThrow()
+    expect(await getJob(db, 'job_1')).toBeNull()
+  })
+
   it('returns created false for duplicate idempotency input', async () => {
     const first = await createOrGetJob(db, job({ id: 'job_original' }))
     const duplicate = await createOrGetJob(db, job({ id: 'job_duplicate', caption: 'ignored duplicate caption' }))

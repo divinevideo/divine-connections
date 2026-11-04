@@ -17,8 +17,8 @@ preferences.get('/preferences', async (c) => {
 
 preferences.put('/preferences/:platform', async (c) => {
   try {
-    const body = (await c.req.raw.clone().json().catch(() => ({}))) as { mode?: unknown; instagramDestination?: unknown }
-    return jsonResponse({ preference: await updatePreference(c.req.raw, c.env, c.req.param('platform'), body.mode, body.instagramDestination) })
+    const body = (await c.req.raw.clone().json().catch(() => ({}))) as { mode?: unknown; instagramDestination?: unknown; youtubePrivacyStatus?: unknown }
+    return jsonResponse({ preference: await updatePreference(c.req.raw, c.env, c.req.param('platform'), body.mode, body.instagramDestination, { youtubePrivacyStatus: body.youtubePrivacyStatus }) })
   } catch (error) {
     return errorResponse(error)
   }

@@ -74,6 +74,57 @@ describe('crosspost service', () => {
     vi.unstubAllGlobals()
   })
 
+  it('bounds YouTube descriptions in UTF-8 bytes without splitting emoji and retains attribution', async () => {
+    await addConnectedPlatform(db, 'youtube', 'conn_youtube')
+    fetchMock.mockImplementation(async () => Response.json({ event: event({ content: '🎉'.repeat(1300) }) }))
+    const result = await createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'] })
+    expect(new TextEncoder().encode(result.jobs[0].caption).length).toBeLessThanOrEqual(5000)
+    expect(result.jobs[0].caption).toContain('https://divine.video/video/' + VIDEO_EVENT_ID)
+    expect(result.jobs[0].caption).not.toContain('�')
+  })
+
+  it('uses saved visibility for manual YouTube uploads when the override is absent', async () => {
+    await addConnectedPlatform(db, 'youtube', 'conn_youtube')
+    await setPreference(db, { pubkey: PUBKEY_A, platform: 'youtube', connectionId: 'conn_youtube', mode: 'manual', automaticEnabledAt: null, createdAt: 1000, updatedAt: 1000, youtubePrivacyStatus: 'public' })
+    fetchMock.mockImplementation(async () => Response.json({ event: event() }))
+    const result = await createManualCrossposts({ ...testEnv(db, queueSend), YOUTUBE_DEFAULT_PRIVACY_STATUS: 'unlisted' }, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'] })
+    expect(result.jobs[0].youtubePrivacyStatus).toBe('public')
+  })
+
+  it.each(['private', 'unlisted', 'public'] as const)('snapshots saved YouTube %s and retains it for duplicates', async (youtubePrivacyStatus) => {
+    await addConnectedPlatform(db, 'youtube', 'conn_youtube')
+    const env = testEnv(db, queueSend)
+    await setPreference(db, { pubkey: PUBKEY_A, platform: 'youtube', connectionId: 'conn_youtube', mode: 'automatic', automaticEnabledAt: 1000, createdAt: 1000, updatedAt: 1000, youtubePrivacyStatus })
+    fetchMock.mockImplementation(async () => Response.json({ event: event({ tags: [...event().tags, ['title', 'Human 🎉 title']] }) }))
+    const auto = await createAutomaticCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID })
+    expect(auto.jobs[0]).toMatchObject({ youtubePrivacyStatus, youtubeTitle: 'Human 🎉 title' })
+    const duplicate = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubePrivacyStatus: 'unlisted' })
+    expect(duplicate.jobs[0].youtubePrivacyStatus).toBe(youtubePrivacyStatus)
+    expect(queueSend).toHaveBeenCalledTimes(1)
+    fetchMock.mockImplementation(async () => Response.json({ event: event({ id: YOUTUBE_EVENT_ID }) }))
+    const manual = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: YOUTUBE_EVENT_ID, platforms: ['youtube'], youtubePrivacyStatus: 'public' })
+    expect(manual.jobs[0].youtubePrivacyStatus).toBe('public')
+  })
+
+  it('uses configured YouTube fallback and a Unicode-safe source title without attribution', async () => {
+    await addConnectedPlatform(db, 'youtube', 'conn_youtube')
+    fetchMock.mockImplementation(async () => Response.json({ event: event({ content: '🎉'.repeat(101) }) }))
+    const result = await createManualCrossposts({ ...testEnv(db, queueSend), YOUTUBE_DEFAULT_PRIVACY_STATUS: 'unlisted' }, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'] })
+    expect(result.jobs[0]).toMatchObject({ youtubePrivacyStatus: 'unlisted', youtubeTitle: '🎉'.repeat(100) })
+    expect(result.jobs[0].caption).toContain('🎉'.repeat(101))
+  })
+
+  it.each([null, 'friends', 1, {}, false])('rejects invalid YouTube visibility %j before lookup', async (youtubePrivacyStatus) => {
+    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubePrivacyStatus })).rejects.toMatchObject({ status: 400, code: 'invalid_youtube_privacy_status' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(queueSend).not.toHaveBeenCalled()
+  })
+
+  it('rejects YouTube visibility when YouTube is not selected', async () => {
+    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['tiktok'], youtubePrivacyStatus: 'public' })).rejects.toMatchObject({ status: 400, code: 'invalid_youtube_privacy_status' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it.each(['story', 'reel', 'reel_feed'] as const)('uses saved Instagram %s for automatic posts and explicit overrides for manual posts', async (destination) => {
     await addConnectedPlatform(db, 'instagram', 'conn_instagram')
     const env = { ...testEnv(db, queueSend), ENABLE_INSTAGRAM: 'true', INSTAGRAM_CLIENT_ID: 'client', INSTAGRAM_CLIENT_SECRET: 'secret' }

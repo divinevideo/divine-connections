@@ -1,6 +1,6 @@
 // ABOUTME: Tests for the crossposter setup page, focused on the manual
 // ABOUTME: crosspost button giving feedback before its request returns.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { renderHome } from './health'
 import type { Env } from '../types'
 
@@ -122,4 +122,44 @@ it('shows reconnect requirements and provider trouble in the signed-in connectio
   render([{ platform: 'instagram', enabled: true }], [{ platform: 'instagram', status: 'needs_reauth' }], {}, { instagram: { connection: 'degraded', publishing: 'unknown' } }, () => list, () => 'Instagram', (value: string) => value)
   expect(list.innerHTML).toContain('Reconnect')
   expect(list.innerHTML).toContain('Provider is having trouble')
+})
+
+describe('YouTube visibility and truthful publication status', () => {
+  it('offers saved and per-video choices and submits the chosen visibility', () => {
+    expect(html).toContain('data-youtube-default')
+    expect(html).toContain('data-youtube-video')
+    expect(html).toContain('youtubePrivacyStatus: youtubeVideoPrivacy(videoId)')
+    expect(html).toContain('Uploaded privately to YouTube')
+    expect(html).toContain('Published publicly to YouTube')
+    expect(html).not.toContain('YouTube Shorts')
+  })
+})
+
+it('emits parseable inline JavaScript', () => {
+  const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+  expect(scripts.length).toBeGreaterThan(0)
+  for (const script of scripts) expect(() => new Function(script[1])).not.toThrow()
+})
+
+it('renders distinct YouTube outcomes and uses the saved visibility until a video override exists', () => {
+  const labelSource = html.split('function jobLabel(job) {')[1]?.split('function renderVideoRows()')[0]
+  const label = new Function('platformName', 'escapeHtml', 'return function jobLabel(job) {' + labelSource)((value: string) => value, (value: string) => value)
+  expect(label({ platform: 'youtube', status: 'posted', youtubePrivacyStatus: 'private' })).toContain('Uploaded privately to YouTube')
+  expect(label({ platform: 'youtube', status: 'posted', youtubePrivacyStatus: 'unlisted' })).toContain('Uploaded unlisted to YouTube')
+  expect(label({ platform: 'youtube', status: 'posted', youtubePrivacyStatus: 'public' })).toContain('Published publicly to YouTube')
+  expect(label({ platform: 'youtube', status: 'processing', youtubePrivacyStatus: 'public' })).toContain('YouTube is processing')
+  const privacySource = html.split('function youtubeVideoPrivacy(videoId) {')[1]?.split('function youtubePrivacySelect')[0]
+  const privacy = new Function('preferences', 'youtubeVideoPrivacies', 'return function youtubeVideoPrivacy(videoId) {' + privacySource)([{ platform: 'youtube', youtubePrivacyStatus: 'unlisted' }], { second: 'public' })
+  expect(privacy('first')).toBe('unlisted')
+  expect(privacy('second')).toBe('public')
+})
+
+it('restores video controls when YouTube confirmation is cancelled and sends no request', async () => {
+  const source = html.split('async function triggerCrosspost(videoId, platform) {')[1]?.split('async function connectPlatform')[0]
+  const render = vi.fn()
+  const api = vi.fn()
+  const trigger = new Function('window', 'connections', 'youtubeVideoPrivacy', 'renderVideoRows', 'api', 'return async function triggerCrosspost(videoId, platform) {' + source)({ confirm: () => false }, [{ platform: 'youtube', status: 'connected', externalAccountName: 'Synthetic channel' }], () => 'private', render, api)
+  await trigger('synthetic-video', 'youtube')
+  expect(api).not.toHaveBeenCalled()
+  expect(render).toHaveBeenCalledTimes(1)
 })

@@ -1,3 +1,5 @@
+// ABOUTME: Exercises authenticated crosspost routes and immutable job inputs.
+// ABOUTME: Stubs upstream requests while using real D1 persistence.
 import { env as workerEnv } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '../index'
@@ -70,6 +72,21 @@ describe('crosspost routes', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('passes the manual YouTube audience into the persisted job', async () => {
+    await upsertConnection(db, connection({ id: 'conn_youtube', platform: 'youtube' }))
+    const res = await app.request(`/videos/${VIDEO_EVENT_ID}/crossposts`, authenticatedInit({ method: 'POST', body: JSON.stringify({ platforms: ['youtube'], youtubePrivacyStatus: 'unlisted' }) }), { ...testEnv(db, queueSend), ENABLE_YOUTUBE: 'true', GOOGLE_CLIENT_ID: 'synthetic-client', GOOGLE_CLIENT_SECRET: 'synthetic-secret' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ jobs: [{ platform: 'youtube', youtubePrivacyStatus: 'unlisted', youtubeTitle: 'caption from event' }] })
+    expect(queueSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects an audience for an unselected YouTube destination through the API', async () => {
+    const res = await app.request(`/videos/${VIDEO_EVENT_ID}/crossposts`, authenticatedInit({ method: 'POST', body: JSON.stringify({ platforms: ['tiktok'], youtubePrivacyStatus: 'public' }) }), testEnv(db, queueSend))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: { code: 'invalid_youtube_privacy_status' } })
+    expect(queueSend).not.toHaveBeenCalled()
   })
 
   it('creates manual crosspost jobs for the authenticated user', async () => {

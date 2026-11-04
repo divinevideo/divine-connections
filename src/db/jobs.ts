@@ -1,11 +1,13 @@
 // ABOUTME: Stores crosspost jobs and controls their publishing lifecycle.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { allPrepared, changes, firstPrepared, runPrepared } from './client'
-import type { CreateJobInput, ErrorCode, InstagramDestination, JobRecord, JobStatus, Platform, UpdateJobStatusInput } from '../types'
+import type { CreateJobInput, ErrorCode, InstagramDestination, JobRecord, JobStatus, Platform, UpdateJobStatusInput, YouTubePrivacyStatus } from '../types'
 
 export const MAX_RETRY_COUNT = 5
 
 type JobRow = {
+  youtube_privacy_status?: YouTubePrivacyStatus | null
+  youtube_title?: string | null
   instagram_destination?: InstagramDestination | null
   id: string
   pubkey: string
@@ -31,6 +33,7 @@ type JobRow = {
 function mapJob(row: JobRow): JobRecord {
   return {
     instagramDestination: row.instagram_destination ?? null,
+    ...(row.platform === 'youtube' ? { youtubePrivacyStatus: row.youtube_privacy_status ?? null, youtubeTitle: row.youtube_title ?? null } : {}),
     id: row.id,
     pubkey: row.pubkey,
     videoEventId: row.video_event_id,
@@ -56,7 +59,7 @@ function mapJob(row: JobRow): JobRecord {
 async function findByIdempotencyKey(db: D1Database, input: CreateJobInput): Promise<JobRecord | null> {
   const row = await firstPrepared<JobRow>(
     db,
-    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs
+    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs
     WHERE pubkey = ? AND video_event_id = ? AND platform = ? AND external_account_id = ?`,
     input.pubkey,
     input.videoEventId,
@@ -109,6 +112,11 @@ export async function createOrGetJob(
       SELECT ?, ? WHERE changes() = 1`)
       .bind(input.id, input.instagramDestination))
   }
+  if (input.platform === 'youtube' && input.youtubePrivacyStatus != null) {
+    statements.push(db.prepare(`INSERT INTO youtube_job_options (job_id, privacy_status, title)
+      SELECT ?, ?, ? WHERE changes() = 1`)
+      .bind(input.id, input.youtubePrivacyStatus, input.youtubeTitle ?? null))
+  }
   const [result] = await db.batch(statements)
 
   const job = changes(result) > 0 ? await getJob(db, input.id) : await findByIdempotencyKey(db, input)
@@ -125,7 +133,7 @@ export async function listJobsForVideo(
 ): Promise<JobRecord[]> {
   const rows = await allPrepared<JobRow>(
     db,
-    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs
+    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs
     WHERE pubkey = ? AND video_event_id = ?
     ORDER BY created_at ASC, id ASC`,
     pubkey,
@@ -136,8 +144,8 @@ export async function listJobsForVideo(
 
 export async function getJob(db: D1Database, id: string, pubkey?: string): Promise<JobRecord | null> {
   const row = pubkey
-    ? await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs WHERE id = ? AND pubkey = ?', id, pubkey)
-    : await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs WHERE id = ?', id)
+    ? await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs WHERE id = ? AND pubkey = ?', id, pubkey)
+    : await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs WHERE id = ?', id)
   return row ? mapJob(row) : null
 }
 
@@ -185,7 +193,7 @@ export async function updateClaimedJobStatus(
     `UPDATE jobs
     SET ${assignments.join(', ')}
     WHERE id = ? AND status = ? AND updated_at = ?
-    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,
+    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title`,
     ...bindings,
     input.id,
     expected.status,
@@ -203,7 +211,7 @@ export async function claimJobForPublish(db: D1Database, id: string, now: number
       AND status IN ('queued', 'failed')
       AND expires_at > ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)
-    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,
+    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title`,
     now,
     id,
     now,
@@ -221,7 +229,7 @@ export async function claimJobForStatusPoll(db: D1Database, id: string, now: num
       AND status = 'processing'
       AND expires_at > ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)
-    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,
+    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title`,
     now,
     id,
     now,
@@ -254,7 +262,7 @@ export async function transitionClaimToDispatching(
 export async function listRunnableJobs(db: D1Database, now: number, limit: number): Promise<JobRecord[]> {
   const rows = await allPrepared<JobRow>(
     db,
-    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs
+    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs
     WHERE (
         (status IN ('queued', 'processing') AND (next_retry_at IS NULL OR next_retry_at <= ?))
         OR (
@@ -366,10 +374,11 @@ export async function recoverStaleXClaims(
     `UPDATE jobs
     SET status = 'failed',
         error_code = 'ambiguous_post_result',
-        error_message = 'stale X dispatch requires manual reconciliation',
+        error_message = CASE WHEN platform = 'x' THEN 'stale X dispatch requires manual reconciliation'
+          ELSE 'stale YouTube dispatch requires manual reconciliation' END,
         next_retry_at = NULL,
         updated_at = ?
-    WHERE platform = 'x' AND status = 'dispatching' AND updated_at <= ?`,
+    WHERE platform IN ('x', 'youtube') AND status = 'dispatching' AND updated_at <= ?`,
     now,
     staleBefore,
   )

@@ -17,6 +17,8 @@ export interface VerificationRecord {
   revokedAt: number | null
 }
 
+export type YouTubePrivacyStatus = 'private' | 'unlisted' | 'public'
+
 export type InstagramDestination = 'story' | 'reel' | 'reel_feed'
 
 export type PreferenceMode = 'manual' | 'automatic' | 'disabled'
@@ -145,6 +147,7 @@ export type ConnectionRecord = {
 }
 
 export type PreferenceRecord = {
+  youtubePrivacyStatus?: YouTubePrivacyStatus | null
   instagramDestination?: InstagramDestination | null
   pubkey: string
   platform: Platform
@@ -163,6 +166,8 @@ export type AutoCursorRecord = {
 }
 
 export type JobRecord = {
+  youtubePrivacyStatus?: YouTubePrivacyStatus | null
+  youtubeTitle?: string | null
   instagramDestination?: InstagramDestination | null
   id: string
   pubkey: string

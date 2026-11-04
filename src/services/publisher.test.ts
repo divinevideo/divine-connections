@@ -3,7 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, upsertConnection } from '../db/connections'
-import { createOrGetJob, getJob, updateJobStatus } from '../db/jobs'
+import { createOrGetJob, getJob, updateJobStatus, recoverStaleXClaims } from '../db/jobs'
 import { setPreference } from '../db/preferences'
 import { applyMigrations, connection, job, PUBKEY_A } from '../db/test-helpers'
 import type { Env, Platform } from '../types'
@@ -157,6 +157,60 @@ describe('publisher service', () => {
     db = await applyMigrations()
     fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
+  })
+
+  it('does not upload a known YouTube video again after terminal processing rejection', async () => {
+    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01', youtubePrivacyStatus: 'private' })
+    const fetchMock = vi.fn(async () => Response.json({ items: [{ id: 'synthetic01', status: { uploadStatus: 'rejected', privacyStatus: 'private' }, processingDetails: { processingStatus: 'failed' } }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ externalPostId: 'synthetic01', errorCode: 'media_rejected', nextRetryAt: null })
+    await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2200 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers stale YouTube dispatch as ambiguous without queueing another upload', async () => {
+    await seedConnectedJob(db, 'youtube', { status: 'dispatching', updatedAt: 1000 })
+    await recoverStaleXClaims(db, 2000, 300)
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'failed', errorCode: 'ambiguous_post_result', nextRetryAt: null })
+  })
+
+  it('persists accepted YouTube ID before polling and never uploads it twice', async () => {
+    await seedConnectedJob(db, 'youtube', { youtubePrivacyStatus: 'unlisted', youtubeTitle: 'Source title' })
+    const fetchMock = vi.fn(async (url, init) => {
+      if (String(url).includes('cdn.divine.video')) return new Response('video')
+      if (String(url).includes('uploadType=resumable')) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({ snippet: { title: 'Source title' }, status: { privacyStatus: 'unlisted' } })
+        return new Response('{}', { headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic' } })
+      }
+      if (String(url).includes('upload_id=synthetic')) {
+        expect(await getJob(db, 'job_1')).toMatchObject({ status: 'dispatching' })
+        return Response.json({ id: 'synthetic01', access_token: 'discard-me' })
+      }
+      expect(await getJob(db, 'job_1')).toMatchObject({ externalPostId: 'synthetic01' })
+      return Response.json({ items: [{ id: 'synthetic01', status: { uploadStatus: 'processed', privacyStatus: 'unlisted' }, processingDetails: { processingStatus: 'succeeded' } }] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const youtubeEnv = platformEnv(db, 'youtube')
+    expect(await processCrosspostJob(youtubeEnv, 'job_1', { now: 2000, fenceNow: 2000 })).toMatchObject({ status: 'processing' })
+    expect((await listAttempts(db, 'job_1'))[0].providerResponseJson).toBe('{"id":"synthetic01"}')
+    expect(await processCrosspostJob(youtubeEnv, 'job_1', { now: 2060 })).toEqual({ status: 'posted' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'posted', externalPostUrl: 'https://www.youtube.com/watch?v=synthetic01' })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('never retries an interrupted YouTube upload after dispatch', async () => {
+    await seedConnectedJob(db, 'youtube')
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes('cdn.divine.video')) return new Response('video')
+      if (String(url).includes('uploadType=resumable')) return new Response('{}', { headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic' } })
+      throw new Error('connection interrupted after accepting upload')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000, fenceNow: 2000 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: 'ambiguous_post_result', nextRetryAt: null })
+    await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2200 })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('publishes the immutable Instagram destination after its saved default changes', async () => {
