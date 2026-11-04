@@ -226,10 +226,11 @@ Clients see connection summaries, preferences, job summaries, normalized statuse
 
 Job statuses: `queued`, `uploading`, `dispatching`, `processing`, `posted`, `failed`, `needs_reauth`, `skipped`.
 
-Normalized error codes: `rate_limited`, `needs_reauth`, `media_rejected`, `platform_review_required`, `processing_timeout`, `expired`, `not_connected`, `not_owner`, `not_eligible`, `unknown_platform_error`, `ambiguous_post_result`.
+Normalized error codes: `rate_limited`, `provider_payment_required`, `needs_reauth`, `media_rejected`, `platform_review_required`, `processing_timeout`, `expired`, `not_connected`, `not_owner`, `not_eligible`, `unknown_platform_error`, `ambiguous_post_result`.
 
 - Transient provider failures and processing polls use bounded application backoff: Crossposter sends a fresh delayed queue message, then acknowledges the current delivery. `message.retry()` is not used. Only unexpected infrastructure failures or a failed fresh-message send remain unacknowledged; Cloudflare retries those deliveries at most five times before moving them to the DLQ.
 - Scheduled reconciliation recovers a stale X `uploading` claim only while the job is unexpired and the incremented retry count remains within the retry budget. An expired claim becomes `skipped`; a claim that exhausts the retry budget remains terminal `failed` with no `nextRetryAt`. A stale X `dispatching` claim has an unknown external outcome, so it becomes terminal `ambiguous_post_result` and requires manual reconciliation; it is never automatically reposted.
+- A provider HTTP 402 is `provider_payment_required`: the job fails with no retry, and a duplicate delivery does not reclaim it. Recovering it after the provider account is funded is a deliberate operator action. A 402 from X after the dispatch fence is still `ambiguous_post_result`.
 - If token refresh or publishing returns an auth failure, the connection and job are marked `needs_reauth`; automatic jobs for that platform stop until the user reconnects. Manual retry after reconnect reuses the existing job where possible and preserves attempt history.
 - Disconnecting relies on local D1 state to stop future Divine-initiated crossposts. Provider revocation, where supported, is called best-effort; a failed revocation does not keep local crossposting enabled.
 
