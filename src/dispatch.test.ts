@@ -136,7 +136,7 @@ describe('host dispatch', () => {
       const platformsRes = await hostRequest(`${CROSSPOSTER}/platforms?format=json`, {}, dispatchEnv())
       const body = (await platformsRes.json()) as { platforms: Array<{ platform: string; enabled: boolean }> }
       expect(Array.isArray(body.platforms)).toBe(true)
-      expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube'])
+      expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube', 'snapchat'])
     })
 
     it('does not serve the verifier-only surface', async () => {
@@ -166,7 +166,7 @@ describe('host dispatch', () => {
       const providers = await app.request('/api/providers', {}, dispatchEnv())
       expect(providers.status).toBe(200)
       const body = (await providers.json()) as { platforms: Array<{ platform: string }> }
-      expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube'])
+      expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube', 'snapchat'])
 
       fetchMock.mockResolvedValueOnce(authResponse())
       const prefs = await app.request('/preferences', { headers: { authorization: 'Bearer keycast-token' } }, dispatchEnv())

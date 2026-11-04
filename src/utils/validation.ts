@@ -1,10 +1,10 @@
 // ABOUTME: Validates public API inputs before state changes.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
-import type { InstagramDestination, Platform, PreferenceMode, YouTubePrivacyStatus } from '../types'
+import type { SnapchatDestination, InstagramDestination, Platform, PreferenceMode, YouTubePrivacyStatus } from '../types'
 import { HttpError } from './http'
 
 const HEX_64_PATTERN = /^[0-9a-fA-F]{64}$/
-const PLATFORMS: readonly Platform[] = ['instagram', 'tiktok', 'x', 'youtube']
+const PLATFORMS: readonly Platform[] = ['instagram', 'tiktok', 'x', 'youtube', 'snapchat']
 const PREFERENCE_MODES: readonly PreferenceMode[] = ['manual', 'automatic', 'disabled']
 
 export function isValidHexPubkey(value: string): boolean {
@@ -79,5 +79,11 @@ export function parseYouTubePrivacyOption(value: unknown, hasYouTube: boolean): 
   if (!hasYouTube || (value !== 'private' && value !== 'unlisted' && value !== 'public')) {
     throw new HttpError(400, 'invalid_youtube_privacy_status', 'choose private, unlisted, or public for YouTube')
   }
+  return value
+}
+
+export function parseSnapchatDestination(value: unknown, hasSnapchat: boolean): SnapchatDestination | undefined {
+  if (value === undefined) return undefined
+  if (!hasSnapchat || (value !== 'spotlight' && value !== 'story')) throw new HttpError(400, 'invalid_snapchat_destination', 'Choose Spotlight or public Story for Snapchat')
   return value
 }

@@ -34,6 +34,8 @@ INSTAGRAM_CLIENT_ID = "1495112838545237"
 ENABLE_TIKTOK = "false"
 ENABLE_X = "true"
 ENABLE_YOUTUBE = "false"
+ENABLE_SNAPCHAT = "false"
+SNAPCHAT_PUBLIC_PROFILE_APPROVED = "false"
 # Discord channel whose messages count as verification proof posts.
 DISCORD_VERIFY_CHANNEL_ID = "1484771306179133582"
 

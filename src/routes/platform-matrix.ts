@@ -1,5 +1,6 @@
 // ABOUTME: Single source of truth for what this service can prove about each
 // ABOUTME: platform, shared by the landing page and the API reference.
+import { getAdapter } from '../platforms/registry'
 import type { Env } from '../types'
 
 /**
@@ -28,6 +29,7 @@ export interface PlatformCapability {
 }
 
 export const PLATFORMS: PlatformCapability[] = [
+  { key: 'snapchat', label: 'Snapchat', identity: 'Authorized public-profile ID', proofFormat: null, connect: true, icon: 'M4 4h16v16H4z' },
   {
     key: 'x', label: 'Twitter / X', identity: 'Username (e.g. <code>jack</code>) — <code>twitter</code> is accepted as an alias',
     proofFormat: 'Tweet ID, or paste the full post URL', connect: true,
@@ -85,14 +87,14 @@ export function canProof(p: PlatformCapability, env: Env): boolean {
 }
 
 /** Rows for the API reference's platform table. */
-export function platformTableRows(_env: Env): string {
+export function platformTableRows(env: Env): string {
   return PLATFORMS.map((p) => {
     const proofCell = p.proofFormat === null
       ? 'Not supported — connect the account instead'
       : p.proofRequiresSecret
         ? `${p.proofFormat} (needs <code>${p.proofRequiresSecret}</code>)`
         : p.proofFormat
-    const connectCell = p.connect ? 'Yes' : (p.connectDeferred ?? 'No')
+    const connectCell = p.key === 'snapchat' ? (getAdapter(env, 'snapchat') ? 'Yes' : 'Requires approved Public Profile API access') : p.connect ? 'Yes' : (p.connectDeferred ?? 'No')
     return `        <tr><td><code>${p.key}</code></td><td>${p.identity}</td><td>${proofCell}</td><td>${connectCell}</td></tr>`
   }).join('\n')
 }

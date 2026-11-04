@@ -1,9 +1,9 @@
 // ABOUTME: Defines shared Worker API, storage and publishing types.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
-export type Platform = 'instagram' | 'tiktok' | 'x' | 'youtube'
+export type Platform = 'instagram' | 'tiktok' | 'x' | 'youtube' | 'snapchat'
 
 export type VerificationPlatform =
-  | 'x' | 'instagram' | 'tiktok' | 'youtube'
+  | 'x' | 'instagram' | 'tiktok' | 'youtube' | 'snapchat'
   | 'bluesky' | 'github' | 'mastodon' | 'telegram' | 'discord'
 
 export interface VerificationRecord {
@@ -45,6 +45,9 @@ export type TikTokPostOptions = {
   /** Derived from the eligible source event, never accepted from client input. */
   durationSeconds: number
 }
+
+export type SnapchatDestination = 'spotlight' | 'story'
+export type SourceMedia = { durationSeconds: number; width: number; height: number }
 
 export type InstagramDestination = 'story' | 'reel' | 'reel_feed'
 
@@ -97,6 +100,10 @@ export type Env = {
   ENABLE_TIKTOK?: string
   ENABLE_X?: string
   ENABLE_YOUTUBE?: string
+  ENABLE_SNAPCHAT?: string
+  SNAPCHAT_CLIENT_ID?: string
+  SNAPCHAT_CLIENT_SECRET?: string
+  SNAPCHAT_PUBLIC_PROFILE_APPROVED?: string
   /**
    * Overrides the crosspost attribution appended to every caption.
    * Supports {handle} and {url}; an empty string switches attribution off.
@@ -174,6 +181,7 @@ export type ConnectionRecord = {
 }
 
 export type PreferenceRecord = {
+  snapchatDestination?: SnapchatDestination | null
   youtubePrivacyStatus?: YouTubePrivacyStatus | null
   instagramDestination?: InstagramDestination | null
   pubkey: string
@@ -193,6 +201,8 @@ export type AutoCursorRecord = {
 }
 
 export type JobRecord = {
+  snapchatDestination?: SnapchatDestination | null
+  sourceMedia?: SourceMedia | null
   tiktokPostOptions?: TikTokPostOptions | null
   youtubePrivacyStatus?: YouTubePrivacyStatus | null
   youtubeTitle?: string | null

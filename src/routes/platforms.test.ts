@@ -67,6 +67,7 @@ describe('platforms route', () => {
         { platform: 'tiktok', enabled: true, supportsAutomatic: false },
         { platform: 'x', enabled: false, supportsAutomatic: true },
         { platform: 'youtube', enabled: false, supportsAutomatic: true },
+        { platform: 'snapchat', enabled: false, supportsAutomatic: true, readinessReason: 'credentials_missing' },
       ],
     })
   })

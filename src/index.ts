@@ -4,6 +4,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { operations } from './routes/operations'
+import { snapchat } from './routes/snapchat'
 import { connections } from './routes/connections'
 import { tiktok } from './routes/tiktok'
 import { crossposts } from './routes/crossposts'
@@ -32,6 +33,7 @@ crossposterApp.route('/', connections)
 crossposterApp.route('/', preferences)
 crossposterApp.route('/', crossposts)
 crossposterApp.route('/', tiktok)
+crossposterApp.route('/', snapchat)
 crossposterApp.route('/', webhooks)
 
 // The verifier public surface: public verification API, badge reads, landing

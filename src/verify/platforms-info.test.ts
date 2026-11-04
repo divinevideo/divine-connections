@@ -19,10 +19,10 @@ function testEnv(overrides: Partial<Env> = {}): Env {
 }
 
 describe('getVerificationPlatformInfo', () => {
-  it('covers all nine platforms with legacy keys plus methods', () => {
+  it('covers all ten platforms with legacy keys plus methods', () => {
     const { platforms } = getVerificationPlatformInfo(testEnv())
     expect(Object.keys(platforms).sort()).toEqual(
-      ['bluesky', 'discord', 'github', 'instagram', 'mastodon', 'telegram', 'tiktok', 'x', 'youtube'],
+      ['bluesky', 'discord', 'github', 'instagram', 'mastodon', 'snapchat', 'telegram', 'tiktok', 'x', 'youtube'],
     )
     for (const info of Object.values(platforms)) {
       expect(info).toHaveProperty('label')

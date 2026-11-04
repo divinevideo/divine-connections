@@ -66,6 +66,7 @@ export function loadConfig(env: Env): AppConfig {
       tiktok: isEnabled(env.ENABLE_TIKTOK),
       x: isEnabled(env.ENABLE_X),
       youtube: isEnabled(env.ENABLE_YOUTUBE),
+      snapchat: isEnabled(env.ENABLE_SNAPCHAT),
     },
   }
 }

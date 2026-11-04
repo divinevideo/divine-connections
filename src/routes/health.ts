@@ -26,6 +26,8 @@ function platformName(platform: string): string {
       return 'X'
     case 'youtube':
       return 'YouTube'
+    case 'snapchat':
+      return 'Snapchat'
     default:
       return platform
   }
@@ -42,7 +44,7 @@ export function renderHome(env: Env): string {
           <span class="platform-mark" aria-hidden="true"></span>
           <span>
             <strong>${platformName(platform.platform)}</strong>
-            <small>${platform.enabled ? 'Configured for opt-in publishing' : 'Waiting on provider keys'}</small>
+            <small>${platform.enabled ? 'Configured for opt-in publishing' : platform.platform === 'snapchat' ? 'Public Profile publishing requires approved app access' : 'Waiting on provider keys'}</small>
           </span>
           <span class="status ${platform.enabled ? 'ready' : 'waiting'}">${platform.enabled ? 'Configured' : 'Soon'}</span>
         </li>
@@ -579,7 +581,7 @@ export function renderHome(env: Env): string {
             <h1 id="headline">Send your loops farther.</h1>
             <p>
               Crossposter lets Divine creators choose where their original videos travel next:
-              Reels, TikTok, X, and Shorts. You connect the account. You choose manual or automatic.
+              Reels, TikTok, X, Shorts, and Snapchat. You connect the account. You choose manual or automatic.
             </p>
           </div>
           <div class="actions" aria-label="Service links">
@@ -677,6 +679,7 @@ export function renderHome(env: Env): string {
       let preferences = [];
       let instagramVideoDestinations = {};
       let youtubeVideoPrivacies = {};
+      let snapchatVideoDestinations = {};
       let preferenceSaves = Promise.resolve();
       let accountLoaded = false;
 
@@ -892,6 +895,7 @@ export function renderHome(env: Env): string {
         preferences = [];
         instagramVideoDestinations = {};
         youtubeVideoPrivacies = {};
+        snapchatVideoDestinations = {};
         accountLoaded = false;
         localStorage.removeItem(SESSION_KEY);
         renderAuthControls();
@@ -1030,12 +1034,13 @@ export function renderHome(env: Env): string {
             ? (connection.externalAccountName || 'Connected account')
             : platform.enabled
               ? (reconnect ? 'Sign in again to resume publishing.' : 'Ready when you are.')
-              : 'Provider keys are not configured yet.';
+              : platform.platform === 'snapchat' ? 'Public Profile publishing requires approved app access.' : 'Provider keys are not configured yet.';
           return '<div class="connect-row">' +
             '<span><strong>' + escapeHtml(platformName(platform.platform)) + '</strong><small>' +
             escapeHtml(accountLabel + (trouble ? ' Provider is having trouble; connecting or publishing may fail.' : '')) +
             '</small></span>' +
             '<button class="mini-button" data-connect="' + escapeHtml(platform.platform) + '" ' + (disabled ? 'disabled' : '') + '>' + escapeHtml(label) + '</button>' +
+            (connection && platform.platform === 'snapchat' ? '<button class="mini-button" data-snapchat-profile="' + escapeHtml(connection.id) + '">' + (connection.snapchatProfileConfirmed ? 'Change public profile' : 'Confirm public profile') + '</button>' : '') +
           '</div>';
         }).join('');
       }
@@ -1053,6 +1058,15 @@ export function renderHome(env: Env): string {
         return '<select aria-label="Instagram destination" ' + attributes + (disabled ? ' disabled' : '') + '>' +
           (!value ? '<option value="" selected disabled>Existing Reel setting</option>' : '') +
           choices.map(([key, label]) => '<option value="' + key + '" ' + (value === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select>';
+      }
+
+      function snapchatVideoDestination(videoId) {
+        return snapchatVideoDestinations[videoId] || preferences.find((item) => item.platform === 'snapchat')?.snapchatDestination || 'spotlight';
+      }
+
+      function snapchatDestinationSelect(value, attributes, disabled) {
+        return '<select aria-label="Snapchat destination" ' + attributes + (disabled ? ' disabled' : '') + '>' +
+          [['spotlight', 'Spotlight'], ['story', 'Public Story']].map(([key, label]) => '<option value="' + key + '" ' + (value === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select>';
       }
 
       function youtubeVideoPrivacy(videoId) {
@@ -1080,7 +1094,7 @@ export function renderHome(env: Env): string {
           const pref = preferences.find((item) => item.platform === platform.platform);
           const connection = connections.find((item) => item.platform === platform.platform && item.status === 'connected');
           const current = platform.supportsAutomatic === false && pref?.mode === 'automatic' ? 'disabled' : pref?.mode || 'disabled';
-          const disabled = !connection;
+          const disabled = !connection || (platform.platform === 'snapchat' && !connection.snapchatProfileConfirmed);
           return '<div class="preference-row">' +
             '<span><strong>' + escapeHtml(platformName(platform.platform)) + '</strong><small>' +
             (connection ? (platform.supportsAutomatic === false ? 'Confirm each video before posting to TikTok.' : 'How should new Divine videos reach this platform?') : 'Connect this platform first to turn on crossposting.') +
@@ -1090,6 +1104,7 @@ export function renderHome(env: Env): string {
               '<option value="manual" ' + (current === 'manual' ? 'selected' : '') + '>Manual</option>' +
               (platform.supportsAutomatic === false ? '' : '<option value="automatic" ' + (current === 'automatic' ? 'selected' : '') + '>Automatic</option>') +
             '</select>' +
+            (platform.platform === 'snapchat' ? '<span style="grid-column: 1 / -1"><label>Default destination ' + snapchatDestinationSelect(pref?.snapchatDestination || 'spotlight', 'data-snapchat-default="true"', disabled) + '</label><small>Public profiles only. Spotlight uses the first 160 characters of your Divine text and a source link; Snapchat decides profile placement. Public Stories last 24 hours and carry a source link, without text overlays. Portrait MP4 required, at least 540×960, 6–60 seconds for Spotlight or 5–60 seconds for Story, up to 16 MiB.</small></span>' : '') +
             (platform.platform === 'youtube' ? '<span style="grid-column: 1 / -1"><label>Default visibility ' +
               youtubePrivacySelect(pref?.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}', 'data-youtube-default="true"', disabled) + '</label>' +
               '<small>Private is visible only to you. Unlisted can be viewed with a link. Public is visible to everyone. YouTube decides whether a video is a Short.</small></span>' : '') +
@@ -1105,6 +1120,7 @@ export function renderHome(env: Env): string {
         if (platform === 'tiktok') return 'TikTok';
         if (platform === 'x') return 'X';
         if (platform === 'youtube') return 'YouTube';
+        if (platform === 'snapchat') return 'Snapchat';
         return platform;
       }
 
@@ -1169,8 +1185,10 @@ export function renderHome(env: Env): string {
             const description = privacy === 'public' ? 'Published publicly to YouTube' : privacy === 'unlisted' ? 'Uploaded unlisted to YouTube' : 'Uploaded privately to YouTube';
             return description + '.' + link;
           }
+          if (job.platform === 'snapchat') return 'Posted to Snapchat ' + (job.snapchatDestination === 'story' ? 'public Story' : 'Spotlight') + '.' + link;
           return 'Posted to ' + escapeHtml(platformName(job.platform)) + '.' + link;
         }
+        if (job.platform === 'snapchat' && job.status === 'processing') return 'Snapchat is processing the ' + (job.snapchatDestination === 'story' ? 'public Story; waiting for readback.' : 'Spotlight; waiting for LIVE approval.');
         if (job.platform === 'tiktok' && job.status === 'processing') return 'TikTok is processing the video. This may take a few minutes…';
         if (job.platform === 'youtube' && job.status === 'processing') return 'YouTube is processing the upload…';
         if (job.status === 'failed') {
@@ -1192,7 +1210,7 @@ export function renderHome(env: Env): string {
           list.innerHTML = '<div class="connect-row"><span><strong>Sign in to get started</strong><small>Your recent Divine videos show up here.</small></span></div>';
           return;
         }
-        const connected = connections.filter((item) => item.status === 'connected');
+        const connected = connections.filter((item) => item.status === 'connected' && (item.platform !== 'snapchat' || item.snapchatProfileConfirmed));
         if (accountLoaded && connected.length === 0) {
           list.innerHTML = '<div class="connect-row"><span><strong>Connect a platform first</strong><small>Once a platform is connected you can post any video from here.</small></span></div>';
           return;
@@ -1216,6 +1234,9 @@ export function renderHome(env: Env): string {
             if (connection.platform === 'instagram') {
               selector = instagramDestinationSelect(existing ? existing.instagramDestination : instagramVideoDestination(video.id),
                 'data-instagram-video="' + escapeHtml(video.id) + '"', !!existing) + ' ';
+            }
+            if (connection.platform === 'snapchat') {
+              selector = snapchatDestinationSelect(existing ? existing.snapchatDestination : snapchatVideoDestination(video.id), 'data-snapchat-video="' + escapeHtml(video.id) + '"', !!existing) + ' ';
             }
             if (connection.platform === 'youtube') {
               selector = youtubePrivacySelect(existing ? (existing.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}') : youtubeVideoPrivacy(video.id),
@@ -1337,7 +1358,35 @@ export function renderHome(env: Env): string {
         });
       }
 
+      function snapchatProfileMarkup(data) {
+        return '<form><h2>Choose a Snapchat public profile</h2><p>This profile is used for Spotlight and public Stories. Changing it turns automatic posting off.</p><select name="profileId" required><option value="">Choose a public profile</option>' + data.profiles.map((profile) => '<option value="' + escapeHtml(profile.id) + '">' + escapeHtml(profile.name) + '</option>').join('') + '</select><p>Public Profile API access does not include private or friends Stories.</p><button type="button" data-cancel>Cancel</button> <button type="submit">Confirm public profile</button></form>';
+      }
+
+      async function selectSnapchatProfile(connectionId) {
+        const data = await api('/connections/snapchat/' + encodeURIComponent(connectionId) + '/profiles');
+        const dialog = document.createElement('dialog');
+        dialog.innerHTML = snapchatProfileMarkup(data);
+        document.body.appendChild(dialog);
+        const form = dialog.querySelector('form');
+        dialog.showModal();
+        const selected = await new Promise((resolve) => {
+          const finish = (value) => { dialog.close(); dialog.remove(); resolve(value); };
+          dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish(null); });
+          form.querySelector('[data-cancel]').addEventListener('click', () => finish(null));
+          form.addEventListener('submit', (event) => { event.preventDefault(); const value = form.querySelector('[name="profileId"]').value; if (data.profiles.some(profile => profile.id === value)) finish(value); });
+        });
+        if (!selected) return;
+        await api('/connections/snapchat/' + encodeURIComponent(connectionId) + '/profile', { method: 'POST', body: JSON.stringify({ profileId: selected, confirmed: true }) });
+        await refreshAccount();
+        setStatus('Snapchat public profile confirmed. Crossposting is manual until you choose automatic.');
+      }
+
       async function triggerCrosspost(videoId, platform) {
+        if (platform === 'snapchat') {
+          const account = connections.find((item) => item.platform === 'snapchat' && item.status === 'connected');
+          const destination = snapchatVideoDestination(videoId);
+          if (!window.confirm('Post this Divine video to ' + (account?.externalAccountName || 'your public profile') + ' as ' + (destination === 'story' ? 'a public Story? This shares a source link without text overlays.' : 'Spotlight? The first 160 characters of your Divine text and a source link are included. Snapchat must approve it before it is live.'))) { renderVideoRows(); return; }
+        }
         let tiktokPostOptions;
         if (platform === 'tiktok') {
           tiktokPostOptions = await confirmTikTok(videoId);
@@ -1352,7 +1401,7 @@ export function renderHome(env: Env): string {
         }
         const data = await api('/videos/' + videoId + '/crossposts', {
           method: 'POST',
-          body: JSON.stringify({ platforms: [platform], ...(platform === 'tiktok' ? { tiktokPostOptions } : {}), ...(platform === 'youtube' ? { youtubePrivacyStatus: youtubeVideoPrivacy(videoId) } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
+          body: JSON.stringify({ platforms: [platform], ...(platform === 'snapchat' ? { snapchatDestination: snapchatVideoDestination(videoId) } : {}), ...(platform === 'tiktok' ? { tiktokPostOptions } : {}), ...(platform === 'youtube' ? { youtubePrivacyStatus: youtubeVideoPrivacy(videoId) } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
         });
         videoJobs[videoId] = data.jobs || [];
         renderVideoRows();
@@ -1369,10 +1418,10 @@ export function renderHome(env: Env): string {
         window.location.href = data.authorizationUrl;
       }
 
-      async function updatePreference(platform, mode, instagramDestination, youtubePrivacyStatus) {
+      async function updatePreference(platform, mode, instagramDestination, youtubePrivacyStatus, snapchatDestination) {
         await api('/preferences/' + platform, {
           method: 'PUT',
-          body: JSON.stringify({ mode, ...(youtubePrivacyStatus ? { youtubePrivacyStatus } : {}), ...(instagramDestination ? { instagramDestination } : {}) }),
+          body: JSON.stringify({ mode, ...(snapchatDestination ? { snapchatDestination } : {}), ...(youtubePrivacyStatus ? { youtubePrivacyStatus } : {}), ...(instagramDestination ? { instagramDestination } : {}) }),
         });
         setStatus(platformName(platform) + ' crossposting set to ' + mode + '.');
         await refreshAccount();
@@ -1391,6 +1440,7 @@ export function renderHome(env: Env): string {
             renderPreferenceRows();
             renderVideoRows();
           }
+          if (target?.dataset?.snapchatProfile) { await selectSnapchatProfile(target.dataset.snapchatProfile); }
           if (target?.dataset?.connect) {
             await connectPlatform(target.dataset.connect);
           }
@@ -1426,17 +1476,21 @@ export function renderHome(env: Env): string {
           instagramVideoDestinations[target.dataset.instagramVideo] = target.value;
           return;
         }
+        if (target?.dataset?.snapchatVideo) { snapchatVideoDestinations[target.dataset.snapchatVideo] = target.value; return; }
         if (target?.dataset?.youtubeVideo) {
           youtubeVideoPrivacies[target.dataset.youtubeVideo] = target.value;
           return;
         }
-        if (!target?.dataset?.preference && !target?.dataset?.instagramDefault && !target?.dataset?.youtubeDefault) return;
-        const platform = target.dataset.youtubeDefault ? 'youtube' : target.dataset.instagramDefault ? 'instagram' : target.dataset.preference;
+        if (!target?.dataset?.preference && !target?.dataset?.instagramDefault && !target?.dataset?.youtubeDefault && !target?.dataset?.snapchatDefault) return;
+        const platform = target.dataset.snapchatDefault ? 'snapchat' : target.dataset.youtubeDefault ? 'youtube' : target.dataset.instagramDefault ? 'instagram' : target.dataset.preference;
         const value = target.value;
         // Saves run one at a time so a destination save reads the mode the previous save stored.
         preferenceSaves = preferenceSaves.then(async () => {
           try {
-            if (target.dataset.youtubeDefault) {
+            if (target.dataset.snapchatDefault) {
+              const mode = preferences.find((item) => item.platform === 'snapchat')?.mode || 'disabled';
+              await updatePreference('snapchat', mode, undefined, undefined, value);
+            } else if (target.dataset.youtubeDefault) {
               const mode = preferences.find((item) => item.platform === 'youtube')?.mode || 'disabled';
               await updatePreference('youtube', mode, undefined, value);
             } else if (target.dataset.instagramDefault) {

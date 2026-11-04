@@ -36,6 +36,7 @@ function env(db: D1Database, overrides: Partial<Env> = {}): Env {
 function platformEnv(db: D1Database, platform: Platform): Env {
   const base = env(db)
   switch (platform) {
+    case 'snapchat': return { ...base, ENABLE_SNAPCHAT: 'true', SNAPCHAT_PUBLIC_PROFILE_APPROVED: 'true', SNAPCHAT_CLIENT_ID: 'client', SNAPCHAT_CLIENT_SECRET: 'secret' }
     case 'instagram':
       return {
         ...base,

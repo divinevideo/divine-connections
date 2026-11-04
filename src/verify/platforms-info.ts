@@ -15,6 +15,7 @@ const LABELS: Record<VerificationPlatform, string> = {
   instagram: 'Instagram',
   tiktok: 'TikTok',
   youtube: 'YouTube',
+  snapchat: 'Snapchat',
   bluesky: 'Bluesky',
   github: 'GitHub',
   mastodon: 'Mastodon',
@@ -24,9 +25,9 @@ const LABELS: Record<VerificationPlatform, string> = {
 
 export function getVerificationPlatformInfo(env: Env): { platforms: Record<VerificationPlatform, VerificationPlatformInfo> } {
   const oauthEnabled = new Map(getProviderSummaries(env).map((summary) => [summary.platform, summary.enabled]))
-  const oauth = (platform: 'x' | 'instagram' | 'tiktok' | 'youtube'): boolean => oauthEnabled.get(platform) === true
+  const oauth = (platform: 'x' | 'instagram' | 'tiktok' | 'youtube' | 'snapchat'): boolean => oauthEnabled.get(platform) === true
 
-  const methods = (platform: 'x' | 'instagram' | 'tiktok' | 'youtube', proofCapable: boolean): Array<'oauth' | 'proof_post'> => [
+  const methods = (platform: 'x' | 'instagram' | 'tiktok' | 'youtube' | 'snapchat', proofCapable: boolean): Array<'oauth' | 'proof_post'> => [
     ...(oauth(platform) ? (['oauth'] as const) : []),
     ...(proofCapable ? (['proof_post'] as const) : []),
   ]
@@ -38,6 +39,7 @@ export function getVerificationPlatformInfo(env: Env): { platforms: Record<Verif
       x: { label: LABELS.x, supported: true, methods: methods('x', true) },
       instagram: { label: LABELS.instagram, supported: oauth('instagram'), methods: ['oauth'] },
       tiktok: { label: LABELS.tiktok, supported: true, methods: methods('tiktok', true) },
+      snapchat: { label: LABELS.snapchat, supported: oauth('snapchat'), methods: methods('snapchat', false) },
       youtube: {
         label: LABELS.youtube,
         supported: oauth('youtube') || Boolean(env.YOUTUBE_API_KEY),

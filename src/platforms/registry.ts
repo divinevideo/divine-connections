@@ -1,7 +1,10 @@
+// ABOUTME: Selects configured publishing adapters and reports setup readiness.
+// ABOUTME: Gates Snapchat on explicitly verified Public Profile API access.
 import type { Env, Platform } from '../types'
 import { loadConfig, parseYouTubePrivacyStatus } from '../config'
 import type { YouTubePrivacyStatus } from '../config'
 import type { PlatformAdapter } from './adapter'
+import { createSnapchatAdapter } from './snapchat'
 import { createInstagramAdapter } from './instagram'
 import { createTikTokAdapter } from './tiktok'
 import { createXAdapter } from './x'
@@ -11,9 +14,10 @@ export type ProviderSummary = {
   platform: Platform
   enabled: boolean
   supportsAutomatic: boolean
+  readinessReason?: string
 }
 
-const PLATFORM_ORDER: readonly Platform[] = ['instagram', 'tiktok', 'x', 'youtube']
+const PLATFORM_ORDER: readonly Platform[] = ['instagram', 'tiktok', 'x', 'youtube', 'snapchat']
 
 function enabled(value: string | undefined): boolean {
   return value === 'true'
@@ -35,8 +39,11 @@ function hasYouTube(env: Env): boolean {
   return enabled(env.ENABLE_YOUTUBE) && Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)
 }
 
+function hasSnapchat(env: Env): boolean { return enabled(env.ENABLE_SNAPCHAT) && Boolean(env.SNAPCHAT_CLIENT_ID && env.SNAPCHAT_CLIENT_SECRET) && enabled(env.SNAPCHAT_PUBLIC_PROFILE_APPROVED) }
+
 function isConfigured(env: Env, platform: Platform): boolean {
   switch (platform) {
+    case 'snapchat': return hasSnapchat(env)
     case 'instagram':
       return hasInstagram(env)
     case 'tiktok':
@@ -61,6 +68,7 @@ export function getProviderSummaries(env: Env): ProviderSummary[] {
     platform,
     enabled: isConfigured(env, platform),
     supportsAutomatic: platform !== 'tiktok',
+    ...(platform === 'snapchat' && !isConfigured(env, platform) ? { readinessReason: !env.SNAPCHAT_CLIENT_ID || !env.SNAPCHAT_CLIENT_SECRET ? 'credentials_missing' : env.SNAPCHAT_PUBLIC_PROFILE_APPROVED !== 'true' ? 'public_profile_access_pending' : 'disabled' } : {}),
   }))
 }
 
@@ -74,6 +82,7 @@ function configuredAdapter(
   youtubePrivacyStatus?: YouTubePrivacyStatus,
 ): PlatformAdapter | null {
   switch (platform) {
+    case 'snapchat': return hasSnapchat(env) ? createSnapchatAdapter({ clientId: env.SNAPCHAT_CLIENT_ID!, clientSecret: env.SNAPCHAT_CLIENT_SECRET! }) : null
     case 'instagram': {
       const { INSTAGRAM_CLIENT_ID, INSTAGRAM_CLIENT_SECRET } = env
       return hasInstagram(env) && INSTAGRAM_CLIENT_ID && INSTAGRAM_CLIENT_SECRET

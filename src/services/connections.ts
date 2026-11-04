@@ -15,7 +15,7 @@ import { disablePreferenceForConnectionStatement, getPreferences, setPreference 
 import { revokeVerificationsForConnectionStatement } from '../db/verifications'
 import { loadConfig, oauthRedirectBase, parseYouTubePrivacyStatus } from '../config'
 import { getAdapter } from '../platforms/registry'
-import { PlatformAdapterError } from '../platforms/adapter'
+import { PlatformAdapterError, asRecord } from '../platforms/adapter'
 import type { PlatformAccount, PlatformAdapter, TokenSet } from '../platforms/adapter'
 import type {
   ConnectionRecord,
@@ -24,6 +24,7 @@ import type {
   OAuthAttemptStatus,
   OAuthStateRecord,
   Platform,
+  SnapchatDestination,
   InstagramDestination,
   YouTubePrivacyStatus,
   PreferenceMode,
@@ -33,11 +34,12 @@ import { decryptToken, encryptToken, generatePKCE, generateRandomId } from '../u
 import { HttpError } from '../utils/http'
 import { sanitizeProviderMetadata } from '../utils/provider-metadata'
 import { providerErrorDiagnostics } from '../utils/provider-error-diagnostics'
-import { assertAllowedReturnUrl, parsePlatform, parsePreferenceMode, parseInstagramDestination, parseYouTubePrivacyOption } from '../utils/validation'
+import { assertAllowedReturnUrl, parsePlatform, parseSnapchatDestination, parsePreferenceMode, parseInstagramDestination, parseYouTubePrivacyOption } from '../utils/validation'
 
 const OAUTH_STATE_TTL_SECONDS = 10 * 60
 
 type ConnectionSummary = {
+  snapchatProfileConfirmed?: boolean
   id: string
   platform: Platform
   externalAccountId: string
@@ -51,6 +53,7 @@ type ConnectionSummary = {
 }
 
 type PreferenceSummary = {
+  snapchatDestination?: SnapchatDestination | null
   youtubePrivacyStatus?: YouTubePrivacyStatus | null
   instagramDestination?: InstagramDestination | null
   platform: Platform
@@ -71,6 +74,7 @@ function callbackRedirectUri(env: Env, platform: Platform): string {
 
 function connectionSummary(connection: ConnectionRecord): ConnectionSummary {
   return {
+    ...(connection.platform === 'snapchat' ? { snapchatProfileConfirmed: asRecord(asRecord(JSON.parse(connection.metadataJson || '{}')).account).profileConfirmed === true } : {}),
     id: connection.id,
     platform: connection.platform,
     externalAccountId: connection.externalAccountId,
@@ -86,6 +90,7 @@ function connectionSummary(connection: ConnectionRecord): ConnectionSummary {
 
 function preferenceSummary(preference: PreferenceRecord): PreferenceSummary {
   return {
+    ...(preference.platform === 'snapchat' ? { snapchatDestination: preference.snapchatDestination ?? 'spotlight' } : {}),
     ...(preference.platform === 'youtube' ? { youtubePrivacyStatus: preference.youtubePrivacyStatus ?? null } : {}),
     ...(preference.platform === 'instagram' ? { instagramDestination: preference.instagramDestination ?? null } : {}),
     platform: preference.platform,
@@ -382,7 +387,7 @@ export async function completeConnectionCallback(
         pubkey: state.pubkey,
         platform,
         connectionId: connectionInput.id,
-        mode: 'manual',
+        mode: platform === 'snapchat' ? 'disabled' : 'manual',
         automaticEnabledAt: null,
         createdAt: now,
         updatedAt: now,
@@ -401,10 +406,10 @@ export async function completeConnectionCallback(
   }
 }
 
-// Verification identity per platform: YouTube proves the channel (UC… id);
-// the other OAuth providers prove the human handle stored as the account name.
+// YouTube proves the channel ID; Snapchat proves the authorized public-profile ID.
+// Other OAuth providers prove the human handle stored as the account name.
 export function verificationIdentityForConnection(connection: ConnectionRecord): string {
-  return connection.platform === 'youtube'
+  return (connection.platform === 'youtube' || connection.platform === 'snapchat')
     ? connection.externalAccountId
     : connection.externalAccountName
 }
@@ -461,9 +466,10 @@ export async function updatePreference(
   platformValue: string,
   modeValue: unknown,
   destinationValue?: unknown,
-  options: { youtubePrivacyStatus?: unknown } = {},
+  options: { youtubePrivacyStatus?: unknown; snapchatDestination?: unknown } = {},
 ): Promise<PreferenceSummary> {
   const platform = parsePlatform(platformValue)
+  const snapchatDestination = parseSnapchatDestination(options.snapchatDestination, platform === 'snapchat')
   const instagramDestination = parseInstagramDestination(destinationValue, platform === 'instagram')
   const youtubePrivacyStatus = parseYouTubePrivacyOption(options.youtubePrivacyStatus, platform === 'youtube')
   const mode = parsePreferenceMode(String(modeValue))
@@ -479,11 +485,13 @@ export async function updatePreference(
     if (!connection) {
       throw new HttpError(400, 'not_connected', 'platform is not connected')
     }
+    if (platform === 'snapchat' && asRecord(asRecord(JSON.parse(connection.metadataJson || '{}')).account).profileConfirmed !== true) throw new HttpError(400, 'not_eligible', 'Confirm your Snapchat public profile first')
     connectionId = connection.id
     automaticEnabledAt = mode === 'automatic' && existing?.mode === 'automatic' ? existing.automaticEnabledAt : now
   }
 
   const preference = await setPreference(env.DB, {
+    snapchatDestination: platform === 'snapchat' ? snapchatDestination ?? existing?.snapchatDestination ?? 'spotlight' : undefined,
     youtubePrivacyStatus: platform === 'youtube' ? youtubePrivacyStatus ?? existing?.youtubePrivacyStatus ?? parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS) : undefined,
     instagramDestination,
     pubkey,

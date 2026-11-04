@@ -1,5 +1,6 @@
 // ABOUTME: Claims queued crosspost jobs and publishes them through provider adapters.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
+import { videoUrlFor } from './attribution'
 import { usableConnectionToken, ConnectionTokenReauthError } from './connection-token'
 import { recordDiagnosticSafely } from './reliability'
 import { listAttempts, recordAttempt } from '../db/attempts'
@@ -81,6 +82,7 @@ export function providerCheckpoint(platform: Platform, value: unknown): Record<s
     tiktok: ['publish_id'],
     x: ['mediaId', 'caption'],
     youtube: ['id'],
+    snapchat: ['stage', 'mediaId', 'profileId', 'destination', 'caption', 'sourceLink', 'mediaCreatedAt', 'spotlightId', 'dispatchedAt'],
   }
   const checkpoint: Record<string, unknown> = {}
   for (const key of allowedKeys[platform]) {
@@ -148,7 +150,8 @@ async function accessTokenForJob(
     return null
   }
 
-  if (job.platform === 'tiktok') return usableConnectionToken(env, connection, now)
+  if (job.platform === 'snapchat' && (connection.externalAccountId !== job.externalAccountId || asRecord(asRecord(JSON.parse(connection.metadataJson || '{}')).account).profileConfirmed !== true)) throw new ConnectionTokenReauthError('snapchat', 'Snapchat profile changed; confirm the original destination before posting')
+  if (job.platform === 'tiktok' || job.platform === 'snapchat') return usableConnectionToken(env, connection, now)
 
   if (!connection.tokenExpiresAt || connection.tokenExpiresAt > now + 60 || !connection.encryptedRefreshToken) {
     return decryptToken(connection.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY)
@@ -284,6 +287,11 @@ async function markResult(
   ownership: ClaimOwnership,
   countProcessingRetry = false,
 ): Promise<ProcessCrosspostResult> {
+  // Persist known Snap media/post state before releasing the dispatch fence.
+  // A crash before this write remains dispatching and cannot replay publication.
+  if (job.platform === 'snapchat' && result.status === 'processing') {
+    await addAttempt(env, { jobId: job.id, platform: job.platform, status: result.status, providerResponse: result.providerResponse, now })
+  }
   if (result.status === 'posted') {
     await updateOwnedJob(env, job.id, ownership, {
       status: 'posted',
@@ -313,7 +321,7 @@ async function markResult(
       'platform publish is still processing',
       now,
     )
-    await addAttempt(env, {
+    if (job.platform !== 'snapchat') await addAttempt(env, {
       jobId: job.id,
       platform: job.platform,
       status: result.status,
@@ -336,7 +344,7 @@ async function markResult(
     externalPostUrl: result.externalPostUrl ?? null,
     nextRetryAt: now + delay,
   })
-  await addAttempt(env, {
+  if (job.platform !== 'snapchat') await addAttempt(env, {
     jobId: job.id,
     platform: job.platform,
     status: result.status,
@@ -478,7 +486,7 @@ async function handleAmbiguousPostResult(
   now: number,
 ): Promise<ProcessCrosspostResult> {
   const providerStatus = error instanceof PlatformAdapterError ? (error.providerStatus ?? null) : null
-  const providerLabel = { x: 'X post', youtube: 'YouTube upload', tiktok: 'TikTok upload', instagram: 'Instagram upload' }[job.platform]
+  const providerLabel = { x: 'X post', youtube: 'YouTube upload', tiktok: 'TikTok upload', instagram: 'Instagram upload', snapchat: 'Snapchat post' }[job.platform]
   const errorMessage = `${providerLabel} result is ambiguous after dispatch`
   await updateOwnedJob(env, job.id, ownership, {
     status: 'failed',
@@ -568,7 +576,9 @@ export async function processCrosspostJob(
         return { status: 'needs_reauth' }
       }
 
-      const isProcessingPoll = existing.status === 'processing'
+      const snapAttempts = job.platform === 'snapchat' ? await listAttempts(env.DB, job.id) : []
+      const snapCheckpoint = job.platform === 'snapchat' ? latestProviderResponse(job.platform, snapAttempts) : {}
+      const isProcessingPoll = existing.status === 'processing' || (job.platform === 'snapchat' && typeof snapCheckpoint.stage === 'string')
       if (isProcessingPoll) {
         if (!adapter.pollPublishStatus) {
           const delay = await scheduleRetry(
@@ -592,6 +602,9 @@ export async function processCrosspostJob(
       }
 
       const result = await adapter.publishVideo({
+        snapchatDestination: job.snapchatDestination,
+        sourceMedia: job.sourceMedia,
+        canonicalSourceUrl: videoUrlFor(job.videoEventId),
         tiktokPostOptions: job.tiktokPostOptions,
         youtubePrivacyStatus: job.youtubePrivacyStatus,
         youtubeTitle: job.youtubeTitle,
@@ -607,6 +620,11 @@ export async function processCrosspostJob(
     } catch (error) {
       if (error instanceof PublishClaimLostError) throw error
       await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: dispatchFenceRaised ? 'ambiguous_dispatch' : existing.status === 'processing' ? 'poll' : 'publish', outcome: 'failed', now, error })
+      if (dispatchFenceRaised && job.platform === 'snapchat' && error instanceof PlatformAdapterError && error.code === 'needs_reauth') {
+        // An explicit auth denial proves this request was rejected. Never replay
+        // automatically, but surface lost permission rather than unknown success.
+        return await handleProviderError(env, job, ownership, error, now)
+      }
       if (dispatchFenceRaised) {
         return await handleAmbiguousPostResult(env, job, ownership, error, now)
       }

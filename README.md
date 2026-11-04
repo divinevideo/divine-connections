@@ -633,3 +633,71 @@ responses, and fences ambiguous dispatches against blind retry.
 Provider references: [creator info](https://developers.tiktok.com/docs/en/content-posting-api-reference-query-creator-info),
 [Direct Post](https://developers.tiktok.com/docs/en/content-posting-api-reference-direct-post),
 [required controls and consent](https://developers.tiktok.com/docs/en/content-sharing-guidelines).
+
+### Snapchat Public Profile publishing (disabled)
+
+Snapchat supports public Spotlight and public Story destinations. It does not
+support private/friends Stories or Login Kit publishing. Both
+`ENABLE_SNAPCHAT` and `SNAPCHAT_PUBLIC_PROFILE_APPROVED` remain `false`.
+Configuration also requires `SNAPCHAT_CLIENT_ID` and `SNAPCHAT_CLIENT_SECRET`
+from a team-owned Business Manager OAuth app. Public Profile API allowlisting
+and actual publishing permission must be independently confirmed before the
+approval flag is set. Credential presence and the `snapchat-profile-api` scope
+alone are not proof of publishing approval.
+
+Register the exact callback:
+https://crossposter.divine.video/connections/snapchat/callback
+
+OAuth creates a connection with posting off and an unconfirmed public profile.
+On the authenticated publishing host:
+
+- `GET /connections/snapchat/:connection_id/profiles` returns the token's own
+  profile and authorized profiles in its associated organization when accessible.
+  It returns only profile ID/name/display name, never credentials. Organization-only
+  users without an own public profile are not supported by this discovery flow.
+- `POST /connections/snapchat/:connection_id/profile` with
+  `{"profileId":"<authorized-profile-uuid>","confirmed":true}` rechecks current
+  authorization and explicitly confirms the destination. Changing it sets mode
+  to manual; automatic posting requires a new opt-in. Existing jobs keep their
+  original profile and cannot post through a newly selected profile.
+- `PUT /preferences/snapchat` accepts
+  `{"mode":"automatic","snapchatDestination":"story"}`. Modes remain
+  `disabled`, `manual`, `automatic`. Destination defaults to `spotlight`.
+- `POST /videos/:event_id/crossposts` accepts
+  `{"platforms":["snapchat"],"snapchatDestination":"story"}`. The override and
+  authoritative duration/dimensions are frozen in additive job-options storage.
+  Duplicate requests retain the original destination. Invalid/foreign options
+  return HTTP 400. Profile selection routes are absent from verifier hosts.
+
+Spotlight uses the first 160 Unicode code points of original Divine text, without
+adding attribution text; the separate supported `link` field always carries the
+full Divine source URL. Locale is currently `en_US`. Public Stories use the source
+link and no textual caption/overlay. Nothing transcodes or changes destination.
+
+Eligibility requires authoritative metadata bound to the selected source group:
+portrait MP4 of at least 540×960 pixels, 6–60 seconds for Spotlight or 5–60 for
+Story. The service conservatively caps plaintext at 16 MiB to fit Worker memory;
+Snap's documented multipart API supports larger files. Missing/conflicting
+metadata is rejected. Automatic ineligibility is recorded as a failed job while
+other opted-in providers continue.
+
+Media is encrypted using fresh AES-256-CBC key/IV and uploaded in at most 8 MiB
+parts, then finalized. Returned upload paths must name the exact profile/media
+on the Snapchat API host; authenticated redirects are rejected. Encryption
+material and upload paths never enter job checkpoints or diagnostics. Interrupted
+partial uploads restart unpublished media; finalized media is durable and reused.
+There is no persistent partial-chunk resume. Finalized media older than 23 hours
+is rejected before dispatch rather than risking the provider's 24-hour expiry.
+
+Publication is fenced durably before the outward POST. Unknown dispatch outcomes
+require manual reconciliation and never replay. An explicit permission denial
+requires reconnection. Accepted Spotlight remains processing until readback says
+`LIVE`; rejection is terminal. A Story POST supplies no post ID, so processing
+continues until a fresh snap is read back with the exact immutable Divine link.
+Readback examines at most ten public stories and one hundred snaps per story;
+absence of a match remains processing and eventually times out. This can miss
+very high-volume profiles. The API does not return a public permalink, so neither destination generates one.
+A stable provider post ID is retained; the creator can check it in Snapchat.
+
+Before enabling, follow [the Snapchat rollout checklist](docs/snapchat-rollout.md).
+These implementation tests are not production approval or evidence of a live post.

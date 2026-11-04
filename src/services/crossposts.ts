@@ -1,5 +1,7 @@
 // ABOUTME: Creates and reads creator-owned crosspost jobs.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
+import { validateSnapchatMedia } from '../platforms/snapchat'
+import { asRecord } from '../platforms/adapter'
 import { confirmTikTokOptions } from './tiktok-posting'
 import { parseYouTubePrivacyStatus } from '../config'
 import { youtubeTitle } from '../platforms/youtube'
@@ -11,10 +13,10 @@ import { getActiveConnectionForPlatform, getConnection } from '../db/connections
 import { createOrGetJob, getJob, listJobsForVideo } from '../db/jobs'
 import { getPreferences } from '../db/preferences'
 import { getAdapter } from '../platforms/registry'
-import type { ConnectionRecord, Env, InstagramDestination, JobAttemptRecord, JobRecord, Platform, PreferenceRecord, TikTokPostOptions, YouTubePrivacyStatus } from '../types'
+import type { SourceMedia, SnapchatDestination, ConnectionRecord, Env, InstagramDestination, JobAttemptRecord, JobRecord, Platform, PreferenceRecord, TikTokPostOptions, YouTubePrivacyStatus } from '../types'
 import { generateRandomId } from '../utils/crypto'
 import { HttpError } from '../utils/http'
-import { isValidEventId, parsePlatform, parseInstagramDestination, parseYouTubePrivacyOption } from '../utils/validation'
+import { isValidEventId, parsePlatform, parseSnapchatDestination, parseInstagramDestination, parseYouTubePrivacyOption } from '../utils/validation'
 
 export type CrosspostJobsResult = {
   jobs: JobRecord[]
@@ -28,6 +30,7 @@ export type JobWithAttemptsResult = {
 }
 
 type SourceSnapshot = {
+  sourceMedia: SourceMedia | null
   durationSeconds: number | null
   title: string | null
   mediaUrl: string
@@ -98,12 +101,12 @@ function isUsableMediaUrl(value: string | null): value is string {
   }
 }
 
-type MediaDescriptor = { url: string | null; hash: string | null; duration: number | null }
+type MediaDescriptor = { dimensions: string | null; url: string | null; hash: string | null; duration: number | null }
 
 function selectedMedia(event: DivineVideoEvent): MediaDescriptor {
   const descriptors = event.tags.filter(tag => tag[0] === 'imeta').map(tag => ({
     urls: descriptorValues(tag, 'url'), hash: uniqueValue(descriptorValues(tag, 'x')),
-    durations: descriptorValues(tag, 'duration'),
+    durations: descriptorValues(tag, 'duration'), dimensions: uniqueValue(descriptorValues(tag, 'dim')),
   })).filter(descriptor => descriptor.urls.length > 0)
   const topUrls = event.tags.filter(tag => ['url', 'media', 'r'].includes(tag[0])).map(tag => tag[1]).filter(isUsableMediaUrl)
   const topDurations = event.tags.filter(tag => tag[0] === 'duration').map(tag => tag[1])
@@ -126,7 +129,8 @@ function selectedMedia(event: DivineVideoEvent): MediaDescriptor {
     if (overlapping.some(descriptor => descriptor.hash !== selected.hash ||
       (descriptor.durations.length > 0 && (durationSeconds(uniqueValue(descriptor.durations)) === null ||
         (duration !== null && durationSeconds(uniqueValue(descriptor.durations)) !== duration))))) duration = null
-    return { url, hash: selected.hash, duration }
+    const dimensions = overlapping.some(descriptor => descriptor.dimensions !== selected.dimensions) ? null : selected.dimensions
+    return { url, hash: selected.hash, duration, dimensions }
   }
 
   // Legacy events without a usable imeta source keep top-level URL/hash support.
@@ -135,7 +139,7 @@ function selectedMedia(event: DivineVideoEvent): MediaDescriptor {
   const hash = uniqueValue(event.tags.filter(tag => ['x', 'sha256', 'hash'].includes(tag[0])).map(tag => tag[1]))
   const sameSourceGroup = descriptors.every(descriptor => descriptor.hash === hash &&
     (descriptor.durations.length === 0 || durationSeconds(uniqueValue(descriptor.durations)) === topDuration))
-  return { url, hash, duration: new Set(topUrls).size === 1 && sameSourceGroup ? topDuration : null }
+  return { url, hash, dimensions: new Set(topUrls).size === 1 && descriptors.length === 0 ? uniqueValue(event.tags.filter(tag => tag[0] === 'dim').map(tag => tag[1])) : null, duration: new Set(topUrls).size === 1 && sameSourceGroup ? topDuration : null }
 }
 
 function isArchiveLabeled(event: DivineVideoEvent): boolean {
@@ -172,6 +176,7 @@ function validateEvent(lookup: DivineVideoLookup | null, pubkey: string, eventId
   }
 
   return {
+    sourceMedia: media.duration !== null && media.dimensions && /^\d+x\d+$/.test(media.dimensions) ? { durationSeconds: media.duration, width: Number(media.dimensions.split('x')[0]), height: Number(media.dimensions.split('x')[1]) } : null,
     durationSeconds: media.duration,
     title: tagValue(event.tags, 'title')?.trim() || null,
     mediaUrl: url,
@@ -205,7 +210,9 @@ async function createJobsForConnections(
     pubkey: string
     eventId: string
     snapshot: SourceSnapshot
+    automatic?: boolean
     connections: ConnectionRecord[]
+    snapchatDestination?: SnapchatDestination | null
     instagramDestination?: InstagramDestination | null
     tiktokPostOptions?: TikTokPostOptions
     youtubePrivacyStatus?: YouTubePrivacyStatus | null
@@ -216,7 +223,16 @@ async function createJobsForConnections(
   const createdJobs: JobRecord[] = []
 
   for (const connection of input.connections) {
+    let eligibilityError: string | null = null
+    if (connection.platform === 'snapchat') {
+      if (asRecord(asRecord(JSON.parse(connection.metadataJson || '{}')).account).profileConfirmed !== true) throw new HttpError(400, 'not_eligible', 'Confirm your Snapchat public profile before posting')
+      try { validateSnapchatMedia(input.snapchatDestination ?? 'spotlight', input.snapshot.sourceMedia) } catch (error) {
+        eligibilityError = error instanceof Error ? error.message : 'Snapchat video is not eligible'
+        if (!input.automatic) throw new HttpError(400, 'not_eligible', eligibilityError)
+      }
+    }
     const result = await createOrGetJob(env.DB, {
+      ...(connection.platform === 'snapchat' ? { snapchatDestination: input.snapchatDestination ?? 'spotlight', sourceMedia: input.snapshot.sourceMedia } : {}),
       ...(connection.platform === 'tiktok' ? { tiktokPostOptions: input.tiktokPostOptions } : {}),
       ...(connection.platform === 'youtube' ? {
         youtubePrivacyStatus: input.youtubePrivacyStatus ?? parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS),
@@ -233,20 +249,22 @@ async function createJobsForConnections(
       sourceMediaHash: input.snapshot.mediaHash,
       // TikTok text was explicitly edited/confirmed; preserve it exactly.
       // Other providers retain their existing enqueue-time attribution.
-      caption: connection.platform === 'tiktok' && input.tiktokPostOptions ? input.tiktokPostOptions.confirmedCaption : buildCrosspostCaption({
+      caption: connection.platform === 'snapchat' ? [...input.snapshot.caption].slice(0, 160).join('') : connection.platform === 'tiktok' && input.tiktokPostOptions ? input.tiktokPostOptions.confirmedCaption : buildCrosspostCaption({
         caption: input.snapshot.caption,
         eventId: input.eventId,
         authorName: input.snapshot.authorName,
         platform: connection.platform,
         template: env.CROSSPOST_ATTRIBUTION_TEMPLATE,
       }),
-      status: 'queued',
+      status: eligibilityError ? 'failed' : 'queued',
+      errorCode: eligibilityError ? 'not_eligible' : null,
+      errorMessage: eligibilityError,
       expiresAt: now + JOB_EXPIRATION_SECONDS,
       createdAt: now,
       updatedAt: now,
     })
     jobs.push(result.job)
-    if (result.created) {
+    if (result.created && !eligibilityError) {
       createdJobs.push(result.job)
     }
   }
@@ -268,7 +286,7 @@ async function requireManualConnection(env: Env, pubkey: string, platform: Platf
 
 export async function createManualCrossposts(
   env: Env,
-  input: { pubkey: string; eventId: string; platforms: string[]; instagramDestination?: unknown; youtubePrivacyStatus?: unknown; tiktokPostOptions?: unknown },
+  input: { pubkey: string; eventId: string; platforms: string[]; snapchatDestination?: unknown; instagramDestination?: unknown; youtubePrivacyStatus?: unknown; tiktokPostOptions?: unknown },
 ): Promise<CrosspostJobsResult> {
   const eventId = ensureEventId(input.eventId)
   if (!Array.isArray(input.platforms) || input.platforms.length === 0) {
@@ -276,6 +294,7 @@ export async function createManualCrossposts(
   }
 
   const platforms = uniquePlatforms(input.platforms)
+  const snapOverride = parseSnapchatDestination(input.snapchatDestination, platforms.includes('snapchat'))
   const override = parseInstagramDestination(input.instagramDestination, platforms.includes('instagram'))
   const youtubeOverride = parseYouTubePrivacyOption(input.youtubePrivacyStatus, platforms.includes('youtube'))
   const connections = await Promise.all(platforms.map((platform) => requireManualConnection(env, input.pubkey, platform)))
@@ -285,7 +304,7 @@ export async function createManualCrossposts(
   const tiktokPostOptions = tiktokConnection ? await confirmTikTokOptions(env, tiktokConnection, input.tiktokPostOptions, snapshot.durationSeconds) : undefined
   const preferences = await getPreferences(env.DB, input.pubkey)
   const saved = preferences.find((preference) => preference.platform === 'instagram')
-  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, tiktokPostOptions, instagramDestination: override ?? saved?.instagramDestination, youtubePrivacyStatus: youtubeOverride ?? preferences.find((preference) => preference.platform === 'youtube')?.youtubePrivacyStatus })
+  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, snapchatDestination: snapOverride ?? preferences.find(p => p.platform === 'snapchat')?.snapchatDestination, tiktokPostOptions, instagramDestination: override ?? saved?.instagramDestination, youtubePrivacyStatus: youtubeOverride ?? preferences.find((preference) => preference.platform === 'youtube')?.youtubePrivacyStatus })
 }
 
 function isAutomaticPreference(preference: PreferenceRecord): boolean {
@@ -309,12 +328,12 @@ export async function createAutomaticCrossposts(
       continue
     }
     const connection = await getConnection(env.DB, preference.connectionId as string, input.pubkey)
-    if (connection?.status === 'connected') {
+    if (connection?.status === 'connected' && (connection.platform !== 'snapchat' || asRecord(asRecord(JSON.parse(connection.metadataJson || '{}')).account).profileConfirmed === true)) {
       connections.push(connection)
     }
   }
 
-  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, instagramDestination: preferences.find((preference) => preference.platform === 'instagram')?.instagramDestination, youtubePrivacyStatus: preferences.find((preference) => preference.platform === 'youtube')?.youtubePrivacyStatus })
+  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, automatic: true, snapchatDestination: preferences.find(p => p.platform === 'snapchat')?.snapchatDestination, instagramDestination: preferences.find((preference) => preference.platform === 'instagram')?.instagramDestination, youtubePrivacyStatus: preferences.find((preference) => preference.platform === 'youtube')?.youtubePrivacyStatus })
 }
 
 export async function listVideoCrossposts(
