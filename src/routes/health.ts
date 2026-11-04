@@ -1407,7 +1407,10 @@ export function renderHome(env: Env): string {
         }
         let tiktokPostOptions;
         if (platform === 'tiktok') {
-          tiktokPostOptions = await confirmTikTok(videoId);
+          tiktokPostOptions = await confirmTikTok(videoId).catch(async (error) => {
+            await refreshAccount().catch(() => undefined);
+            throw error;
+          });
           if (!tiktokPostOptions) { renderVideoRows(); return; }
         }
         if (platform === 'youtube') {
@@ -1421,7 +1424,7 @@ export function renderHome(env: Env): string {
           method: 'POST',
           body: JSON.stringify({ platforms: [platform], ...(platform === 'snapchat' ? { snapchatProfile, snapchatDestination } : {}), ...(platform === 'tiktok' ? { tiktokPostOptions } : {}), ...(platform === 'youtube' ? { youtubePrivacyStatus: youtubeVideoPrivacy(videoId) } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
         }).catch(async (error) => {
-          if (platform === 'snapchat') await refreshAccount().catch(() => undefined);
+          if (platform === 'snapchat' || platform === 'tiktok') await refreshAccount().catch(() => undefined);
           throw error;
         });
         videoJobs[videoId] = data.jobs || [];

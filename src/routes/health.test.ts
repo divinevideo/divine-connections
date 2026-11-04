@@ -327,3 +327,39 @@ it('shows Off after an Instagram destination save safely downgrades a stale Auto
   expect(list.innerHTML).toContain('<option value="disabled" selected>Off</option>')
   expect(list.innerHTML).not.toContain('<option value="automatic" selected>Automatic</option>')
 })
+
+
+it.each(['preview', 'submit'])('refreshes actual connection controls after TikTok %s denial without losing Divine login', async (stage) => {
+  const triggerSource = html.split('async function triggerCrosspost(videoId, platform) {')[1].split('async function connectPlatform')[0]
+  const refreshSource = html.split('async function refreshAccount() {')[1].split("const FUNNELCAKE_BASE")[0]
+  const renderSource = html.split('function renderConnectRows() {')[1].split('function instagramDestinationSelect')[0]
+  const apiSource = html.split('async function api(path, init = {}) {')[1].split('async function keycastPublicKey')[0]
+  const list = { innerHTML: '' }
+  const clear = vi.fn()
+  const clearSource = html.split('function clearRejectedSession(response) {')[1].split('function isExpired')[0]
+  const calls: string[] = []
+  const run = new Function('$', 'fetch', 'clearSession', 'stage', `
+    let session = { accessToken: 'synthetic-login' };
+    let connections = [{ platform: 'tiktok', status: 'connected' }], preferences = [], pubkey, profile, accountLoaded;
+    const platforms = [{ platform: 'tiktok', enabled: true }], providerObservations = {};
+    const getValidSession = async () => session, keycastPublicKey = async () => 'synthetic';
+    const renderAuthControls = () => {}, renderAccount = () => {}, renderPreferenceRows = () => {}, renderVideoRows = () => {};
+    const fetchProfile = async () => null, loadVideos = async () => {}, platformName = value => value, escapeHtml = value => value;
+    function clearRejectedSession(response) {${clearSource}
+    async function api(path, init = {}) {${apiSource}
+    function renderConnectRows() {${renderSource}
+    async function refreshAccount() {${refreshSource}
+    const confirmTikTok = async () => stage === 'preview' ? api('/connections/tiktok/creator-info') : {};
+    async function triggerCrosspost(videoId, platform) {${triggerSource}
+    return triggerCrosspost;
+  `)(() => list, async (path: string) => {
+    calls.push(path)
+    if (path === '/connections') return Response.json({ connections: [{ platform: 'tiktok', status: 'needs_reauth' }] })
+    if (path === '/preferences') return Response.json({ preferences: [] })
+    return Response.json({ error: { code: 'needs_reauth', message: 'Reconnect TikTok' } }, { status: 401 })
+  }, clear, stage)
+  await expect(run('synthetic-video', 'tiktok')).rejects.toThrow('Reconnect TikTok')
+  expect(list.innerHTML).toMatch(/data-connect="tiktok" >Reconnect/)
+  expect(calls).toContain('/connections')
+  expect(clear).not.toHaveBeenCalled()
+})

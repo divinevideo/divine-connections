@@ -221,6 +221,7 @@ export async function claimJobForPublish(db: D1Database, id: string, now: number
     SET status = 'uploading', updated_at = ?, error_code = NULL, error_message = NULL
     WHERE id = ?
       AND status IN ('queued', 'failed')
+      AND NOT (platform = 'tiktok' AND external_post_id IS NOT NULL)
       AND (error_code IS NULL OR error_code NOT IN ('provider_payment_required', 'provider_quota_exceeded', 'provider_upload_limit'))
       AND expires_at > ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)

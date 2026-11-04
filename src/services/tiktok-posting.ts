@@ -5,7 +5,7 @@ import { getActiveConnectionForPlatform } from '../db/connections'
 import { getAdapter } from '../platforms/registry'
 import { fetchTikTokCreatorInfo, sameTikTokCreatorInfo, validateTikTokPostOptions } from '../platforms/tiktok'
 import { PlatformAdapterError, asRecord } from '../platforms/adapter'
-import { usableConnectionToken } from './connection-token'
+import { usableConnectionCredentials, markConnectionCredentialsRejected } from './connection-token'
 import type { ConnectionRecord, Env, TikTokPostOptions } from '../types'
 import { HttpError } from '../utils/http'
 
@@ -13,12 +13,15 @@ export async function currentTikTokCreatorInfo(env: Env, pubkey: string, stage: 
   if (!getAdapter(env, 'tiktok')) throw new HttpError(400, 'not_connected', 'TikTok is not enabled')
   const connection = await getActiveConnectionForPlatform(env.DB, pubkey, 'tiktok')
   if (!connection) throw new HttpError(400, 'not_connected', 'Connect a TikTok account first')
-  let accessToken: string
-  try { accessToken = await usableConnectionToken(env, connection) }
+  let credentials: Awaited<ReturnType<typeof usableConnectionCredentials>>
+  try { credentials = await usableConnectionCredentials(env, connection) }
   catch (error) { throw tikTokHttpError(error) }
   try {
-    return { creatorInfo: await fetchTikTokCreatorInfo(accessToken), connectionId: connection.id }
+    return { creatorInfo: await fetchTikTokCreatorInfo(credentials.accessToken), connectionId: connection.id }
   } catch (error) {
+    if (error instanceof PlatformAdapterError && error.code === 'needs_reauth') {
+      await markConnectionCredentialsRejected(env, credentials.connection, Math.floor(Date.now() / 1000))
+    }
     // Provider bodies can echo captions, account values and tokens. Persist only
     // the safe endpoint/status/classification, never the raw body.
     const safeError = new PlatformAdapterError('tiktok', error instanceof PlatformAdapterError ? error.code : 'unknown_platform_error',

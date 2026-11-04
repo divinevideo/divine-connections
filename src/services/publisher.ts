@@ -1,7 +1,7 @@
 // ABOUTME: Claims queued crosspost jobs and publishes them through provider adapters.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { videoUrlFor } from './attribution'
-import { usableConnectionToken, ConnectionTokenReauthError, sameConnectionSelection, markConnectionCredentialsRejected } from './connection-token'
+import { usableConnectionCredentials, usableConnectionToken, ConnectionTokenReauthError, sameConnectionSelection, markConnectionCredentialsRejected } from './connection-token'
 import { recordDiagnosticSafely } from './reliability'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, markConnectionNeedsReauth, upsertConnection } from '../db/connections'
@@ -128,6 +128,7 @@ async function accessTokenForJob(
   job: JobRecord,
   ownership: ClaimOwnership,
   now: number,
+  captureCredentials: (connection: ConnectionRecord) => void,
 ): Promise<string | null> {
   const connection = await getConnection(env.DB, job.connectionId, job.pubkey)
   if (!connection || connection.status !== 'connected') {
@@ -157,7 +158,12 @@ async function accessTokenForJob(
       throw new ConnectionTokenReauthError('snapchat', 'Snapchat profile changed; confirm the original destination before posting')
     }
   }
-  if (job.platform === 'tiktok' || job.platform === 'snapchat') return usableConnectionToken(env, connection, now)
+  if (job.platform === 'tiktok') {
+    const credentials = await usableConnectionCredentials(env, connection, now)
+    captureCredentials(credentials.connection)
+    return credentials.accessToken
+  }
+  if (job.platform === 'snapchat') return usableConnectionToken(env, connection, now)
 
   if (!connection.tokenExpiresAt || connection.tokenExpiresAt > now + 60 || !connection.encryptedRefreshToken) {
     return decryptToken(connection.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY)
@@ -256,15 +262,17 @@ async function scheduleRetry(
 ): Promise<number | null> {
   const retryCount = job.retryCount + 1
   if (retryCount > MAX_RETRY_COUNT) {
+    const acceptedTikTok = job.platform === 'tiktok' && Boolean(job.externalPostId)
+    const terminalCode = acceptedTikTok ? 'ambiguous_post_result' : code
     await updateOwnedJob(env, job.id, ownership, {
       status: 'failed',
       updatedAt: now,
       retryCount,
-      errorCode: code,
-      errorMessage: message,
+      errorCode: terminalCode,
+      errorMessage: acceptedTikTok ? 'TikTok publication is still unconfirmed after status checks ended. Check TikTok and contact Divine support; do not repost.' : message,
       nextRetryAt: null,
     })
-    await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: code, outcome: 'failed', now })
+    await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: terminalCode, outcome: 'failed', now })
     return null
   }
 
@@ -365,15 +373,15 @@ async function rejectProviderCredentials(
   job: JobRecord,
   error: PlatformAdapterError,
   now: number,
-  snapchatConnection?: ConnectionRecord,
+  requestConnection?: ConnectionRecord,
 ): Promise<void> {
   // Token acquisition already handles its own rejection CAS. A stale-selection
   // error must update the owned job without invalidating the winning connection.
   if (error instanceof ConnectionTokenReauthError) return
-  if (job.platform === 'snapchat') {
+  if (job.platform === 'snapchat' || job.platform === 'tiktok') {
     // Publish and readback can finish after a reconnect or reselection. Only the
     // exact credentials used for that request can be marked rejected.
-    if (snapchatConnection) await markConnectionCredentialsRejected(env, snapchatConnection, now)
+    if (requestConnection) await markConnectionCredentialsRejected(env, requestConnection, now)
     return
   }
   await markConnectionNeedsReauth(env.DB, job.connectionId, now)
@@ -385,7 +393,7 @@ async function handleProviderError(
   ownership: ClaimOwnership,
   error: PlatformAdapterError,
   now: number,
-  snapchatConnection?: ConnectionRecord,
+  requestConnection?: ConnectionRecord,
 ): Promise<ProcessCrosspostResult> {
   if (error.code === 'needs_reauth') {
     await updateOwnedJob(env, job.id, ownership, {
@@ -395,7 +403,7 @@ async function handleProviderError(
       errorMessage: error.message,
       nextRetryAt: null,
     })
-    await rejectProviderCredentials(env, job, error, now, snapchatConnection)
+    await rejectProviderCredentials(env, job, error, now, requestConnection)
     await addAttempt(env, {
       jobId: job.id,
       platform: job.platform,
@@ -455,7 +463,7 @@ async function handleProcessingProviderError(
   ownership: ClaimOwnership,
   error: PlatformAdapterError,
   now: number,
-  snapchatConnection?: ConnectionRecord,
+  requestConnection?: ConnectionRecord,
 ): Promise<ProcessCrosspostResult> {
   // This handler runs only after a poll failed without crossing the outward
   // POST fence. Billing cannot undo an already accepted external publication.
@@ -496,7 +504,7 @@ async function handleProcessingProviderError(
       errorMessage: error.message,
       nextRetryAt: null,
     })
-    await rejectProviderCredentials(env, job, error, now, snapchatConnection)
+    await rejectProviderCredentials(env, job, error, now, requestConnection)
     await addAttempt(env, {
       jobId: job.id,
       platform: job.platform,
@@ -583,7 +591,7 @@ export async function processCrosspostJob(
   const existing = await getJob(env.DB, jobId)
   if (!existing) return { status: 'not_found' }
 
-  if (existing.platform === 'youtube' && existing.externalPostId && existing.status === 'failed') return { status: 'failed' }
+  if ((existing.platform === 'youtube' || existing.platform === 'tiktok') && existing.externalPostId && existing.status === 'failed') return { status: 'failed' }
 
   if (existing.status === 'dispatching' || existing.errorCode === 'ambiguous_post_result') {
     return { status: existing.status }
@@ -639,6 +647,7 @@ export async function processCrosspostJob(
   let ownership: ClaimOwnership = { status: 'uploading', updatedAt: job.updatedAt }
   let dispatchFenceRaised = false
   let snapchatRequestConnection: ConnectionRecord | undefined
+  let tiktokRequestConnection: ConnectionRecord | undefined
   const beforeExternalPost = async (): Promise<void> => {
     const fenceTimestamp = options.fenceNow ?? nowSeconds()
     const transitioned = await transitionClaimToDispatching(
@@ -660,7 +669,7 @@ export async function processCrosspostJob(
       const initialSnapchatConnection = job.platform === 'snapchat'
         ? await getConnection(env.DB, job.connectionId, job.pubkey)
         : null
-      const accessToken = await accessTokenForJob(env, job, ownership, now)
+      const accessToken = await accessTokenForJob(env, job, ownership, now, (connection) => { tiktokRequestConnection = connection })
       if (!accessToken) {
         await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: 'needs_reauth', outcome: 'failed', now })
         return { status: 'needs_reauth' }
@@ -732,13 +741,13 @@ export async function processCrosspostJob(
       }
       if (error instanceof PlatformAdapterError) {
         return existing.status === 'processing'
-          ? await handleProcessingProviderError(env, job, ownership, error, now, snapchatRequestConnection)
-          : await handleProviderError(env, job, ownership, error, now, snapchatRequestConnection)
+          ? await handleProcessingProviderError(env, job, ownership, error, now, snapchatRequestConnection ?? tiktokRequestConnection)
+          : await handleProviderError(env, job, ownership, error, now, snapchatRequestConnection ?? tiktokRequestConnection)
       }
       const platformError = new PlatformAdapterError(job.platform, 'unknown_platform_error', 'publisher failed')
       return existing.status === 'processing'
-        ? await handleProcessingProviderError(env, job, ownership, platformError, now, snapchatRequestConnection)
-        : await handleProviderError(env, job, ownership, platformError, now, snapchatRequestConnection)
+        ? await handleProcessingProviderError(env, job, ownership, platformError, now, snapchatRequestConnection ?? tiktokRequestConnection)
+        : await handleProviderError(env, job, ownership, platformError, now, snapchatRequestConnection ?? tiktokRequestConnection)
     }
   } catch (error) {
     if (error instanceof PublishClaimLostError) {

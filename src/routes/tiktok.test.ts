@@ -183,6 +183,7 @@ describe('TikTok manual confirmation', () => {
       : fallback(url, init))
     const response = stage === 'creator_info' ? await request('/connections/tiktok/creator-info') : await submit()
     expect(response.status).toBe(429)
+    expect((await getConnection(env.DB, 'conn_tiktok', PUBKEY_A))?.status).toBe('connected')
     const rows = await recentDiagnostics(env.DB, 'conn_tiktok')
     expect(rows).toEqual([expect.objectContaining({ operation: 'publish', stage, outcome: 'failed', provider_status: 429, diagnostic: { endpoint: '/v2/post/publish/creator_info/query/', type: 'rate_limited' } })])
     expect(JSON.stringify(rows)).not.toMatch(/creator-sensitive-sentinel|caption-sensitive-sentinel|token-sensitive-sentinel/)
@@ -204,6 +205,32 @@ describe('TikTok manual confirmation', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toMatchObject({ jobs: [{ sourceMediaUrl: url, sourceMediaHash: hash, tiktokPostOptions: { durationSeconds: 6 } }] })
     expect(queueSend).toHaveBeenCalledOnce()
+  })
+
+  it.each(['preview', 'submit'].flatMap(stage => [401, 200].flatMap(status => [false, true].flatMap(refreshed => ['none', 'reconnect', 'disconnect'].map(winner => ({ stage, status, refreshed, winner }))))))('persists $stage HTTP$status denial with refreshed=$refreshed and winner=$winner', async ({ stage, status, refreshed, winner }) => {
+    const originalAccess = await encryptToken('synthetic-access', env.TOKEN_ENCRYPTION_KEY)
+    await env.DB.prepare("UPDATE connections SET status = 'connected', encrypted_access_token = ?, encrypted_refresh_token = ?, token_expires_at = ?").bind(originalAccess, await encryptToken('synthetic-refresh', env.TOKEN_ENCRYPTION_KEY), refreshed ? 1 : 9999999999).run()
+    const winningAccess = await encryptToken('winner-access', env.TOKEN_ENCRYPTION_KEY)
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/api/nostr')) return Response.json({ result: PUBKEY_A })
+      if (url.includes('/api/videos/')) return Response.json({ event: source })
+      if (url.includes('oauth/token')) return Response.json({ access_token: 'refreshed-access', refresh_token: 'refreshed-refresh', expires_in: 3600 })
+      expect(url).toContain('creator_info')
+      expect(new Headers(init?.headers).get('authorization')).toBe(refreshed ? 'Bearer refreshed-access' : 'Bearer synthetic-access')
+      if (winner === 'disconnect') await env.DB.prepare("UPDATE connections SET status = 'disconnected'").run()
+      if (winner === 'reconnect') await env.DB.prepare("UPDATE connections SET encrypted_access_token = ?, status = 'connected'").bind(winningAccess).run()
+      return Response.json({ error: { code: 'access_token_invalid' } }, { status })
+    })
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const response = stage === 'preview' ? await request('/connections/tiktok/creator-info') : await submit()
+      expect(response.status).toBe(401)
+      expect(await getConnection(env.DB, 'conn_tiktok', PUBKEY_A)).toMatchObject({ status: winner === 'none' ? 'needs_reauth' : winner === 'disconnect' ? 'disconnected' : 'connected', ...(winner === 'reconnect' ? { encryptedAccessToken: winningAccess } : {}) })
+      expect(queueSend).not.toHaveBeenCalled()
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM jobs').first('count')).toBe(0)
+      if (stage === 'submit') expect(logged).toHaveBeenCalledExactlyOnceWith(expect.any(String), expect.objectContaining({ code: 'needs_reauth', status: 401 }))
+      else expect(logged).not.toHaveBeenCalled()
+    } finally { logged.mockRestore() }
   })
 
 })

@@ -23,12 +23,14 @@ export function sameConnectionSelection(expected: ConnectionRecord, current: Con
     (expected.platform !== 'snapchat' || current.metadataJson === expected.metadataJson)
 }
 
-async function winningConnectionToken(env: Env, previous: ConnectionRecord, now: number): Promise<string | null> {
+export type ConnectionCredentials = { accessToken: string; connection: ConnectionRecord }
+
+async function winningConnectionToken(env: Env, previous: ConnectionRecord, now: number): Promise<ConnectionCredentials | null> {
   const winner = await getConnection(env.DB, previous.id, previous.pubkey)
   if (!winner || winner.status !== 'connected' || !sameConnectionSelection(previous, winner)) return null
   if (winner.encryptedAccessToken === previous.encryptedAccessToken) return null
   if (winner.tokenExpiresAt !== null && winner.tokenExpiresAt <= now + 60) return null
-  return decryptToken(winner.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY)
+  return { accessToken: await decryptToken(winner.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY), connection: winner }
 }
 
 /** A denial of old credentials must not invalidate a reconnect or profile selection. */
@@ -42,12 +44,17 @@ export async function markConnectionCredentialsRejected(env: Env, current: Conne
 }
 
 export async function usableConnectionToken(env: Env, connection: ConnectionRecord, now = Math.floor(Date.now() / 1000)): Promise<string> {
+  return (await usableConnectionCredentials(env, connection, now)).accessToken
+}
+
+/** Return the exact persisted revision used, including a successful or winning refresh. */
+export async function usableConnectionCredentials(env: Env, connection: ConnectionRecord, now = Math.floor(Date.now() / 1000)): Promise<ConnectionCredentials> {
   const current = await getConnection(env.DB, connection.id, connection.pubkey)
   if (!current || current.status !== 'connected' || !sameConnectionSelection(connection, current)) {
     throw new ConnectionTokenReauthError(connection.platform, 'Reconnect the platform account')
   }
   if (current.tokenExpiresAt === null || current.tokenExpiresAt > now + 60) {
-    return decryptToken(current.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY)
+    return { accessToken: await decryptToken(current.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY), connection: current }
   }
   if (!current.encryptedRefreshToken) {
     await markConnectionCredentialsRejected(env, current, now)
@@ -80,7 +87,11 @@ export async function usableConnectionToken(env: Env, connection: ConnectionReco
       throw new ConnectionTokenReauthError(current.platform, 'Account changed during refresh; try again')
     }
     await recordDiagnosticSafely(env, { reference: current.id, platform: current.platform, operation: 'refresh', stage: 'token_refresh', outcome: 'succeeded', now })
-    return tokens.accessToken
+    return {
+      accessToken: tokens.accessToken,
+      connection: { ...current, encryptedAccessToken: encryptedAccess, encryptedRefreshToken: encryptedRefresh,
+        tokenExpiresAt: tokens.expiresAt ?? null, lastRefreshAt: now, updatedAt: now },
+    }
   } catch (error) {
     await recordDiagnosticSafely(env, { reference: current.id, platform: current.platform, operation: 'refresh', stage: 'token_refresh', outcome: 'failed', now, error })
     if (error instanceof PlatformAdapterError && error.code === 'needs_reauth') {
