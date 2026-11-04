@@ -60,7 +60,7 @@ export function getProviderSummaries(env: Env): ProviderSummary[] {
   return PLATFORM_ORDER.map((platform) => ({
     platform,
     enabled: isConfigured(env, platform),
-    supportsAutomatic: true,
+    supportsAutomatic: platform !== 'tiktok',
   }))
 }
 

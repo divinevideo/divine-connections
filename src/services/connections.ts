@@ -468,6 +468,7 @@ export async function updatePreference(
   const youtubePrivacyStatus = parseYouTubePrivacyOption(options.youtubePrivacyStatus, platform === 'youtube')
   const mode = parsePreferenceMode(String(modeValue))
   const { pubkey } = await authenticateRequest(request, env)
+  if (platform === 'tiktok' && mode === 'automatic') throw new HttpError(400, 'not_eligible', 'TikTok requires manual confirmation for each post')
   const now = nowSeconds()
   const existing = (await getPreferences(env.DB, pubkey)).find((preference) => preference.platform === platform)
 

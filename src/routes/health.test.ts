@@ -163,3 +163,70 @@ it('restores video controls when YouTube confirmation is cancelled and sends no 
   expect(api).not.toHaveBeenCalled()
   expect(render).toHaveBeenCalledTimes(1)
 })
+
+
+describe('TikTok confirmation UI behavior', () => {
+  const creatorInfo = { creator_nickname: '<script>synthetic</script>', creator_username: 'synthetic.creator', privacy_level_options: ['SELF_ONLY', 'PUBLIC_TO_EVERYONE'], comment_disabled: false, duet_disabled: true, stitch_disabled: false, max_video_post_duration_sec: 60 }
+  function controls() {
+    const values: Record<string, any> = {}
+    for (const name of ['privacyLevel', 'confirmedCaption', 'allowComment', 'allowDuet', 'allowStitch', 'commercialContent', 'brandOrganic', 'brandContent', 'musicUsageConfirmed']) values[name] = { value: '', checked: false, disabled: false }
+    return { values, querySelector: (selector: string) => values[selector.match(/name="(.*?)"/)![1]] }
+  }
+  function draftFunction() {
+    const source = html.split('function tiktokFormOptions(form, data) {')[1]?.split('function tiktokConfirmationMarkup')[0]
+    return new Function('return function tiktokFormOptions(form, data) {' + source)()
+  }
+  it('blocks incomplete consent and preserves a deliberately empty edited caption', () => {
+    const draft = draftFunction()
+    const form = controls()
+    const data = { creatorInfo, connectionId: 'synthetic-connection' }
+    expect(draft(form, data)).toBeNull()
+    form.values.privacyLevel.value = 'SELF_ONLY'
+    expect(draft(form, data)).toBeNull()
+    form.values.musicUsageConfirmed.checked = true
+    expect(draft(form, data)).toMatchObject({ confirmedCaption: '', privacyLevel: 'SELF_ONLY', allowComment: false, allowDuet: false, allowStitch: false })
+    form.values.allowDuet.checked = true
+    expect(draft(form, data)).toBeNull()
+  })
+  it('requires disclosure selections and prevents private branded content', () => {
+    const draft = draftFunction()
+    const form = controls()
+    form.values.privacyLevel.value = 'SELF_ONLY'
+    form.values.musicUsageConfirmed.checked = true
+    form.values.commercialContent.checked = true
+    expect(draft(form, { creatorInfo })).toBeNull()
+    form.values.brandContent.checked = true
+    expect(draft(form, { creatorInfo })).toBeNull()
+    form.values.privacyLevel.value = 'PUBLIC_TO_EVERYONE'
+    expect(draft(form, { creatorInfo })).toMatchObject({ brandContent: true, brandedContentConfirmed: true })
+  })
+  it('renders escaped preview/caption and account with blank privacy and forbidden interaction disabled', () => {
+    const source = html.split('function tiktokConfirmationMarkup(data, preview) {')[1]?.split('async function confirmTikTok')[0]
+    const markup = new Function('escapeHtml', 'return function tiktokConfirmationMarkup(data, preview) {' + source)((value: unknown) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'))
+    const output = markup({ creatorInfo }, { caption: '</textarea><script>unsafe</script>', mediaUrl: 'https://media.divine.video/synthetic.mp4', durationSeconds: 6 })
+    expect(output).not.toContain('<script>')
+    expect(output).toContain('&lt;/textarea>')
+    expect(output).toMatch(/<option value="">Choose privacy/)
+    expect(output).toMatch(/name="allowDuet"[^>]*disabled/)
+    expect(output).toContain('<video')
+    expect(output).not.toMatch(/<input[^>]*checked/)
+  })
+})
+
+it('cancels TikTok confirmation without creating a job', async () => {
+  const source = html.split('async function triggerCrosspost(videoId, platform) {')[1]?.split('async function connectPlatform')[0]
+  const render = vi.fn()
+  const api = vi.fn()
+  const trigger = new Function('confirmTikTok', 'renderVideoRows', 'api', 'return async function triggerCrosspost(videoId, platform) {' + source)(async () => null, render, api)
+  await trigger('synthetic-video', 'tiktok')
+  expect(api).not.toHaveBeenCalled()
+  expect(render).toHaveBeenCalledOnce()
+})
+
+it('keeps the Divine login when TikTok asks the user to reconnect the provider', async () => {
+  const source = html.split('async function api(path, init = {}) {')[1]?.split('async function keycastPublicKey')[0]
+  const clear = vi.fn()
+  const api = new Function('getValidSession', 'fetch', 'clearRejectedSession', 'return async function api(path, init = {}) {' + source)(async () => ({ accessToken: 'synthetic-login-token' }), async () => Response.json({ error: { code: 'needs_reauth', message: 'Reconnect your TikTok account' } }, { status: 401 }), clear)
+  await expect(api('/connections/tiktok/creator-info')).rejects.toThrow('Reconnect your TikTok account')
+  expect(clear).not.toHaveBeenCalled()
+})

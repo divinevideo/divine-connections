@@ -12,7 +12,7 @@ The codebase is a TypeScript Worker built on [Hono](https://hono.dev), using D1 
 
 - **Opt-in only.** No video leaves Divine until a creator connects an account and picks a posting mode. Automatic mode applies only to Divine videos created after the creator turned it on.
 - **Supported platforms.** Instagram Stories/Reels, TikTok, X, and YouTube Shorts, each behind its own adapter. A platform reports as enabled only when its `ENABLE_*` flag is `true` and matching OAuth credentials are configured, so an operator can stage a provider before exposing it.
-- **Manual and automatic posting.** Manual jobs are created when the creator asks. Automatic jobs are created after a Divine publish, either from a client push or from the scheduled reconciler.
+- **Manual and automatic posting.** Manual jobs are created when the creator asks. Automatic jobs are created after a Divine publish, either from a client push or from the scheduled reconciler, for providers that support it. TikTok requires manual confirmation for every post.
 - **Idempotent jobs.** Jobs are keyed by `(pubkey, video_event_id, platform, external_account_id)`, so duplicate requests return the existing job instead of double-posting.
 - **Built-in setup UI.** `GET /` serves a self-contained web app where a creator signs in with their Divine/Nostr account, connects platforms, and sets posting switches. `GET /platforms` shows provider readiness (HTML, or JSON with `?format=json`).
 
@@ -146,7 +146,7 @@ ${OAUTH_REDIRECT_BASE}/connections/youtube/callback
 Provider notes:
 
 - Instagram uses Meta content publishing: create a Story or Reel container from a public video URL, wait for processing, then publish.
-- TikTok Direct Post requires publish consent and may require app review before public posting.
+- TikTok Direct Post is manual-only: each post requires current creator settings, a preview, edited caption, explicit privacy, interaction/disclosure choices and music/policy consent. Content Posting review and verified source-domain access are required before rollout.
 - X uses OAuth 2.0 plus chunked media upload before post creation. In the X Developer Portal, configure the production application as an **OAuth 2.0 confidential web application** with **Read and write** permission, callback `https://crossposter.divine.video/connections/x/callback`, and scopes `tweet.read tweet.write users.read media.write offline.access`. The portal client ID and client secret must be the pair installed as the `TWITTER_CLIENT_ID` and `TWITTER_CLIENT_SECRET` Worker secrets.
 - YouTube Shorts uses the YouTube Data API upload flow; Shorts classification depends on video format, duration, and metadata conventions.
 
@@ -493,7 +493,7 @@ Instagram Login requires a professional Creator or Business account. Stories mus
 
 - **X:** Use the OAuth 2.0 client ID/secret, not the OAuth 1.0 consumer key/secret. Video uploads use `/2/media/upload/initialize`, `/{id}/append`, and `/{id}/finalize`; status polling uses `/2/media/upload`. Confirm app access and available API credits separately.
 - **YouTube:** The OAuth grant needs both `youtube.upload` and `youtube.readonly`: upload permission alone cannot read the connected channel via `channels.list`. Existing grants must reconnect to add the channel-read scope. The OAuth client must be a web application with the exact YouTube callback above; enabling the Data API or installing an API key is insufficient.
-- **TikTok:** Terminal `FAILED` upload status stops polling; `auth_removed` requests reconnection. Keep rollout disabled until Direct Post approval, credentials, verified source domain, and the required creator controls are ready. The existing posting flow still uses `SELF_ONLY`; it needs fresh creator info, explicit per-post privacy selection, preview/caption and interaction controls, and required consent before public rollout. Failure-handling fixes alone do not make that flow ready.
+- **TikTok:** Terminal `FAILED` upload status stops polling; `auth_removed` requests reconnection. Keep rollout disabled until Direct Post approval, credentials, verified source domain, and the required creator controls are ready. The implemented manual flow fetches fresh creator info, offers explicit per-post privacy/interaction/disclosure choices, and snapshots exact confirmed text (including empty text) without adding attribution. Duration comes from the eligible source event metadata; missing or excessive duration blocks posting. TikTok advertises `supportsAutomatic=false`; automatic preference updates are rejected and legacy automatic preferences are excluded. Unconfirmed legacy jobs fail before upload. Implementation and mocked tests do not establish production approval or successful live publishing.
 
 Official contracts: [X media upload](https://docs.x.com/x-api/media/initialize-media-upload), [YouTube channel lookup](https://developers.google.com/youtube/v3/docs/channels/list), [TikTok publishing status](https://developers.tiktok.com/doc/content-posting-api-reference-get-video-status), [TikTok creator controls](https://developers.tiktok.com/doc/content-sharing-guidelines).
 
@@ -554,3 +554,76 @@ implementation.
 Contracts: [YouTube video resource](https://developers.google.com/youtube/data/reference/rest/v3/videos),
 [video status lookup](https://developers.google.com/youtube/data/reference/rest/v3/videos/list),
 and [resumable upload protocol](https://developers.google.com/youtube/data/guides/using_resumable_upload_protocol).
+
+
+### TikTok manual Direct Post setup and API
+
+Keep `ENABLE_TIKTOK=false` until a maintainer verifies the production app owner,
+`video.publish` approval, callback registration and ownership of the actual media
+URL domain/prefix. Login Kit/profile approval alone is insufficient. An unaudited
+app is restricted to private accounts and Only me posts; verify the approved app's
+visibility permissions before enabling it. No live upload has been performed for
+this implementation.
+
+Apply additive migration `0010_tiktok_options.sql` before deploying this code.
+`GET /connections/tiktok/creator-info` requires authentication, refreshes an
+expired connection token, and returns `{ connectionId, creatorInfo }` with safe
+current account/settings fields. `GET /videos/:event_id/tiktok-preview` returns
+owner-validated source caption, media URL and duration without enqueueing or
+uploading. Both routes exist only on the publishing surface, never on either
+verifier hostname. Missing source duration is an eligibility error, even if a
+client supplies its own duration.
+
+The hosted page fetches both resources when opening its Post to TikTok dialog.
+It shows the account nickname, playable preview, editable original Divine text,
+provider privacy options with no default, and unchecked interaction controls.
+Forbidden interactions are disabled. Commercial disclosure starts off; enabling
+it requires Your brand and/or Branded content. Branded content needs public or
+friends visibility and the branded-content declaration. The declaration links to
+TikTok's music confirmation and, when applicable, branded-content policy. Nothing
+is uploaded before explicit submission.
+
+Send `tiktokPostOptions` alongside `platforms: ["tiktok"]` to
+`POST /videos/:event_id/crossposts`:
+
+```json
+{
+  "platforms": ["tiktok"],
+  "tiktokPostOptions": {
+    "connectionId": "connection-id-returned-by-creator-info",
+    "creatorInfo": {
+      "creator_username": "synthetic.creator",
+      "creator_nickname": "Synthetic Creator",
+      "privacy_level_options": ["SELF_ONLY"],
+      "comment_disabled": false,
+      "duet_disabled": true,
+      "stitch_disabled": true,
+      "max_video_post_duration_sec": 60
+    },
+    "privacyLevel": "SELF_ONLY",
+    "allowComment": false,
+    "allowDuet": false,
+    "allowStitch": false,
+    "commercialContent": false,
+    "brandOrganic": false,
+    "brandContent": false,
+    "confirmedCaption": "Creator-edited text, or an empty string",
+    "musicUsageConfirmed": true,
+    "brandedContentConfirmed": false
+  }
+}
+```
+
+Replace the synthetic `connectionId` and `creatorInfo` example with the values returned by GET.
+The API re-fetches current TikTok settings and validates the source duration. A
+changed connection/account or settings requires a new preview/confirmation; a
+settings change returns `409 tiktok_confirmation_changed`. Confirmed captions
+longer than 2200 UTF-16 characters are rejected, never silently truncated. Jobs
+freeze the confirmed options and server-derived duration in `tiktok_job_options`;
+duplicates keep the original snapshot. The publisher rechecks provider settings,
+uses the confirmed choices, polls processing, rejects provider errors in HTTP 200
+responses, and fences ambiguous dispatches against blind retry.
+
+Provider references: [creator info](https://developers.tiktok.com/docs/en/content-posting-api-reference-query-creator-info),
+[Direct Post](https://developers.tiktok.com/docs/en/content-posting-api-reference-direct-post),
+[required controls and consent](https://developers.tiktok.com/docs/en/content-sharing-guidelines).

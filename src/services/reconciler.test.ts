@@ -32,13 +32,14 @@ function env(db: D1Database, queueSend: ReturnType<typeof vi.fn>): Env {
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
     TOKEN_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef',
     ENABLE_TIKTOK: 'true',
+    ENABLE_YOUTUBE: 'true', GOOGLE_CLIENT_ID: 'synthetic-client', GOOGLE_CLIENT_SECRET: 'synthetic-secret',
     TIKTOK_CLIENT_KEY: 'tiktok-client',
     TIKTOK_CLIENT_SECRET: 'tiktok-secret',
   }
 }
 
 async function seedPreference(db: D1Database, input: { mode: PreferenceMode; platform?: Platform; automaticEnabledAt?: number | null }) {
-  const platform = input.platform ?? 'tiktok'
+  const platform = input.platform ?? 'youtube'
   await upsertConnection(db, connection({ id: `conn_${platform}`, platform }))
   await setPreference(db, {
     pubkey: PUBKEY_A,

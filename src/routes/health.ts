@@ -938,8 +938,8 @@ export function renderHome(env: Env): string {
         headers.set('Authorization', 'Bearer ' + active.accessToken);
         if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
         const resp = await fetch(path, { ...init, headers });
-        clearRejectedSession(resp);
         const data = await resp.json().catch(() => ({}));
+        if (data.error?.code !== 'needs_reauth') clearRejectedSession(resp);
         if (!resp.ok) throw new Error(data.error?.message || data.error?.code || 'Request failed.');
         return data;
       }
@@ -1079,16 +1079,16 @@ export function renderHome(env: Env): string {
         list.innerHTML = platforms.map((platform) => {
           const pref = preferences.find((item) => item.platform === platform.platform);
           const connection = connections.find((item) => item.platform === platform.platform && item.status === 'connected');
-          const current = pref?.mode || 'disabled';
+          const current = platform.supportsAutomatic === false && pref?.mode === 'automatic' ? 'disabled' : pref?.mode || 'disabled';
           const disabled = !connection;
           return '<div class="preference-row">' +
             '<span><strong>' + escapeHtml(platformName(platform.platform)) + '</strong><small>' +
-            (connection ? 'How should new Divine videos reach this platform?' : 'Connect this platform first to turn on crossposting.') +
+            (connection ? (platform.supportsAutomatic === false ? 'Confirm each video before posting to TikTok.' : 'How should new Divine videos reach this platform?') : 'Connect this platform first to turn on crossposting.') +
             '</small></span>' +
             '<select data-preference="' + escapeHtml(platform.platform) + '" ' + (disabled ? 'disabled' : '') + '>' +
               '<option value="disabled" ' + (current === 'disabled' ? 'selected' : '') + '>Off</option>' +
               '<option value="manual" ' + (current === 'manual' ? 'selected' : '') + '>Manual</option>' +
-              '<option value="automatic" ' + (current === 'automatic' ? 'selected' : '') + '>Automatic</option>' +
+              (platform.supportsAutomatic === false ? '' : '<option value="automatic" ' + (current === 'automatic' ? 'selected' : '') + '>Automatic</option>') +
             '</select>' +
             (platform.platform === 'youtube' ? '<span style="grid-column: 1 / -1"><label>Default visibility ' +
               youtubePrivacySelect(pref?.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}', 'data-youtube-default="true"', disabled) + '</label>' +
@@ -1171,6 +1171,7 @@ export function renderHome(env: Env): string {
           }
           return 'Posted to ' + escapeHtml(platformName(job.platform)) + '.' + link;
         }
+        if (job.platform === 'tiktok' && job.status === 'processing') return 'TikTok is processing the video. This may take a few minutes…';
         if (job.platform === 'youtube' && job.status === 'processing') return 'YouTube is processing the upload…';
         if (job.status === 'failed') {
           return escapeHtml(platformName(job.platform)) + ' failed: ' + escapeHtml(job.errorMessage || job.errorCode || 'unknown error');
@@ -1251,7 +1252,97 @@ export function renderHome(env: Env): string {
         }
       }
 
+      function tiktokFormOptions(form, data) {
+        const value = (name) => form.querySelector('[name="' + name + '"]');
+        const info = data.creatorInfo;
+        const privacyLevel = value('privacyLevel').value;
+        const allowComment = value('allowComment').checked;
+        const allowDuet = value('allowDuet').checked;
+        const allowStitch = value('allowStitch').checked;
+        const commercialContent = value('commercialContent').checked;
+        const brandOrganic = commercialContent && value('brandOrganic').checked;
+        const brandContent = commercialContent && value('brandContent').checked;
+        const caption = value('confirmedCaption').value;
+        if (!info.privacy_level_options.includes(privacyLevel) || !value('musicUsageConfirmed').checked || caption.length > 2200 ||
+          (allowComment && info.comment_disabled) || (allowDuet && info.duet_disabled) || (allowStitch && info.stitch_disabled) ||
+          (commercialContent && !brandOrganic && !brandContent) || (brandContent && !['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS'].includes(privacyLevel))) return null;
+        return { connectionId: data.connectionId, creatorInfo: info, privacyLevel, allowComment, allowDuet, allowStitch,
+          commercialContent, brandOrganic, brandContent, confirmedCaption: caption, musicUsageConfirmed: true, brandedContentConfirmed: !!brandContent };
+      }
+
+      function tiktokConfirmationMarkup(data, preview) {
+        const info = data.creatorInfo;
+        const privacyNames = { SELF_ONLY: 'Only me', PUBLIC_TO_EVERYONE: 'Everyone', MUTUAL_FOLLOW_FRIENDS: 'Friends', FOLLOWER_OF_CREATOR: 'Followers' };
+        return '<form style="display:grid;gap:14px;max-width:560px;color:inherit">' +
+          '<h2>Post to TikTok</h2><p>Posting to ' + escapeHtml(info.creator_nickname) + ' (@' + escapeHtml(info.creator_username) + ')</p>' +
+          '<video controls playsinline preload="metadata" style="width:100%;max-height:280px" src="' + escapeHtml(preview.mediaUrl) + '"></video>' +
+          '<p>' + escapeHtml(preview.durationSeconds) + ' seconds. This account allows up to ' + escapeHtml(info.max_video_post_duration_sec) + ' seconds.</p>' +
+          '<label>Caption <textarea name="confirmedCaption" rows="5" style="display:block;width:100%">' + escapeHtml(preview.caption) + '</textarea></label>' +
+          '<small>You can edit or remove all text. Maximum 2200 characters.</small>' +
+          '<label>Who can view this video? <select name="privacyLevel"><option value="">Choose privacy</option>' +
+          info.privacy_level_options.map((privacy) => '<option value="' + escapeHtml(privacy) + '">' + escapeHtml(privacyNames[privacy] || privacy) + '</option>').join('') + '</select></label>' +
+          ['Comment', 'Duet', 'Stitch'].map((interaction) => {
+            const forbidden = info[interaction.toLowerCase() + '_disabled'];
+            return '<label style="opacity:' + (forbidden ? '0.5' : '1') + '"><input type="checkbox" name="allow' + interaction + '" ' + (forbidden ? 'disabled' : '') + '> Allow ' + interaction + (forbidden ? ' (disabled in TikTok settings)' : '') + '</label>';
+          }).join('') +
+          '<label><input type="checkbox" name="commercialContent"> Disclose commercial content</label>' +
+          '<fieldset data-disclosures hidden><legend>This content promotes</legend>' +
+          '<label><input type="checkbox" name="brandOrganic"> Your brand</label> ' +
+          '<label><input type="checkbox" name="brandContent"> Branded content</label>' +
+          '<p data-disclosure-label></p><small>Branded content visibility cannot be set to private. Choose Everyone or Friends.</small></fieldset>' +
+          '<label><input type="checkbox" name="musicUsageConfirmed"> <span data-consent></span></label>' +
+          '<p>After posting, processing may take a few minutes before your video is visible on your profile.</p>' +
+          '<small data-confirmation-help>Choose privacy and agree to the declaration to continue.</small>' +
+          '<div><button type="button" data-cancel>Cancel</button> <button type="submit" disabled>Post to TikTok</button></div></form>';
+      }
+
+      async function confirmTikTok(videoId) {
+        const [data, preview] = await Promise.all([api('/connections/tiktok/creator-info'), api('/videos/' + videoId + '/tiktok-preview')]);
+        if (!Number.isFinite(preview.durationSeconds) || preview.durationSeconds <= 0 || preview.durationSeconds > data.creatorInfo.max_video_post_duration_sec) {
+          throw new Error('This video exceeds the current TikTok duration limit.');
+        }
+        const dialog = document.createElement('dialog');
+        dialog.style.cssText = 'max-width:620px;width:90%;max-height:90vh;overflow:auto;background:var(--surface,#fff);color:var(--text,#111);border-radius:16px;padding:24px';
+        dialog.innerHTML = tiktokConfirmationMarkup(data, preview);
+        document.body.appendChild(dialog);
+        const form = dialog.querySelector('form');
+        const field = (name) => form.querySelector('[name="' + name + '"]');
+        const consent = form.querySelector('[data-consent]');
+        const refresh = (event) => {
+          const commercial = field('commercialContent').checked;
+          const branded = commercial && field('brandContent').checked;
+          if (event && ['commercialContent', 'brandOrganic', 'brandContent'].includes(event.target.name)) field('musicUsageConfirmed').checked = false;
+          form.querySelector('[data-disclosures]').hidden = !commercial;
+          field('brandContent').disabled = field('privacyLevel').value === 'SELF_ONLY';
+          for (const option of field('privacyLevel').options) if (['SELF_ONLY', 'FOLLOWER_OF_CREATOR'].includes(option.value)) option.disabled = branded;
+          form.querySelector('[data-disclosure-label]').textContent = branded ? "Your video will be labeled as 'Paid partnership'" : commercial && field('brandOrganic').checked ? "Your video will be labeled as 'Promotional content'" : '';
+          consent.innerHTML = "By posting, you agree to TikTok's " + (branded ? '<a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" rel="noopener">Branded Content Policy</a> and ' : '') + '<a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" rel="noopener">Music Usage Confirmation</a>.';
+          const valid = !!tiktokFormOptions(form, data);
+          form.querySelector('[type="submit"]').disabled = !valid;
+          form.querySelector('[data-confirmation-help]').textContent = valid ? 'Ready to send this video with these choices.' : commercial && !field('brandOrganic').checked && !field('brandContent').checked ? 'You need to indicate if your content promotes yourself, a third party, or both.' : 'Choose privacy, review your caption and agree to the declaration to continue.';
+        };
+        refresh();
+        form.addEventListener('change', refresh);
+        form.addEventListener('input', refresh);
+        dialog.showModal();
+        return new Promise((resolve) => {
+          const finish = (value) => { dialog.close(); dialog.remove(); resolve(value); };
+          dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish(null); });
+          form.querySelector('[data-cancel]').addEventListener('click', () => finish(null));
+          form.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const options = tiktokFormOptions(form, data);
+            if (options) finish(options);
+          });
+        });
+      }
+
       async function triggerCrosspost(videoId, platform) {
+        let tiktokPostOptions;
+        if (platform === 'tiktok') {
+          tiktokPostOptions = await confirmTikTok(videoId);
+          if (!tiktokPostOptions) { renderVideoRows(); return; }
+        }
         if (platform === 'youtube') {
           const account = connections.find((item) => item.platform === 'youtube' && item.status === 'connected');
           if (!window.confirm('Upload this Divine video to ' + (account?.externalAccountName || 'your YouTube channel') + ' with ' + youtubeVideoPrivacy(videoId) + ' visibility?')) {
@@ -1261,7 +1352,7 @@ export function renderHome(env: Env): string {
         }
         const data = await api('/videos/' + videoId + '/crossposts', {
           method: 'POST',
-          body: JSON.stringify({ platforms: [platform], ...(platform === 'youtube' ? { youtubePrivacyStatus: youtubeVideoPrivacy(videoId) } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
+          body: JSON.stringify({ platforms: [platform], ...(platform === 'tiktok' ? { tiktokPostOptions } : {}), ...(platform === 'youtube' ? { youtubePrivacyStatus: youtubeVideoPrivacy(videoId) } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
         });
         videoJobs[videoId] = data.jobs || [];
         renderVideoRows();

@@ -141,7 +141,7 @@ describe('job repository', () => {
     await expect(getJob(db, 'x_stale')).resolves.toMatchObject({ status: 'uploading' })
   })
 
-  it('recovers only stale X upload and dispatch claims with terminal-safe outcomes', async () => {
+  it('recovers stale X uploads and fenced X/TikTok dispatches with terminal-safe outcomes', async () => {
     const now = 10_000
     const leaseSeconds = 300
     const candidates = [
@@ -189,7 +189,7 @@ describe('job repository', () => {
 
     await expect(recoverStaleXClaims(db, now, leaseSeconds)).resolves.toEqual({
       uploadingRecovered: 4,
-      dispatchingFailed: 1,
+      dispatchingFailed: 2,
     })
     await expect(getJob(db, 'stale_upload')).resolves.toMatchObject({
       status: 'failed',
@@ -235,7 +235,7 @@ describe('job repository', () => {
     await expect(getJob(db, 'fresh_upload')).resolves.toMatchObject({ status: 'uploading', retryCount: 4 })
     await expect(getJob(db, 'fresh_dispatch')).resolves.toMatchObject({ status: 'dispatching', retryCount: 4 })
     await expect(getJob(db, 'other_upload')).resolves.toMatchObject({ status: 'uploading', retryCount: 5 })
-    await expect(getJob(db, 'other_dispatch')).resolves.toMatchObject({ status: 'dispatching', retryCount: 5 })
+    await expect(getJob(db, 'other_dispatch')).resolves.toMatchObject({ status: 'failed', errorCode: 'ambiguous_post_result', nextRetryAt: null, retryCount: 5 })
   })
 
   it('prevents a recovered stale worker claim token from mutating a reclaimed job', async () => {

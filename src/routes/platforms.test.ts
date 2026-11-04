@@ -64,7 +64,7 @@ describe('platforms route', () => {
     await expect(res.json()).resolves.toEqual({
       platforms: [
         { platform: 'instagram', enabled: false, supportsAutomatic: true },
-        { platform: 'tiktok', enabled: true, supportsAutomatic: true },
+        { platform: 'tiktok', enabled: true, supportsAutomatic: false },
         { platform: 'x', enabled: false, supportsAutomatic: true },
         { platform: 'youtube', enabled: false, supportsAutomatic: true },
       ],

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from './index'
+import { TIKTOK_CREATOR, tiktokOptions } from './platforms/tiktok.test-helpers'
 import { upsertConnection } from './db/connections'
 import { createOrGetJob, getJob } from './db/jobs'
 import { applyMigrations, connection, job } from './db/test-helpers'
@@ -88,7 +89,7 @@ async function seedConnectedJob(db: D1Database, platform: Platform, overrides: P
       tokenExpiresAt: null,
     }),
   )
-  await createOrGetJob(db, job({ id: 'job_1', platform, expiresAt: 100_000, ...overrides }))
+  await createOrGetJob(db, job({ id: 'job_1', platform, expiresAt: 100_000, ...(platform === 'tiktok' ? { tiktokPostOptions: tiktokOptions() } : {}), ...overrides }))
 }
 
 describe('queue delivery lifecycle', () => {
@@ -108,7 +109,7 @@ describe('queue delivery lifecycle', () => {
       'fetch',
       vi
         .fn()
-        .mockResolvedValueOnce(Response.json({ data: { privacy_level_options: ['SELF_ONLY'] } }))
+        .mockResolvedValueOnce(Response.json({ data: TIKTOK_CREATOR }))
         .mockResolvedValueOnce(Response.json({ data: { publish_id: 'publish-id' }, error: { code: 'ok' } })),
     )
     const current = message('job_1')
@@ -160,7 +161,7 @@ describe('queue delivery lifecycle', () => {
       'fetch',
       vi
         .fn()
-        .mockResolvedValueOnce(Response.json({ data: { privacy_level_options: ['SELF_ONLY'] } }))
+        .mockResolvedValueOnce(Response.json({ data: TIKTOK_CREATOR }))
         .mockResolvedValueOnce(Response.json({ data: { publish_id: 'publish-id' }, error: { code: 'ok' } })),
     )
     send.mockRejectedValueOnce(new Error('queue unavailable'))

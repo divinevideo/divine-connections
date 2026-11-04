@@ -1,5 +1,6 @@
 // ABOUTME: Creates and reads creator-owned crosspost jobs.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
+import { confirmTikTokOptions } from './tiktok-posting'
 import { parseYouTubePrivacyStatus } from '../config'
 import { youtubeTitle } from '../platforms/youtube'
 import type { DivineVideoEvent } from '../funnelcake/client'
@@ -10,7 +11,7 @@ import { getActiveConnectionForPlatform, getConnection } from '../db/connections
 import { createOrGetJob, getJob, listJobsForVideo } from '../db/jobs'
 import { getPreferences } from '../db/preferences'
 import { getAdapter } from '../platforms/registry'
-import type { ConnectionRecord, Env, InstagramDestination, JobAttemptRecord, JobRecord, Platform, PreferenceRecord, YouTubePrivacyStatus } from '../types'
+import type { ConnectionRecord, Env, InstagramDestination, JobAttemptRecord, JobRecord, Platform, PreferenceRecord, TikTokPostOptions, YouTubePrivacyStatus } from '../types'
 import { generateRandomId } from '../utils/crypto'
 import { HttpError } from '../utils/http'
 import { isValidEventId, parsePlatform, parseInstagramDestination, parseYouTubePrivacyOption } from '../utils/validation'
@@ -27,6 +28,7 @@ export type JobWithAttemptsResult = {
 }
 
 type SourceSnapshot = {
+  durationSeconds: number | null
   title: string | null
   mediaUrl: string
   mediaHash: string
@@ -141,6 +143,7 @@ function validateEvent(lookup: DivineVideoLookup | null, pubkey: string, eventId
   }
 
   return {
+    durationSeconds: sourceDuration(event),
     title: tagValue(event.tags, 'title')?.trim() || null,
     mediaUrl: url,
     mediaHash: hash,
@@ -148,6 +151,20 @@ function validateEvent(lookup: DivineVideoLookup | null, pubkey: string, eventId
     createdAt: event.created_at,
     authorName: lookup.authorName,
   }
+}
+
+function sourceDuration(event: DivineVideoEvent): number | null {
+  const value = imetaValue(event.tags, 'duration') ?? tagValue(event.tags, 'duration')
+  if (value === null || !value.trim()) return null
+  const seconds = Number(value)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
+}
+
+export async function getTikTokSourcePreview(env: Env, pubkey: string, eventIdValue: string) {
+  const eventId = ensureEventId(eventIdValue)
+  const source = validateEvent(await fetchVideoEvent(env, eventId), pubkey, eventId)
+  if (source.durationSeconds === null) throw new HttpError(400, 'not_eligible', 'Video has no valid duration metadata; TikTok posting is unavailable')
+  return { caption: source.caption, mediaUrl: source.mediaUrl, durationSeconds: source.durationSeconds }
 }
 
 function uniquePlatforms(platforms: string[]): Platform[] {
@@ -168,6 +185,7 @@ async function createJobsForConnections(
     snapshot: SourceSnapshot
     connections: ConnectionRecord[]
     instagramDestination?: InstagramDestination | null
+    tiktokPostOptions?: TikTokPostOptions
     youtubePrivacyStatus?: YouTubePrivacyStatus | null
   },
 ): Promise<CrosspostJobsResult> {
@@ -177,6 +195,7 @@ async function createJobsForConnections(
 
   for (const connection of input.connections) {
     const result = await createOrGetJob(env.DB, {
+      ...(connection.platform === 'tiktok' ? { tiktokPostOptions: input.tiktokPostOptions } : {}),
       ...(connection.platform === 'youtube' ? {
         youtubePrivacyStatus: input.youtubePrivacyStatus ?? parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS),
         youtubeTitle: youtubeTitle(input.snapshot.title || input.snapshot.caption),
@@ -190,10 +209,9 @@ async function createJobsForConnections(
       externalAccountId: connection.externalAccountId,
       sourceMediaUrl: input.snapshot.mediaUrl,
       sourceMediaHash: input.snapshot.mediaHash,
-      // Attribution is applied here rather than at publish time so the stored
-      // caption is exactly what went out, and so every path that creates a job
-      // gets it -- manual, automatic, and any future one.
-      caption: buildCrosspostCaption({
+      // TikTok text was explicitly edited/confirmed; preserve it exactly.
+      // Other providers retain their existing enqueue-time attribution.
+      caption: connection.platform === 'tiktok' && input.tiktokPostOptions ? input.tiktokPostOptions.confirmedCaption : buildCrosspostCaption({
         caption: input.snapshot.caption,
         eventId: input.eventId,
         authorName: input.snapshot.authorName,
@@ -228,7 +246,7 @@ async function requireManualConnection(env: Env, pubkey: string, platform: Platf
 
 export async function createManualCrossposts(
   env: Env,
-  input: { pubkey: string; eventId: string; platforms: string[]; instagramDestination?: unknown; youtubePrivacyStatus?: unknown },
+  input: { pubkey: string; eventId: string; platforms: string[]; instagramDestination?: unknown; youtubePrivacyStatus?: unknown; tiktokPostOptions?: unknown },
 ): Promise<CrosspostJobsResult> {
   const eventId = ensureEventId(input.eventId)
   if (!Array.isArray(input.platforms) || input.platforms.length === 0) {
@@ -240,13 +258,16 @@ export async function createManualCrossposts(
   const youtubeOverride = parseYouTubePrivacyOption(input.youtubePrivacyStatus, platforms.includes('youtube'))
   const connections = await Promise.all(platforms.map((platform) => requireManualConnection(env, input.pubkey, platform)))
   const snapshot = validateEvent(await fetchVideoEvent(env, eventId), input.pubkey, eventId)
+  if (input.tiktokPostOptions !== undefined && !platforms.includes('tiktok')) throw new HttpError(400, 'not_eligible', 'TikTok options require a TikTok destination')
+  const tiktokConnection = connections.find(connection => connection.platform === 'tiktok')
+  const tiktokPostOptions = tiktokConnection ? await confirmTikTokOptions(env, tiktokConnection, input.tiktokPostOptions, snapshot.durationSeconds) : undefined
   const preferences = await getPreferences(env.DB, input.pubkey)
   const saved = preferences.find((preference) => preference.platform === 'instagram')
-  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, instagramDestination: override ?? saved?.instagramDestination, youtubePrivacyStatus: youtubeOverride ?? preferences.find((preference) => preference.platform === 'youtube')?.youtubePrivacyStatus })
+  return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, tiktokPostOptions, instagramDestination: override ?? saved?.instagramDestination, youtubePrivacyStatus: youtubeOverride ?? preferences.find((preference) => preference.platform === 'youtube')?.youtubePrivacyStatus })
 }
 
 function isAutomaticPreference(preference: PreferenceRecord): boolean {
-  return preference.mode === 'automatic' && preference.connectionId !== null
+  return preference.platform !== 'tiktok' && preference.mode === 'automatic' && preference.connectionId !== null
 }
 
 export async function createAutomaticCrossposts(

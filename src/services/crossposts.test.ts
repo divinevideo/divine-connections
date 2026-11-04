@@ -37,10 +37,10 @@ function testEnv(db: D1Database, queueSend: ReturnType<typeof vi.fn>): Env {
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
     TOKEN_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef',
-    ENABLE_TIKTOK: 'true',
+    ENABLE_X: 'true',
     ENABLE_YOUTUBE: 'true',
-    TIKTOK_CLIENT_KEY: 'tiktok-client',
-    TIKTOK_CLIENT_SECRET: 'tiktok-secret',
+    TWITTER_CLIENT_ID: 'x-client',
+    TWITTER_CLIENT_SECRET: 'x-secret',
     GOOGLE_CLIENT_ID: 'google-client',
     GOOGLE_CLIENT_SECRET: 'google-secret',
   }
@@ -121,7 +121,7 @@ describe('crosspost service', () => {
   })
 
   it('rejects YouTube visibility when YouTube is not selected', async () => {
-    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['tiktok'], youtubePrivacyStatus: 'public' })).rejects.toMatchObject({ status: 400, code: 'invalid_youtube_privacy_status' })
+    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['x'], youtubePrivacyStatus: 'public' })).rejects.toMatchObject({ status: 400, code: 'invalid_youtube_privacy_status' })
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -141,7 +141,7 @@ describe('crosspost service', () => {
   })
 
   it('rejects a destination without Instagram before provider lookup or queue dispatch', async () => {
-    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['tiktok'], instagramDestination: 'story' })).rejects.toMatchObject({ status: 400, code: 'invalid_instagram_destination' })
+    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['x'], instagramDestination: 'story' })).rejects.toMatchObject({ status: 400, code: 'invalid_instagram_destination' })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(queueSend).not.toHaveBeenCalled()
   })
@@ -176,18 +176,18 @@ describe('crosspost service', () => {
   })
 
   it('manual crosspost creates one job per selected connected platform', async () => {
-    await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
+    await addConnectedPlatform(db, 'x', 'conn_x')
     await addConnectedPlatform(db, 'youtube', 'conn_youtube')
     fetchMock.mockResolvedValueOnce(Response.json({ event: event() }))
 
     const result = await createManualCrossposts(testEnv(db, queueSend), {
       pubkey: PUBKEY_A,
       eventId: VIDEO_EVENT_ID,
-      platforms: ['tiktok', 'youtube'],
+      platforms: ['x', 'youtube'],
     })
 
     expect(result.jobs).toHaveLength(2)
-    expect(result.jobs.map((job) => job.platform)).toEqual(['tiktok', 'youtube'])
+    expect(result.jobs.map((job) => job.platform)).toEqual(['x', 'youtube'])
     expect(result.jobs[0]).toMatchObject({
       pubkey: PUBKEY_A,
       videoEventId: VIDEO_EVENT_ID,
@@ -206,13 +206,13 @@ describe('crosspost service', () => {
   })
 
   it('accepts real NIP-71 imeta entries for Divine media URLs and hashes', async () => {
-    await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
+    await addConnectedPlatform(db, 'x', 'conn_x')
     fetchMock.mockResolvedValueOnce(Response.json({ event: nip71Event() }))
 
     const result = await createManualCrossposts(testEnv(db, queueSend), {
       pubkey: PUBKEY_A,
       eventId: VIDEO_EVENT_ID,
-      platforms: ['tiktok'],
+      platforms: ['x'],
     })
 
     expect(result.jobs[0]).toMatchObject({
@@ -222,7 +222,7 @@ describe('crosspost service', () => {
   })
 
   it('rejects non-Divine media URLs', async () => {
-    await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
+    await addConnectedPlatform(db, 'x', 'conn_x')
     fetchMock.mockResolvedValueOnce(
       Response.json({ event: nip71Event({ tags: [['imeta', 'url https://example.com/video.mp4', 'x abc123']] }) }),
     )
@@ -231,24 +231,24 @@ describe('crosspost service', () => {
       createManualCrossposts(testEnv(db, queueSend), {
         pubkey: PUBKEY_A,
         eventId: VIDEO_EVENT_ID,
-        platforms: ['tiktok'],
+        platforms: ['x'],
       }),
     ).rejects.toMatchObject({ status: 400, code: 'not_eligible' })
   })
 
   it('duplicate manual request returns the same jobs and does not enqueue duplicates', async () => {
-    await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
+    await addConnectedPlatform(db, 'x', 'conn_x')
     fetchMock.mockImplementation(() => Promise.resolve(Response.json({ event: event() })))
 
     const first = await createManualCrossposts(testEnv(db, queueSend), {
       pubkey: PUBKEY_A,
       eventId: VIDEO_EVENT_ID,
-      platforms: ['tiktok'],
+      platforms: ['x'],
     })
     const duplicate = await createManualCrossposts(testEnv(db, queueSend), {
       pubkey: PUBKEY_A,
       eventId: VIDEO_EVENT_ID,
-      platforms: ['tiktok'],
+      platforms: ['x'],
     })
 
     expect(duplicate.jobs).toEqual(first.jobs)
@@ -256,12 +256,12 @@ describe('crosspost service', () => {
   })
 
   it('auto endpoint uses only automatic preferences', async () => {
-    await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
+    await addConnectedPlatform(db, 'x', 'conn_x')
     await addConnectedPlatform(db, 'youtube', 'conn_youtube')
     await setPreference(db, {
       pubkey: PUBKEY_A,
-      platform: 'tiktok',
-      connectionId: 'conn_tiktok',
+      platform: 'x',
+      connectionId: 'conn_x',
       mode: 'automatic',
       automaticEnabledAt: 1_500,
       createdAt: 1_000,
@@ -283,16 +283,16 @@ describe('crosspost service', () => {
       eventId: VIDEO_EVENT_ID,
     })
 
-    expect(result.jobs.map((job) => job.platform)).toEqual(['tiktok'])
+    expect(result.jobs.map((job) => job.platform)).toEqual(['x'])
     expect(queueSend).toHaveBeenCalledTimes(1)
   })
 
   it('auto endpoint ignores events older than automatic_enabled_at', async () => {
-    await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
+    await addConnectedPlatform(db, 'x', 'conn_x')
     await setPreference(db, {
       pubkey: PUBKEY_A,
-      platform: 'tiktok',
-      connectionId: 'conn_tiktok',
+      platform: 'x',
+      connectionId: 'conn_x',
       mode: 'automatic',
       automaticEnabledAt: 3_000,
       createdAt: 1_000,
@@ -310,40 +310,40 @@ describe('crosspost service', () => {
   })
 
   it('rejects non-owner events with 403', async () => {
-    await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
+    await addConnectedPlatform(db, 'x', 'conn_x')
     fetchMock.mockResolvedValueOnce(Response.json({ event: event({ pubkey: PUBKEY_B }) }))
 
     await expect(
       createManualCrossposts(testEnv(db, queueSend), {
         pubkey: PUBKEY_A,
         eventId: VIDEO_EVENT_ID,
-        platforms: ['tiktok'],
+        platforms: ['x'],
       }),
     ).rejects.toMatchObject({ status: 403, code: 'not_owner' })
   })
 
   it('rejects unsupported event kinds with not_eligible', async () => {
-    await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
+    await addConnectedPlatform(db, 'x', 'conn_x')
     fetchMock.mockResolvedValueOnce(Response.json({ event: event({ kind: 1 }) }))
 
     await expect(
       createManualCrossposts(testEnv(db, queueSend), {
         pubkey: PUBKEY_A,
         eventId: VIDEO_EVENT_ID,
-        platforms: ['tiktok'],
+        platforms: ['x'],
       }),
     ).rejects.toMatchObject({ status: 400, code: 'not_eligible' })
   })
 
   it('rejects missing media URL or hash with not_eligible', async () => {
-    await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
+    await addConnectedPlatform(db, 'x', 'conn_x')
     fetchMock.mockResolvedValueOnce(Response.json({ event: event({ tags: [['imeta', 'url', 'https://media.divine.video/video.mp4']] }) }))
 
     await expect(
       createManualCrossposts(testEnv(db, queueSend), {
         pubkey: PUBKEY_A,
         eventId: VIDEO_EVENT_ID,
-        platforms: ['tiktok'],
+        platforms: ['x'],
       }),
     ).rejects.toMatchObject({ status: 400, code: 'not_eligible' })
   })

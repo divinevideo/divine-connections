@@ -105,7 +105,7 @@ export async function listAutomaticPreferences(
   const rows = await allPrepared<PreferenceRow>(
     db,
     `SELECT *, (SELECT destination FROM instagram_preferences WHERE pubkey = preferences.pubkey) AS instagram_destination, (SELECT privacy_status FROM youtube_preferences WHERE pubkey = preferences.pubkey) AS youtube_privacy_status FROM preferences
-    WHERE mode = 'automatic'
+    WHERE mode = 'automatic' AND platform != 'tiktok'
     ORDER BY updated_at ASC, pubkey ASC, platform ASC
     LIMIT ? OFFSET ?`,
     limit,

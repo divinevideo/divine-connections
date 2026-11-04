@@ -2,6 +2,7 @@
 // ABOUTME: Validates provider responses before persisting credentials or publish results.
 import { PlatformAdapterError, asRecord, expectProviderOk } from './adapter'
 import type { PlatformAdapter, PublishResult, TokenSet } from './adapter'
+import type { TikTokCreatorInfo, TikTokPostOptions } from '../types'
 
 type TikTokConfig = {
   clientKey: string
@@ -11,6 +12,9 @@ type TikTokConfig = {
 const API_BASE = 'https://open.tiktokapis.com/v2'
 
 function tokenSetFromResponse(response: Record<string, unknown>): TokenSet {
+  if (['invalid_grant', 'invalid_refresh_token', 'invalid_token'].includes(String(response.error ?? ''))) {
+    throw new PlatformAdapterError('tiktok', 'needs_reauth', 'Reconnect your TikTok account')
+  }
   if (typeof response.access_token !== 'string' || !response.access_token.trim()) {
     throw new PlatformAdapterError('tiktok', 'unknown_platform_error', 'tiktok token response missing access token')
   }
@@ -24,25 +28,58 @@ function tokenSetFromResponse(response: Record<string, unknown>): TokenSet {
   }
 }
 
-function creatorInfoFromResponse(response: Record<string, unknown>): Record<string, unknown> {
-  return asRecord(response.data)
+export async function fetchTikTokCreatorInfo(accessToken: string): Promise<TikTokCreatorInfo> {
+  const response = await fetch(`${API_BASE}/post/publish/creator_info/query/`, {
+    method: 'POST', headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
+  })
+  const body = asRecord(await expectProviderOk('tiktok', response))
+  const info = asRecord(body.data)
+  if (info.direct_post_available === false || info.direct_post_enabled === false || info.can_post === false) {
+    throw new PlatformAdapterError('tiktok', 'platform_review_required', 'TikTok posting is unavailable; try again later')
+  }
+  const privacy = info.privacy_level_options
+  if (!Array.isArray(privacy) || !privacy.length || !privacy.every(value => typeof value === 'string' && ['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'SELF_ONLY'].includes(value)) ||
+    typeof info.creator_username !== 'string' || !info.creator_username || typeof info.creator_nickname !== 'string' ||
+    !['comment_disabled', 'duet_disabled', 'stitch_disabled'].every(key => typeof info[key] === 'boolean') ||
+    typeof info.max_video_post_duration_sec !== 'number' || !Number.isFinite(info.max_video_post_duration_sec) || info.max_video_post_duration_sec <= 0) {
+    throw new PlatformAdapterError('tiktok', 'platform_review_required', 'TikTok creator settings are unavailable; try again later')
+  }
+  return {
+    creator_username: info.creator_username, creator_nickname: info.creator_nickname,
+    privacy_level_options: privacy, comment_disabled: info.comment_disabled as boolean,
+    duet_disabled: info.duet_disabled as boolean, stitch_disabled: info.stitch_disabled as boolean,
+    max_video_post_duration_sec: info.max_video_post_duration_sec,
+  }
 }
 
-function privacyLevelForV1(creatorInfo: Record<string, unknown>): string {
-  if (
-    creatorInfo.direct_post_available === false ||
-    creatorInfo.direct_post_enabled === false ||
-    creatorInfo.can_post === false
-  ) {
-    throw new PlatformAdapterError('tiktok', 'platform_review_required', 'TikTok direct post is not available')
-  }
+/** Compare only the displayed, validated fields; a changed account/settings needs new consent. */
+export function sameTikTokCreatorInfo(value: unknown, current: TikTokCreatorInfo): boolean {
+  const previous = asRecord(value)
+  return Object.entries(current).every(([key, value]) => JSON.stringify(previous[key]) === JSON.stringify(value))
+}
 
-  const options = creatorInfo.privacy_level_options
-  if (Array.isArray(options) && options.length > 0 && !options.includes('SELF_ONLY')) {
-    throw new PlatformAdapterError('tiktok', 'platform_review_required', 'TikTok private posting is not available')
+export function validateTikTokPostOptions(value: unknown, current: TikTokCreatorInfo, duration: number | null, connectionId?: string): TikTokPostOptions {
+  const option = asRecord(value)
+  const invalid = (message: string): never => { throw new PlatformAdapterError('tiktok', 'not_eligible', message) }
+  if (typeof option.connectionId !== 'string' || (connectionId && option.connectionId !== connectionId)) invalid('Confirm the connected TikTok account')
+  if (!sameTikTokCreatorInfo(option.creatorInfo, current)) invalid('TikTok settings changed; preview and confirm again')
+  if (typeof option.privacyLevel !== 'string' || !current.privacy_level_options.includes(option.privacyLevel)) invalid('Choose an available TikTok privacy level')
+  for (const key of ['allowComment', 'allowDuet', 'allowStitch', 'commercialContent', 'brandOrganic', 'brandContent', 'brandedContentConfirmed']) {
+    if (typeof option[key] !== 'boolean') invalid('Confirm all TikTok interaction and disclosure choices')
   }
-
-  return 'SELF_ONLY'
+  if ((option.allowComment && current.comment_disabled) || (option.allowDuet && current.duet_disabled) || (option.allowStitch && current.stitch_disabled)) invalid('TikTok does not allow the selected interaction')
+  if (option.musicUsageConfirmed !== true) invalid('Agree to TikTok music usage before posting')
+  if (option.commercialContent !== Boolean(option.brandOrganic || option.brandContent)) invalid('Indicate whether this content promotes your brand, another brand, or both')
+  if (option.brandContent && (!option.brandedContentConfirmed || !['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS'].includes(String(option.privacyLevel)))) invalid('Branded content needs public/friends visibility and policy consent')
+  if (typeof option.confirmedCaption !== 'string' || option.confirmedCaption.length > 2200) invalid('TikTok captions must be at most 2200 UTF-16 characters')
+  if (duration === null || !Number.isFinite(duration) || duration <= 0 || duration > current.max_video_post_duration_sec) invalid('Video duration is missing or exceeds the current TikTok limit')
+  return {
+    connectionId: option.connectionId as string, creatorInfo: current, privacyLevel: option.privacyLevel as string,
+    allowComment: option.allowComment as boolean, allowDuet: option.allowDuet as boolean, allowStitch: option.allowStitch as boolean,
+    commercialContent: option.commercialContent as boolean, brandOrganic: option.brandOrganic as boolean, brandContent: option.brandContent as boolean,
+    confirmedCaption: option.confirmedCaption as string, musicUsageConfirmed: true, brandedContentConfirmed: option.brandedContentConfirmed as boolean,
+    durationSeconds: duration as number,
+  }
 }
 
 function tiktokData(response: Record<string, unknown>): Record<string, unknown> {
@@ -51,7 +88,8 @@ function tiktokData(response: Record<string, unknown>): Record<string, unknown> 
 
 function tiktokPublishId(response: Record<string, unknown>): string {
   const data = tiktokData(response)
-  return String(data.publish_id ?? response.publish_id ?? '')
+  const id = data.publish_id ?? response.publish_id
+  return typeof id === 'string' ? id : ''
 }
 
 function tiktokStatus(response: Record<string, unknown>): string {
@@ -115,31 +153,30 @@ export function createTikTokAdapter(config: TikTokConfig): PlatformAdapter {
         metadata: body,
       }
     },
-    async publishVideo({ accessToken, videoUrl, caption }): Promise<PublishResult> {
-      const creatorInfoResponse = await fetch(`${API_BASE}/post/publish/creator_info/query/`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-      })
-      const creatorInfo = creatorInfoFromResponse(asRecord(await expectProviderOk('tiktok', creatorInfoResponse)))
-      const privacyLevel = privacyLevelForV1(creatorInfo)
-
+    async publishVideo({ accessToken, videoUrl, tiktokPostOptions, beforeExternalPost }): Promise<PublishResult> {
+      if (!tiktokPostOptions) throw new PlatformAdapterError('tiktok', 'not_eligible', 'TikTok requires manual confirmation')
+      const creatorInfo = await fetchTikTokCreatorInfo(accessToken)
+      const options = validateTikTokPostOptions(tiktokPostOptions, creatorInfo, tiktokPostOptions.durationSeconds)
+      await beforeExternalPost?.()
       const response = await fetch(`${API_BASE}/post/publish/video/init/`, {
         method: 'POST',
         headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
         body: JSON.stringify({
           post_info: {
-            title: caption,
-            privacy_level: privacyLevel,
-            disable_duet: false,
-            disable_comment: false,
-            brand_content_toggle: false,
-            brand_organic_toggle: false,
+            title: options.confirmedCaption,
+            privacy_level: options.privacyLevel,
+            disable_duet: !options.allowDuet,
+            disable_comment: !options.allowComment,
+            disable_stitch: !options.allowStitch,
+            brand_content_toggle: options.brandContent,
+            brand_organic_toggle: options.brandOrganic,
           },
           source_info: { source: 'PULL_FROM_URL', video_url: videoUrl },
         }),
       })
       const body = asRecord(await expectProviderOk('tiktok', response))
       const publishId = tiktokPublishId(body)
+      if (!publishId.trim()) throw new PlatformAdapterError('tiktok', 'unknown_platform_error', 'TikTok did not return a publish ID')
       return {
         status: 'processing',
         externalPostId: publishId,
@@ -148,6 +185,7 @@ export function createTikTokAdapter(config: TikTokConfig): PlatformAdapter {
     },
     async pollPublishStatus({ accessToken, providerResponse }) {
       const publishId = publishIdFromProviderResponse(providerResponse)
+      if (!publishId.trim()) throw new PlatformAdapterError('tiktok', 'unknown_platform_error', 'TikTok publish ID is missing')
       const response = await fetch(`${API_BASE}/post/publish/status/fetch/`, {
         method: 'POST',
         headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },

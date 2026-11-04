@@ -19,6 +19,33 @@ export interface VerificationRecord {
 
 export type YouTubePrivacyStatus = 'private' | 'unlisted' | 'public'
 
+export type TikTokCreatorInfo = {
+  creator_username: string
+  creator_nickname: string
+  privacy_level_options: string[]
+  comment_disabled: boolean
+  duet_disabled: boolean
+  stitch_disabled: boolean
+  max_video_post_duration_sec: number
+}
+
+export type TikTokPostOptions = {
+  connectionId: string
+  creatorInfo: TikTokCreatorInfo
+  privacyLevel: string
+  allowComment: boolean
+  allowDuet: boolean
+  allowStitch: boolean
+  commercialContent: boolean
+  brandOrganic: boolean
+  brandContent: boolean
+  confirmedCaption: string
+  musicUsageConfirmed: true
+  brandedContentConfirmed: boolean
+  /** Derived from the eligible source event, never accepted from client input. */
+  durationSeconds: number
+}
+
 export type InstagramDestination = 'story' | 'reel' | 'reel_feed'
 
 export type PreferenceMode = 'manual' | 'automatic' | 'disabled'
@@ -166,6 +193,7 @@ export type AutoCursorRecord = {
 }
 
 export type JobRecord = {
+  tiktokPostOptions?: TikTokPostOptions | null
   youtubePrivacyStatus?: YouTubePrivacyStatus | null
   youtubeTitle?: string | null
   instagramDestination?: InstagramDestination | null

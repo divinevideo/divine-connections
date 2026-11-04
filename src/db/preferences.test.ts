@@ -10,7 +10,7 @@ describe('preference repository', () => {
 
   beforeEach(async () => {
     db = await applyMigrations()
-    await upsertConnection(db, connection({ id: 'conn_tiktok' }))
+    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x' }))
   })
 
   it.each(['private', 'unlisted', 'public'] as const)('round trips YouTube %s without affecting legacy preferences', async (youtubePrivacyStatus) => {
@@ -23,8 +23,8 @@ describe('preference repository', () => {
   it('stores automatic_enabled_at when mode is automatic', async () => {
     const preference = await setPreference(db, {
       pubkey: PUBKEY_A,
-      platform: 'tiktok',
-      connectionId: 'conn_tiktok',
+      platform: 'x',
+      connectionId: 'conn_x',
       mode: 'automatic',
       automaticEnabledAt: 2_000,
       createdAt: 1_000,
@@ -39,8 +39,8 @@ describe('preference repository', () => {
   it('clears automatic_enabled_at for non-automatic modes', async () => {
     await setPreference(db, {
       pubkey: PUBKEY_A,
-      platform: 'tiktok',
-      connectionId: 'conn_tiktok',
+      platform: 'x',
+      connectionId: 'conn_x',
       mode: 'automatic',
       automaticEnabledAt: 2_000,
       createdAt: 1_000,
@@ -49,8 +49,8 @@ describe('preference repository', () => {
 
     const manual = await setPreference(db, {
       pubkey: PUBKEY_A,
-      platform: 'tiktok',
-      connectionId: 'conn_tiktok',
+      platform: 'x',
+      connectionId: 'conn_x',
       mode: 'manual',
       automaticEnabledAt: 3_000,
       createdAt: 1_000,

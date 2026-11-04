@@ -1,6 +1,7 @@
 // ABOUTME: Exercises publishing claims, provider outcomes, and retry handling.
 // ABOUTME: Uses real adapters with upstream requests stubbed at the fetch boundary.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TIKTOK_CREATOR, tiktokOptions } from '../platforms/tiktok.test-helpers'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, upsertConnection } from '../db/connections'
 import { createOrGetJob, getJob, updateJobStatus, recoverStaleXClaims } from '../db/jobs'
@@ -79,7 +80,7 @@ async function seedConnectedJob(db: D1Database, platform: Platform, overrides: P
       externalAccountId: 'external-account-1',
     }),
   )
-  const created = await createOrGetJob(db, job({ id: 'job_1', platform, ...overrides }))
+  const created = await createOrGetJob(db, job({ id: 'job_1', platform, ...(platform === 'tiktok' ? { tiktokPostOptions: tiktokOptions() } : {}), ...overrides }))
   return created.job
 }
 
@@ -269,7 +270,7 @@ describe('publisher service', () => {
   it('records processing state and schedules a retry', async () => {
     await seedConnectedJob(db, 'tiktok')
     fetchMock
-      .mockResolvedValueOnce(Response.json({ data: { privacy_level_options: ['SELF_ONLY'] } }))
+      .mockResolvedValueOnce(Response.json({ data: TIKTOK_CREATOR }))
       .mockResolvedValueOnce(
         Response.json({
           data: { publish_id: 'publish-id', nested_secret: 'tiktok-processing-sentinel' },
@@ -872,7 +873,7 @@ describe('publisher service', () => {
         metadataJson: '{}',
       }),
     )
-    await createOrGetJob(db, job({ id: 'job_1', platform: 'tiktok' }))
+    await createOrGetJob(db, job({ id: 'job_1', platform: 'tiktok', tiktokPostOptions: tiktokOptions() }))
     fetchMock
       .mockResolvedValueOnce(
         Response.json({
@@ -882,7 +883,7 @@ describe('publisher service', () => {
           scope: 'video.publish',
         }),
       )
-      .mockResolvedValueOnce(Response.json({ data: { privacy_level_options: ['SELF_ONLY'] } }))
+      .mockResolvedValueOnce(Response.json({ data: TIKTOK_CREATOR }))
       .mockResolvedValueOnce(Response.json({ data: { publish_id: 'publish-id' }, error: { code: 'ok' } }))
 
     await expect(processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2_000 })).resolves.toMatchObject({
@@ -892,7 +893,7 @@ describe('publisher service', () => {
     const updated = await getConnection(db, 'conn_1', PUBKEY_A)
     expect(updated?.metadataJson).not.toContain('new-access-token')
     expect(updated?.metadataJson).not.toContain('new-refresh-token')
-    expect(updated?.metadataJson).toContain('expires_in')
+    expect(updated?.lastRefreshAt).toBe(2000)
   })
 
   it('marks revoked tokens as needs_reauth on the job and connection', async () => {
@@ -964,4 +965,16 @@ describe('publisher service', () => {
       expect.objectContaining({ errorCode: 'media_rejected', providerResponseJson: null }),
     ])
   })
+})
+
+it('rejects a legacy queued TikTok job with no manual options before dispatch', async () => {
+  const db = await applyMigrations()
+  await seedConnectedJob(db, 'tiktok', { tiktokPostOptions: null })
+  const upstream = vi.fn()
+  vi.stubGlobal('fetch', upstream)
+  try {
+    expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'failed', errorCode: 'not_eligible', externalPostId: null, nextRetryAt: null })
+    expect(upstream).not.toHaveBeenCalled()
+  } finally { vi.unstubAllGlobals() }
 })

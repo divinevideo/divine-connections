@@ -1,6 +1,6 @@
 // ABOUTME: Defines provider publishing contracts and normalized errors.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
-import type { ErrorCode, InstagramDestination, Platform, YouTubePrivacyStatus } from '../types'
+import type { ErrorCode, InstagramDestination, Platform, YouTubePrivacyStatus, TikTokPostOptions } from '../types'
 
 export type PlatformAccount = {
   id: string
@@ -17,6 +17,7 @@ export type TokenSet = {
 }
 
 export type PublishInput = {
+  tiktokPostOptions?: TikTokPostOptions | null
   youtubePrivacyStatus?: YouTubePrivacyStatus | null
   youtubeTitle?: string | null
   instagramDestination?: InstagramDestination | null

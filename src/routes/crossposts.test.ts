@@ -32,9 +32,9 @@ function testEnv(db: D1Database, queueSend: ReturnType<typeof vi.fn>): Env {
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
     TOKEN_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef',
-    ENABLE_TIKTOK: 'true',
-    TIKTOK_CLIENT_KEY: 'tiktok-client',
-    TIKTOK_CLIENT_SECRET: 'tiktok-secret',
+    ENABLE_X: 'true',
+    TWITTER_CLIENT_ID: 'x-client',
+    TWITTER_CLIENT_SECRET: 'x-secret',
   } as Env
 }
 
@@ -67,7 +67,7 @@ describe('crosspost routes', () => {
       return Promise.resolve(Response.json({ error: 'not found' }, { status: 404 }))
     })
     vi.stubGlobal('fetch', fetchMock)
-    await upsertConnection(db, connection({ id: 'conn_tiktok' }))
+    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x' }))
   })
 
   afterEach(() => {
@@ -83,7 +83,7 @@ describe('crosspost routes', () => {
   })
 
   it('rejects an audience for an unselected YouTube destination through the API', async () => {
-    const res = await app.request(`/videos/${VIDEO_EVENT_ID}/crossposts`, authenticatedInit({ method: 'POST', body: JSON.stringify({ platforms: ['tiktok'], youtubePrivacyStatus: 'public' }) }), testEnv(db, queueSend))
+    const res = await app.request(`/videos/${VIDEO_EVENT_ID}/crossposts`, authenticatedInit({ method: 'POST', body: JSON.stringify({ platforms: ['x'], youtubePrivacyStatus: 'public' }) }), testEnv(db, queueSend))
     expect(res.status).toBe(400)
     expect(await res.json()).toMatchObject({ error: { code: 'invalid_youtube_privacy_status' } })
     expect(queueSend).not.toHaveBeenCalled()
@@ -94,14 +94,14 @@ describe('crosspost routes', () => {
       `/videos/${VIDEO_EVENT_ID}/crossposts`,
       authenticatedInit({
         method: 'POST',
-        body: JSON.stringify({ platforms: ['tiktok'] }),
+        body: JSON.stringify({ platforms: ['x'] }),
       }),
       testEnv(db, queueSend),
     )
 
     expect(res.status).toBe(200)
     await expect(res.json()).resolves.toEqual({
-      jobs: [expect.objectContaining({ platform: 'tiktok', videoEventId: VIDEO_EVENT_ID, status: 'queued' })],
+      jobs: [expect.objectContaining({ platform: 'x', videoEventId: VIDEO_EVENT_ID, status: 'queued' })],
     })
     expect(queueSend).toHaveBeenCalledTimes(1)
   })
@@ -111,7 +111,7 @@ describe('crosspost routes', () => {
   it('creates manual crosspost jobs for a NIP-98 signed request and still reads its JSON body', async () => {
     await upsertConnection(
       db,
-      connection({ id: 'conn_nip98', pubkey: NIP98_TEST_PUBKEY, externalAccountId: 'external-account-nip98' }),
+      connection({ id: 'conn_nip98', platform: 'x', pubkey: NIP98_TEST_PUBKEY, externalAccountId: 'external-account-nip98' }),
     )
     fetchMock.mockImplementation((url: string) => {
       if (url === `https://api.divine.video/api/videos/${VIDEO_EVENT_ID}`) {
@@ -119,7 +119,7 @@ describe('crosspost routes', () => {
       }
       return Promise.resolve(Response.json({ error: 'not found' }, { status: 404 }))
     })
-    const body = JSON.stringify({ platforms: ['tiktok'] })
+    const body = JSON.stringify({ platforms: ['x'] })
     const signed = await signNip98Event({
       url: `http://localhost/videos/${VIDEO_EVENT_ID}/crossposts`,
       method: 'POST',
@@ -135,13 +135,13 @@ describe('crosspost routes', () => {
 
     expect(res.status).toBe(200)
     await expect(res.json()).resolves.toEqual({
-      jobs: [expect.objectContaining({ platform: 'tiktok', videoEventId: VIDEO_EVENT_ID, status: 'queued' })],
+      jobs: [expect.objectContaining({ platform: 'x', videoEventId: VIDEO_EVENT_ID, status: 'queued' })],
     })
     expect(fetchMock.mock.calls.map(([url]) => url)).not.toContain('https://login.divine.video/api/nostr')
   })
 
   it('lists video jobs for the authenticated user', async () => {
-    await createOrGetJob(db, job({ id: 'job_existing', connectionId: 'conn_tiktok' }))
+    await createOrGetJob(db, job({ id: 'job_existing', connectionId: 'conn_x' }))
 
     const res = await app.request(
       `/videos/${VIDEO_EVENT_ID}/crossposts`,
@@ -156,7 +156,7 @@ describe('crosspost routes', () => {
   })
 
   it('returns a job with attempts for the authenticated user', async () => {
-    await createOrGetJob(db, job({ id: 'job_existing', connectionId: 'conn_tiktok' }))
+    await createOrGetJob(db, job({ id: 'job_existing', connectionId: 'conn_x' }))
     await recordAttempt(db, {
       id: 'attempt_1',
       jobId: 'job_existing',
@@ -201,7 +201,7 @@ describe('crosspost routes', () => {
       `/videos/${VIDEO_EVENT_ID}/crossposts`,
       authenticatedInit({
         method: 'POST',
-        body: JSON.stringify({ platforms: ['tiktok'] }),
+        body: JSON.stringify({ platforms: ['x'] }),
       }),
       testEnv(db, queueSend),
     )

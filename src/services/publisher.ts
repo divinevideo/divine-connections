@@ -1,5 +1,6 @@
 // ABOUTME: Claims queued crosspost jobs and publishes them through provider adapters.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
+import { usableConnectionToken } from './connection-token'
 import { recordDiagnosticSafely } from './reliability'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, markConnectionNeedsReauth, upsertConnection } from '../db/connections'
@@ -146,6 +147,8 @@ async function accessTokenForJob(
     })
     return null
   }
+
+  if (job.platform === 'tiktok') return usableConnectionToken(env, connection, now)
 
   if (!connection.tokenExpiresAt || connection.tokenExpiresAt > now + 60 || !connection.encryptedRefreshToken) {
     return decryptToken(connection.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY)
@@ -588,6 +591,7 @@ export async function processCrosspostJob(
       }
 
       const result = await adapter.publishVideo({
+        tiktokPostOptions: job.tiktokPostOptions,
         youtubePrivacyStatus: job.youtubePrivacyStatus,
         youtubeTitle: job.youtubeTitle,
         instagramDestination: job.instagramDestination,
