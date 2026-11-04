@@ -97,3 +97,20 @@ describe('assertAllowedReturnUrl refuses the retired verifier hostnames', () => 
     expect(assertAllowedReturnUrl('https://divine.video/', redirectBase)).toBe('https://divine.video/')
   })
 })
+
+// Each allowed host is matched whole, so a host that only contains or extends
+// one of them is refused like any other.
+describe('assertAllowedReturnUrl refuses lookalikes of the allowed hosts', () => {
+  const redirectBase = 'https://crossposter.divine.video'
+
+  it.each([
+    'https://divine.video.evil.test/',
+    'https://evil-divine.video/',
+    'https://www.divine.video.evil.test/',
+    'https://crossposter.divine.video.evil.test/',
+    'http://localhost.evil.test/callback',
+    'http://127.0.0.1.evil.test/callback',
+  ])('refuses %s', (url) => {
+    expectThrowStatus(() => assertAllowedReturnUrl(url, redirectBase), 400)
+  })
+})
