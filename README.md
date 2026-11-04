@@ -119,7 +119,9 @@ npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put TIKTOK_CLIENT_KEY
 npx wrangler secret put TIKTOK_CLIENT_SECRET
+npx wrangler secret put INSTAGRAM_WEBHOOK_VERIFY_TOKEN
 npx wrangler secret put OPS_ALERT_WEBHOOK_URL
+npx wrangler secret put OPS_OPERATOR_PUBKEYS
 ```
 
 `docs/cutover-secrets.md` lists every secret the Worker reads and where each value comes from.
