@@ -227,3 +227,50 @@ it.each(['profile', 'confirmation', 'revision', 'token'] as const)(
     expect((await getConnection(db, 'conn_1', PUBKEY_A))!.status).toBe('connected')
   },
 )
+
+it.each([
+  ['publication', 'no winner'], ['publication', 'reconnect'], ['publication', 'reselection'],
+  ['readback', 'no winner'], ['readback', 'reconnect'], ['readback', 'reselection'],
+] as const)('preserves the %s request credential boundary after %s and a late permission denial', async (phase, winner) => {
+  const { recordAttempt } = await import('../db/attempts')
+  await createOrGetJob(db, job({ platform: 'snapchat', externalAccountId: profile, status: 'processing' }))
+  await recordAttempt(db, {
+    id: 'late-denial', jobId: 'job_1', status: 'processing', errorCode: null, errorMessage: null, providerStatus: null,
+    providerResponseJson: JSON.stringify({
+      stage: phase === 'publication' ? 'media_ready' : 'story_submitted', profileId: profile, mediaId: media,
+      destination: 'story', sourceLink: 'https://divine.video/video/' + VIDEO_EVENT_ID,
+      mediaCreatedAt: String(Date.now()), dispatchedAt: String(Date.now()),
+    }), createdAt: 1500,
+  })
+  const original = (await getConnection(db, 'conn_1', PUBKEY_A))!
+  const winningToken = await encryptToken('reconnected-access', key)
+  const winningMetadata = JSON.stringify({ account: { profileConfirmed: true, selectionRevision: 'late-winner' } })
+  const upstream = vi.fn(async (url, init) => {
+    expect(String(url)).toContain('/public_profiles/' + profile + '/stories')
+    expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer access')
+    expect(init?.method ?? 'GET').toBe(phase === 'publication' ? 'POST' : 'GET')
+    // The old credential is already in flight. The durable fence has been raised
+    // for publication; readback has only an owned uploading claim.
+    expect((await getJob(db, 'job_1'))!.status).toBe(phase === 'publication' ? 'dispatching' : 'uploading')
+    if (winner === 'reconnect') {
+      await db.prepare("UPDATE connections SET encrypted_access_token = ?, token_expires_at = NULL WHERE id = 'conn_1'")
+        .bind(winningToken).run()
+    } else if (winner === 'reselection') {
+      await db.prepare("UPDATE connections SET external_account_id = ?, metadata_json = ? WHERE id = 'conn_1'")
+        .bind(media, winningMetadata).run()
+    }
+    return Response.json({ request_status: 'ERROR', error_code: 'AUTHORIZATION_PERMISSION_DENIED' }, { status: 403 })
+  })
+  vi.stubGlobal('fetch', upstream)
+  expect((await processCrosspostJob(env, 'job_1', { now: 2000, fenceNow: 2000 })).status).toBe('needs_reauth')
+  expect(await getJob(db, 'job_1')).toMatchObject({ status: 'needs_reauth', errorCode: 'needs_reauth', nextRetryAt: null })
+  const saved = (await getConnection(db, 'conn_1', PUBKEY_A))!
+  expect(saved).toMatchObject({
+    status: winner === 'no winner' ? 'needs_reauth' : 'connected',
+    externalAccountId: winner === 'reselection' ? media : profile,
+    encryptedAccessToken: winner === 'reconnect' ? winningToken : original.encryptedAccessToken,
+    metadataJson: winner === 'reselection' ? winningMetadata : original.metadataJson,
+  })
+  await processCrosspostJob(env, 'job_1', { now: 3000 })
+  expect(upstream).toHaveBeenCalledOnce()
+})

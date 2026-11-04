@@ -1,7 +1,7 @@
 // ABOUTME: Claims queued crosspost jobs and publishes them through provider adapters.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { videoUrlFor } from './attribution'
-import { usableConnectionToken, ConnectionTokenReauthError, sameConnectionSelection } from './connection-token'
+import { usableConnectionToken, ConnectionTokenReauthError, sameConnectionSelection, markConnectionCredentialsRejected } from './connection-token'
 import { recordDiagnosticSafely } from './reliability'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, markConnectionNeedsReauth, upsertConnection } from '../db/connections'
@@ -359,12 +359,32 @@ async function markResult(
   return { status: 'processing', retryDelaySeconds: delay }
 }
 
+async function rejectProviderCredentials(
+  env: Env,
+  job: JobRecord,
+  error: PlatformAdapterError,
+  now: number,
+  snapchatConnection?: ConnectionRecord,
+): Promise<void> {
+  // Token acquisition already handles its own rejection CAS. A stale-selection
+  // error must update the owned job without invalidating the winning connection.
+  if (error instanceof ConnectionTokenReauthError) return
+  if (job.platform === 'snapchat') {
+    // Publish and readback can finish after a reconnect or reselection. Only the
+    // exact credentials used for that request can be marked rejected.
+    if (snapchatConnection) await markConnectionCredentialsRejected(env, snapchatConnection, now)
+    return
+  }
+  await markConnectionNeedsReauth(env.DB, job.connectionId, now)
+}
+
 async function handleProviderError(
   env: Env,
   job: JobRecord,
   ownership: ClaimOwnership,
   error: PlatformAdapterError,
   now: number,
+  snapchatConnection?: ConnectionRecord,
 ): Promise<ProcessCrosspostResult> {
   if (error.code === 'needs_reauth') {
     await updateOwnedJob(env, job.id, ownership, {
@@ -374,7 +394,7 @@ async function handleProviderError(
       errorMessage: error.message,
       nextRetryAt: null,
     })
-    if (!(error instanceof ConnectionTokenReauthError)) await markConnectionNeedsReauth(env.DB, job.connectionId, now)
+    await rejectProviderCredentials(env, job, error, now, snapchatConnection)
     await addAttempt(env, {
       jobId: job.id,
       platform: job.platform,
@@ -427,6 +447,7 @@ async function handleProcessingProviderError(
   ownership: ClaimOwnership,
   error: PlatformAdapterError,
   now: number,
+  snapchatConnection?: ConnectionRecord,
 ): Promise<ProcessCrosspostResult> {
   if (error.code === 'needs_reauth') {
     await updateOwnedJob(env, job.id, ownership, {
@@ -436,7 +457,7 @@ async function handleProcessingProviderError(
       errorMessage: error.message,
       nextRetryAt: null,
     })
-    if (!(error instanceof ConnectionTokenReauthError)) await markConnectionNeedsReauth(env.DB, job.connectionId, now)
+    await rejectProviderCredentials(env, job, error, now, snapchatConnection)
     await addAttempt(env, {
       jobId: job.id,
       platform: job.platform,
@@ -565,15 +586,15 @@ export async function processCrosspostJob(
 
   let ownership: ClaimOwnership = { status: 'uploading', updatedAt: job.updatedAt }
   let dispatchFenceRaised = false
-  let snapchatDispatchConnection: ConnectionRecord | undefined
+  let snapchatRequestConnection: ConnectionRecord | undefined
   const beforeExternalPost = async (): Promise<void> => {
     const fenceTimestamp = options.fenceNow ?? nowSeconds()
     const transitioned = await transitionClaimToDispatching(
-      env.DB, job.id, ownership.updatedAt, fenceTimestamp, snapchatDispatchConnection,
+      env.DB, job.id, ownership.updatedAt, fenceTimestamp, snapchatRequestConnection,
     )
     if (!transitioned) {
       const current = await getJob(env.DB, job.id)
-      if (snapchatDispatchConnection && current?.status === 'uploading' && current.updatedAt === ownership.updatedAt) {
+      if (snapchatRequestConnection && current?.status === 'uploading' && current.updatedAt === ownership.updatedAt) {
         throw new ConnectionTokenReauthError('snapchat', 'Snapchat connection changed; confirm the destination again')
       }
       throw new PublishClaimLostError()
@@ -602,7 +623,7 @@ export async function processCrosspostJob(
             await decryptToken(current.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY) !== accessToken) {
           throw new ConnectionTokenReauthError('snapchat', 'Snapchat connection changed; confirm the destination again')
         }
-        snapchatDispatchConnection = current
+        snapchatRequestConnection = current
       }
 
       const snapAttempts = job.platform === 'snapchat' ? await listAttempts(env.DB, job.id) : []
@@ -652,20 +673,20 @@ export async function processCrosspostJob(
       if (dispatchFenceRaised && job.platform === 'snapchat' && error instanceof PlatformAdapterError && error.code === 'needs_reauth') {
         // An explicit auth denial proves this request was rejected. Never replay
         // automatically, but surface lost permission rather than unknown success.
-        return await handleProviderError(env, job, ownership, error, now)
+        return await handleProviderError(env, job, ownership, error, now, snapchatRequestConnection)
       }
       if (dispatchFenceRaised) {
         return await handleAmbiguousPostResult(env, job, ownership, error, now)
       }
       if (error instanceof PlatformAdapterError) {
         return existing.status === 'processing'
-          ? await handleProcessingProviderError(env, job, ownership, error, now)
-          : await handleProviderError(env, job, ownership, error, now)
+          ? await handleProcessingProviderError(env, job, ownership, error, now, snapchatRequestConnection)
+          : await handleProviderError(env, job, ownership, error, now, snapchatRequestConnection)
       }
       const platformError = new PlatformAdapterError(job.platform, 'unknown_platform_error', 'publisher failed')
       return existing.status === 'processing'
-        ? await handleProcessingProviderError(env, job, ownership, platformError, now)
-        : await handleProviderError(env, job, ownership, platformError, now)
+        ? await handleProcessingProviderError(env, job, ownership, platformError, now, snapchatRequestConnection)
+        : await handleProviderError(env, job, ownership, platformError, now, snapchatRequestConnection)
     }
   } catch (error) {
     if (error instanceof PublishClaimLostError) {
