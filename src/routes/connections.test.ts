@@ -5,7 +5,7 @@ import { createOAuthAttempt, getOAuthAttempt } from '../db/oauth-attempts'
 import { createOAuthState } from '../db/oauth-states'
 import { getPreferences, setPreference } from '../db/preferences'
 import { NIP98_TEST_PUBKEY, nip98Header, signNip98Event } from '../auth/test-helpers'
-import { applyMigrations, connection, PUBKEY_A } from '../db/test-helpers'
+import { applyMigrations, connection, PUBKEY_A, verificationRows } from '../db/test-helpers'
 import { decryptToken } from '../utils/crypto'
 import { transitionAttempt } from '../services/connections'
 import type { Env, Platform } from '../types'
@@ -94,13 +94,6 @@ function rejectPostBatchConnectionRead(db: D1Database): D1Database {
       return typeof value === 'function' ? value.bind(target) : value
     },
   })
-}
-
-// Badge records belong to the separate verifier service, so connecting and
-// disconnecting a crossposting account must leave this table alone.
-async function verificationRows(db: D1Database): Promise<Record<string, unknown>[]> {
-  const { results } = await db.prepare('SELECT * FROM verifications ORDER BY pubkey, platform, identity_key').all()
-  return results
 }
 
 describe('connection routes', () => {

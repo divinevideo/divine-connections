@@ -8,7 +8,7 @@ import {
   markConnectionNeedsReauth,
   upsertConnection,
 } from './connections'
-import { applyMigrations, connection, PUBKEY_A, PUBKEY_B } from './test-helpers'
+import { applyMigrations, connection, PUBKEY_A, PUBKEY_B, verificationRows } from './test-helpers'
 
 describe('connection repository', () => {
   let db: D1Database
@@ -58,8 +58,7 @@ describe('connection repository', () => {
     })
 
     await expect(getConnection(db, 'conn_1', PUBKEY_A)).resolves.toMatchObject({ platform: 'x', status: 'connected' })
-    const { results } = await db.prepare('SELECT * FROM verifications').all()
-    expect(results).toEqual([])
+    await expect(verificationRows(db)).resolves.toEqual([])
   })
 
   it('marks reauth and disconnects owned connections', async () => {
