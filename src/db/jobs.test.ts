@@ -42,10 +42,11 @@ describe('job repository', () => {
     expect(await getJob(db, 'job_1')).toBeNull()
   })
 
-  it('does not reclaim a billing failure even on direct duplicate delivery', async () => {
-    await createOrGetJob(db, job({ id: 'billing-failed', status: 'failed', errorCode: 'provider_payment_required', nextRetryAt: null }))
-    expect(await claimJobForPublish(db, 'billing-failed', 2000)).toBeNull()
-    expect(await getJob(db, 'billing-failed')).toMatchObject({ status: 'failed', errorCode: 'provider_payment_required' })
+  it.each(['provider_payment_required', 'provider_quota_exceeded', 'provider_upload_limit'] as const)('does not reclaim terminal %s even on direct duplicate delivery', async (errorCode) => {
+    await createOrGetJob(db, job({ id: 'terminal-failed', status: 'failed', errorCode, nextRetryAt: null }))
+    const failed = await getJob(db, 'terminal-failed')
+    expect(await claimJobForPublish(db, 'terminal-failed', 2000)).toBeNull()
+    expect(await getJob(db, 'terminal-failed')).toEqual(failed)
   })
 
   it('returns created false for duplicate idempotency input', async () => {

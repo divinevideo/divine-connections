@@ -221,7 +221,7 @@ export async function claimJobForPublish(db: D1Database, id: string, now: number
     SET status = 'uploading', updated_at = ?, error_code = NULL, error_message = NULL
     WHERE id = ?
       AND status IN ('queued', 'failed')
-      AND (error_code IS NULL OR error_code != 'provider_payment_required')
+      AND (error_code IS NULL OR error_code NOT IN ('provider_payment_required', 'provider_quota_exceeded', 'provider_upload_limit'))
       AND expires_at > ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)
     RETURNING *, (SELECT destination FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_destination, (SELECT source_media_json FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_source_json, (SELECT options_json FROM tiktok_job_options WHERE job_id = jobs.id) AS tiktok_options_json, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title`,

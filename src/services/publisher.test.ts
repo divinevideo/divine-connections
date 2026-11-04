@@ -237,6 +237,14 @@ describe('publisher service', () => {
     expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: code, nextRetryAt: null })
     expect((await getJob(db, 'job_1'))?.errorMessage).toContain(message)
     expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: code === 'needs_reauth' ? 'needs_reauth' : 'connected' })
+    if (code === 'provider_quota_exceeded' || code === 'provider_upload_limit') {
+      const failed = await getJob(db, 'job_1')
+      const requestCount = fetchMock.mock.calls.length
+      expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2100 })).toEqual({ status: 'failed' })
+      expect(fetchMock).toHaveBeenCalledTimes(requestCount)
+      expect(await getJob(db, 'job_1')).toEqual(failed)
+      expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
+    }
   })
 
   it('does not upload a known YouTube video again after terminal processing rejection', async () => {
