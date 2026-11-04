@@ -61,26 +61,29 @@ function tagValue(tags: string[][], name: string): string | null {
   return tag?.[1] ?? null
 }
 
-function imetaValue(tags: string[][], name: string): string | null {
-  for (const tag of tags) {
-    if (tag[0] !== 'imeta') {
-      continue
-    }
-    for (let index = 1; index < tag.length - 1; index += 2) {
-      if (tag[index] === name && tag[index + 1]) {
-        return tag[index + 1]
-      }
-    }
-    for (const entry of tag.slice(1)) {
-      const separator = entry.indexOf(' ')
-      if (separator === -1) continue
-      if (entry.slice(0, separator) === name) {
-        const value = entry.slice(separator + 1).trim()
-        if (value) return value
-      }
+function descriptorValues(tag: string[], name: string): string[] {
+  const values: string[] = []
+  for (let index = 1; index < tag.length; index += 1) {
+    const entry = tag[index]
+    if (entry === name && index + 1 < tag.length) {
+      values.push(tag[index + 1].trim())
+      index += 1
+    } else if (entry.startsWith(name + ' ')) {
+      values.push(entry.slice(name.length + 1).trim())
     }
   }
-  return null
+  return [...new Set(values)]
+}
+
+function uniqueValue(values: string[]): string | null {
+  const distinct = [...new Set(values)]
+  return distinct.length === 1 && distinct[0] ? distinct[0] : null
+}
+
+function durationSeconds(value: string | null): number | null {
+  if (value === null || !value.trim()) return null
+  const seconds = Number(value)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
 }
 
 function isUsableMediaUrl(value: string | null): value is string {
@@ -95,18 +98,30 @@ function isUsableMediaUrl(value: string | null): value is string {
   }
 }
 
-function mediaUrl(event: DivineVideoEvent): string | null {
-  const candidates = [
-    imetaValue(event.tags, 'url'),
-    tagValue(event.tags, 'url'),
-    tagValue(event.tags, 'media'),
-    tagValue(event.tags, 'r'),
-  ]
-  return candidates.find(isUsableMediaUrl) ?? null
-}
+type MediaDescriptor = { url: string | null; hash: string | null; duration: number | null }
 
-function mediaHash(event: DivineVideoEvent): string | null {
-  return imetaValue(event.tags, 'x') ?? tagValue(event.tags, 'x') ?? tagValue(event.tags, 'sha256') ?? tagValue(event.tags, 'hash')
+function selectedMedia(event: DivineVideoEvent): MediaDescriptor {
+  const descriptors = event.tags.filter(tag => tag[0] === 'imeta').map(tag => ({
+    urls: descriptorValues(tag, 'url'), hash: uniqueValue(descriptorValues(tag, 'x')),
+    duration: uniqueValue(descriptorValues(tag, 'duration')),
+  }))
+  const selected = descriptors.find(descriptor => descriptor.urls.some(isUsableMediaUrl))
+  if (selected) {
+    const url = uniqueValue(selected.urls)
+    const peers = descriptors.filter(descriptor => descriptor.urls.includes(url ?? ''))
+    // Never fill a selected rendition's missing fields from another rendition or
+    // from top-level tags. Repeated descriptors for one URL must agree as well.
+    const consistent = peers.every(peer => peer.duration === selected.duration && peer.hash === selected.hash)
+    return { url: isUsableMediaUrl(url) ? url : null, hash: selected.hash, duration: consistent ? durationSeconds(selected.duration) : null }
+  }
+
+  // Legacy events without a usable imeta source keep top-level URL/hash support.
+  // A top-level duration is authoritative only for one unambiguous media URL.
+  const urls = event.tags.filter(tag => ['url', 'media', 'r'].includes(tag[0])).map(tag => tag[1]).filter(isUsableMediaUrl)
+  const url = urls[0] ?? null
+  const hash = uniqueValue(event.tags.filter(tag => ['x', 'sha256', 'hash'].includes(tag[0])).map(tag => tag[1]))
+  const duration = uniqueValue(event.tags.filter(tag => tag[0] === 'duration').map(tag => tag[1]))
+  return { url, hash, duration: new Set(urls).size === 1 ? durationSeconds(duration) : null }
 }
 
 function isArchiveLabeled(event: DivineVideoEvent): boolean {
@@ -136,14 +151,14 @@ function validateEvent(lookup: DivineVideoLookup | null, pubkey: string, eventId
     throw new HttpError(400, 'not_eligible', 'video is not eligible for crossposting')
   }
 
-  const url = mediaUrl(event)
-  const hash = mediaHash(event)
+  const media = selectedMedia(event)
+  const { url, hash } = media
   if (!url || !hash) {
     throw new HttpError(400, 'not_eligible', 'video is missing media url or hash')
   }
 
   return {
-    durationSeconds: sourceDuration(event),
+    durationSeconds: media.duration,
     title: tagValue(event.tags, 'title')?.trim() || null,
     mediaUrl: url,
     mediaHash: hash,
@@ -151,13 +166,6 @@ function validateEvent(lookup: DivineVideoLookup | null, pubkey: string, eventId
     createdAt: event.created_at,
     authorName: lookup.authorName,
   }
-}
-
-function sourceDuration(event: DivineVideoEvent): number | null {
-  const value = imetaValue(event.tags, 'duration') ?? tagValue(event.tags, 'duration')
-  if (value === null || !value.trim()) return null
-  const seconds = Number(value)
-  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
 }
 
 export async function getTikTokSourcePreview(env: Env, pubkey: string, eventIdValue: string) {

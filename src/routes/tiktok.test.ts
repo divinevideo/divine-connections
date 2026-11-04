@@ -147,4 +147,48 @@ describe('TikTok manual confirmation', () => {
     expect(queueSend).not.toHaveBeenCalled()
   })
 
+  it.each([
+    { name: 'missing selected duration', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash'], ['imeta', 'url https://media.divine.video/short.mp4', 'x short-hash', 'duration 6']] },
+    { name: 'selected duration over limit', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash', 'duration 120'], ['imeta', 'url https://media.divine.video/short.mp4', 'x short-hash', 'duration 6']] },
+    { name: 'ambiguous duration for selected URL', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash', 'duration 6'], ['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash', 'duration 120']] },
+    { name: 'conflicting durations inside selected descriptor', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash', 'duration 6', 'duration 120']] },
+    { name: 'ambiguous legacy media URL', tags: [['url', 'https://media.divine.video/long.mp4'], ['media', 'https://media.divine.video/short.mp4'], ['x', 'legacy-hash'], ['duration', '6']] },
+    { name: 'another rendition hash cannot fill selected hash', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'duration 6'], ['imeta', 'url https://media.divine.video/short.mp4', 'x short-hash', 'duration 6']] },
+    { name: 'top-level duration cannot fill imeta duration', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash'], ['duration', '6']] },
+  ])('rejects $name without borrowing another rendition metadata', async ({ tags }) => {
+    source.tags = tags
+    expect((await submit()).status).toBe(400)
+    expect(queueSend).not.toHaveBeenCalled()
+  })
+  it('takes selected URL, hash and duration together when an earlier rendition is not usable', async () => {
+    source.tags = [['imeta', 'url https://example.com/short.mp4', 'x wrong-hash', 'duration 1'], ['imeta', 'url https://media.divine.video/selected.mp4', 'x selected-hash', 'duration 12']]
+    const response = await submit()
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ jobs: [{ sourceMediaUrl: 'https://media.divine.video/selected.mp4', sourceMediaHash: 'selected-hash', tiktokPostOptions: { durationSeconds: 12 } }] })
+  })
+  it('supports unambiguous legacy top-level media metadata without an imeta source', async () => {
+    source.tags = [['url', 'https://media.divine.video/legacy.mp4'], ['x', 'legacy-hash'], ['duration', '6']]
+    const response = await submit()
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ jobs: [{ sourceMediaUrl: 'https://media.divine.video/legacy.mp4', sourceMediaHash: 'legacy-hash', tiktokPostOptions: { durationSeconds: 6 } }] })
+  })
+  it.each(['creator_info', 'confirmation_creator_info'])('records safe durable %s provider denial with an unexpired token', async (stage) => {
+    const fallback = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => String(url).includes('creator_info')
+      ? Response.json({ data: { creator_nickname: 'creator-sensitive-sentinel' }, error: { code: 'rate_limit_exceeded', message: 'caption-sensitive-sentinel token-sensitive-sentinel' }, access_token: 'token-sensitive-sentinel' }, { status: 429 })
+      : fallback(url, init))
+    const response = stage === 'creator_info' ? await request('/connections/tiktok/creator-info') : await submit()
+    expect(response.status).toBe(429)
+    const rows = await recentDiagnostics(env.DB, 'conn_tiktok')
+    expect(rows).toEqual([expect.objectContaining({ operation: 'publish', stage, outcome: 'failed', provider_status: 429, diagnostic: { endpoint: '/v2/post/publish/creator_info/query/', type: 'rate_limited' } })])
+    expect(JSON.stringify(rows)).not.toMatch(/creator-sensitive-sentinel|caption-sensitive-sentinel|token-sensitive-sentinel/)
+    expect(queueSend).not.toHaveBeenCalled()
+  })
+  it('does not record invalid choices or changed confirmation as provider outages', async () => {
+    expect((await submit({ ...options(), allowDuet: true })).status).toBe(400)
+    currentCreator = { ...creator, max_video_post_duration_sec: 30 }
+    expect((await submit()).status).toBe(409)
+    expect(await recentDiagnostics(env.DB, 'conn_tiktok')).toEqual([])
+  })
+
 })

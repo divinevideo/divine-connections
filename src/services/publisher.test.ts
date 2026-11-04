@@ -978,3 +978,44 @@ it('rejects a legacy queued TikTok job with no manual options before dispatch', 
     expect(upstream).not.toHaveBeenCalled()
   } finally { vi.unstubAllGlobals() }
 })
+
+describe('TikTok refresh ownership through the publisher', () => {
+  it.each(['refresh', 'reconnect', 'disconnect'] as const)('preserves a winning concurrent %s after a losing refresh response', async (winner) => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok')
+    await db.prepare('UPDATE connections SET token_expires_at = 1000, encrypted_refresh_token = ?').bind(await encryptToken('old-refresh', KEY)).run()
+    const winningAccess = await encryptToken('winning-access', KEY)
+    const winningRefresh = await encryptToken('winning-refresh', KEY)
+    const providerCalls: { url: string; token: string | null }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('oauth/token')) {
+        if (winner === 'disconnect') await db.prepare("UPDATE connections SET status = 'disconnected'").run()
+        else await db.prepare("UPDATE connections SET encrypted_access_token = ?, encrypted_refresh_token = ?, token_expires_at = 9999999999, updated_at = 2001, status = 'connected'").bind(winningAccess, winningRefresh).run()
+        return winner === 'reconnect'
+          ? Response.json({ error: { code: 'access_token_invalid' } }, { status: 401 })
+          : Response.json({ access_token: 'losing-access', refresh_token: 'losing-refresh', expires_in: 3600 })
+      }
+      providerCalls.push({ url: String(url), token: new Headers(init?.headers).get('authorization') })
+      if (String(url).includes('creator_info')) return Response.json({ data: TIKTOK_CREATOR, error: { code: 'ok' } })
+      return Response.json({ data: { publish_id: 'synthetic-publish-id' }, error: { code: 'ok' } })
+    }))
+    try {
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000 })).toMatchObject({ status: winner === 'disconnect' ? 'needs_reauth' : 'processing' })
+      expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject(winner === 'disconnect' ? { status: 'disconnected' } : { status: 'connected', encryptedAccessToken: winningAccess, encryptedRefreshToken: winningRefresh })
+      if (winner === 'disconnect') expect(providerCalls).toEqual([])
+      else expect(providerCalls.every(call => call.token === 'Bearer winning-access')).toBe(true)
+    } finally { vi.unstubAllGlobals() }
+  })
+  it('identifies TikTok in an ambiguous dispatch and never retries the init', async () => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok')
+    const upstream = vi.fn().mockResolvedValueOnce(Response.json({ data: TIKTOK_CREATOR, error: { code: 'ok' } })).mockRejectedValueOnce(new Error('interrupted init'))
+    vi.stubGlobal('fetch', upstream)
+    try {
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+      expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: 'ambiguous_post_result', errorMessage: 'TikTok upload result is ambiguous after dispatch', nextRetryAt: null })
+      await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2060 })
+      expect(upstream).toHaveBeenCalledTimes(2)
+    } finally { vi.unstubAllGlobals() }
+  })
+})

@@ -615,7 +615,10 @@ Send `tiktokPostOptions` alongside `platforms: ["tiktok"]` to
 ```
 
 Replace the synthetic `connectionId` and `creatorInfo` example with the values returned by GET.
-The API re-fetches current TikTok settings and validates the source duration. A
+The API re-fetches current TikTok settings and validates the source duration.
+URL, hash and duration come from one selected media descriptor; another rendition
+or top-level duration cannot fill a missing imeta duration. Legacy top-level
+metadata is eligible only when its media URL and duration are unambiguous. A
 changed connection/account or settings requires a new preview/confirmation; a
 settings change returns `409 tiktok_confirmation_changed`. Confirmed captions
 longer than 2200 UTF-16 characters are rejected, never silently truncated. Jobs

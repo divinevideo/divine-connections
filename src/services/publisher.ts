@@ -1,6 +1,6 @@
 // ABOUTME: Claims queued crosspost jobs and publishes them through provider adapters.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
-import { usableConnectionToken } from './connection-token'
+import { usableConnectionToken, ConnectionTokenReauthError } from './connection-token'
 import { recordDiagnosticSafely } from './reliability'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, markConnectionNeedsReauth, upsertConnection } from '../db/connections'
@@ -361,7 +361,7 @@ async function handleProviderError(
       errorMessage: error.message,
       nextRetryAt: null,
     })
-    await markConnectionNeedsReauth(env.DB, job.connectionId, now)
+    if (!(error instanceof ConnectionTokenReauthError)) await markConnectionNeedsReauth(env.DB, job.connectionId, now)
     await addAttempt(env, {
       jobId: job.id,
       platform: job.platform,
@@ -423,7 +423,7 @@ async function handleProcessingProviderError(
       errorMessage: error.message,
       nextRetryAt: null,
     })
-    await markConnectionNeedsReauth(env.DB, job.connectionId, now)
+    if (!(error instanceof ConnectionTokenReauthError)) await markConnectionNeedsReauth(env.DB, job.connectionId, now)
     await addAttempt(env, {
       jobId: job.id,
       platform: job.platform,
@@ -478,7 +478,8 @@ async function handleAmbiguousPostResult(
   now: number,
 ): Promise<ProcessCrosspostResult> {
   const providerStatus = error instanceof PlatformAdapterError ? (error.providerStatus ?? null) : null
-  const errorMessage = `${job.platform === 'x' ? 'X post' : 'YouTube upload'} result is ambiguous after dispatch`
+  const providerLabel = { x: 'X post', youtube: 'YouTube upload', tiktok: 'TikTok upload', instagram: 'Instagram upload' }[job.platform]
+  const errorMessage = `${providerLabel} result is ambiguous after dispatch`
   await updateOwnedJob(env, job.id, ownership, {
     status: 'failed',
     updatedAt: now,
