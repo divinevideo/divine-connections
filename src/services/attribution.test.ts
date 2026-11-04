@@ -129,3 +129,47 @@ describe('crosspost attribution can be reshaped without a redeploy', () => {
     expect(result).toContain(LINK)
   })
 })
+
+describe('YouTube captions with an existing Divine link', () => {
+  const eventId = 'c'.repeat(64)
+  const link = videoUrlFor(eventId)
+  const bytes = (value: string) => new TextEncoder().encode(value).byteLength
+  const youtubeCaption = (caption: string) => build({ platform: 'youtube', eventId, caption })
+
+  it.each([
+    ['beyond the byte cutoff', 'x'.repeat(5000)],
+    ['crossing the byte cutoff', 'x'.repeat(4960)],
+  ])('retains the complete canonical link %s', (_position, prefix) => {
+    const result = youtubeCaption(`${prefix}\n${link}`)
+
+    expect(bytes(result)).toBeLessThanOrEqual(5000)
+    expect(result).toContain(link)
+    expect(result.endsWith(link)).toBe(true)
+    expect(result.split(link)).toHaveLength(2)
+    expect(result).toContain('…')
+  })
+
+  it('budgets UTF-8 bytes while retaining whole joined-emoji graphemes and the complete link', () => {
+    const grapheme = '👨‍👩‍👧‍👦'
+    const result = youtubeCaption(`${grapheme.repeat(260)}\n${link}`)
+    const suffix = `…\n\n${link}`
+    const retained = Math.floor((5000 - bytes(suffix)) / bytes(grapheme))
+
+    expect(result).toBe(grapheme.repeat(retained) + suffix)
+    expect(bytes(result)).toBeLessThanOrEqual(5000)
+  })
+
+  it.each([
+    `Original human text\n${link}\nMore text after the link.`,
+    'x'.repeat(5000 - bytes(link) - 1) + '\n' + link,
+  ])('leaves a caption within the limit unchanged', (caption) => {
+    expect(youtubeCaption(caption)).toBe(caption)
+  })
+
+  it('is idempotent after shortening and keeps exactly one complete link', () => {
+    const once = youtubeCaption('x'.repeat(5100) + '\n' + link)
+
+    expect(youtubeCaption(once)).toBe(once)
+    expect(once.split(link)).toHaveLength(2)
+  })
+})

@@ -78,7 +78,11 @@ export function buildCrosspostCaption(input: CaptionInput): string {
   // caption can arrive here more than once. A creator who linked their own
   // video counts too — one link is enough.
   if (caption.includes(url)) {
-    return byteLimited ? truncate(caption, limit) : caption
+    if (!byteLimited || length(caption) <= limit) return caption
+    // Remove existing copies before shortening so the full return link survives,
+    // even when the source placed it beyond or across the byte cutoff.
+    const suffix = `…\n\n${url}`
+    return `${truncate(caption.replaceAll(url, '').trim(), limit - length(suffix))}${suffix}`
   }
 
   const attribution = renderAttribution(template, input.authorName, url)
