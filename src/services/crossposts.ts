@@ -103,25 +103,39 @@ type MediaDescriptor = { url: string | null; hash: string | null; duration: numb
 function selectedMedia(event: DivineVideoEvent): MediaDescriptor {
   const descriptors = event.tags.filter(tag => tag[0] === 'imeta').map(tag => ({
     urls: descriptorValues(tag, 'url'), hash: uniqueValue(descriptorValues(tag, 'x')),
-    duration: uniqueValue(descriptorValues(tag, 'duration')),
-  }))
+    durations: descriptorValues(tag, 'duration'),
+  })).filter(descriptor => descriptor.urls.length > 0)
+  const topUrls = event.tags.filter(tag => ['url', 'media', 'r'].includes(tag[0])).map(tag => tag[1]).filter(isUsableMediaUrl)
+  const topDurations = event.tags.filter(tag => tag[0] === 'duration').map(tag => tag[1])
+  const topDuration = durationSeconds(uniqueValue(topDurations))
   const selected = descriptors.find(descriptor => descriptor.urls.some(isUsableMediaUrl))
   if (selected) {
-    const url = uniqueValue(selected.urls)
-    const peers = descriptors.filter(descriptor => descriptor.urls.includes(url ?? ''))
-    // Never fill a selected rendition's missing fields from another rendition or
-    // from top-level tags. Repeated descriptors for one URL must agree as well.
-    const consistent = peers.every(peer => peer.duration === selected.duration && peer.hash === selected.hash)
-    return { url: isUsableMediaUrl(url) ? url : null, hash: selected.hash, duration: consistent ? durationSeconds(selected.duration) : null }
+    // Mobile puts MP4/fallback/HLS aliases for one clip in one descriptor.
+    // Keep writer order and the descriptor's own hash rather than rejecting aliases.
+    const url = selected.urls.find(isUsableMediaUrl) ?? null
+    const localDuration = durationSeconds(uniqueValue(selected.durations))
+    const sameSourceGroup = descriptors.every(descriptor => descriptor.hash === selected.hash &&
+      descriptor.urls.length === selected.urls.length && descriptor.urls.every(value => selected.urls.includes(value)))
+    const eventDurationApplies = sameSourceGroup && topUrls.every(value => selected.urls.includes(value))
+    let duration = selected.durations.length ? localDuration : eventDurationApplies ? topDuration : null
+
+    // Event-level measured duration is authoritative for one source group only.
+    // It cannot override conflicting local metadata or qualify another rendition.
+    if (topDurations.length && (topDuration === null || (localDuration !== null && topDuration !== localDuration))) duration = null
+    const overlapping = descriptors.filter(descriptor => descriptor.urls.some(value => selected.urls.includes(value)))
+    if (overlapping.some(descriptor => descriptor.hash !== selected.hash ||
+      (descriptor.durations.length > 0 && (durationSeconds(uniqueValue(descriptor.durations)) === null ||
+        (duration !== null && durationSeconds(uniqueValue(descriptor.durations)) !== duration))))) duration = null
+    return { url, hash: selected.hash, duration }
   }
 
   // Legacy events without a usable imeta source keep top-level URL/hash support.
   // A top-level duration is authoritative only for one unambiguous media URL.
-  const urls = event.tags.filter(tag => ['url', 'media', 'r'].includes(tag[0])).map(tag => tag[1]).filter(isUsableMediaUrl)
-  const url = urls[0] ?? null
+  const url = topUrls[0] ?? null
   const hash = uniqueValue(event.tags.filter(tag => ['x', 'sha256', 'hash'].includes(tag[0])).map(tag => tag[1]))
-  const duration = uniqueValue(event.tags.filter(tag => tag[0] === 'duration').map(tag => tag[1]))
-  return { url, hash, duration: new Set(urls).size === 1 ? durationSeconds(duration) : null }
+  const sameSourceGroup = descriptors.every(descriptor => descriptor.hash === hash &&
+    (descriptor.durations.length === 0 || durationSeconds(uniqueValue(descriptor.durations)) === topDuration))
+  return { url, hash, duration: new Set(topUrls).size === 1 && sameSourceGroup ? topDuration : null }
 }
 
 function isArchiveLabeled(event: DivineVideoEvent): boolean {

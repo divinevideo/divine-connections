@@ -3,6 +3,7 @@
 import { env as workerEnv } from 'cloudflare:test'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import worker from '../index'
+import { SOURCE_METADATA_CASES } from '../funnelcake/source-metadata.test-helpers'
 import { applyMigrations, connection, PUBKEY_A, PUBKEY_B, VIDEO_EVENT_ID } from '../db/test-helpers'
 import { upsertConnection, getConnection } from '../db/connections'
 import { getJob } from '../db/jobs'
@@ -154,7 +155,10 @@ describe('TikTok manual confirmation', () => {
     { name: 'conflicting durations inside selected descriptor', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash', 'duration 6', 'duration 120']] },
     { name: 'ambiguous legacy media URL', tags: [['url', 'https://media.divine.video/long.mp4'], ['media', 'https://media.divine.video/short.mp4'], ['x', 'legacy-hash'], ['duration', '6']] },
     { name: 'another rendition hash cannot fill selected hash', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'duration 6'], ['imeta', 'url https://media.divine.video/short.mp4', 'x short-hash', 'duration 6']] },
-    { name: 'top-level duration cannot fill imeta duration', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash'], ['duration', '6']] },
+    { name: 'top-level duration cannot qualify distinct descriptors', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash'], ['imeta', 'url https://media.divine.video/short.mp4', 'x short-hash'], ['duration', '6']] },
+    { name: 'conflicting event and selected descriptor duration', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash', 'duration 6'], ['duration', '120']] },
+    { name: 'legacy event duration with a distinct unresolved descriptor', tags: [['imeta', 'url https://example.com/other.mp4', 'x other-hash'], ['url', 'https://media.divine.video/legacy.mp4'], ['x', 'legacy-hash'], ['duration', '6']] },
+    { name: 'conflicting event duration values', tags: [['imeta', 'url https://media.divine.video/long.mp4', 'x long-hash'], ['duration', '6'], ['duration', '120']] },
   ])('rejects $name without borrowing another rendition metadata', async ({ tags }) => {
     source.tags = tags
     expect((await submit()).status).toBe(400)
@@ -189,6 +193,17 @@ describe('TikTok manual confirmation', () => {
     currentCreator = { ...creator, max_video_post_duration_sec: 30 }
     expect((await submit()).status).toBe(409)
     expect(await recentDiagnostics(env.DB, 'conn_tiktok')).toEqual([])
+  })
+
+  it.each(SOURCE_METADATA_CASES)('previews and manually queues $name', async ({ tags, url, hash }) => {
+    source.tags = tags
+    const preview = await request('/videos/' + VIDEO_EVENT_ID + '/tiktok-preview')
+    expect(preview.status).toBe(200)
+    expect(await preview.json()).toMatchObject({ mediaUrl: url, durationSeconds: 6 })
+    const response = await submit()
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ jobs: [{ sourceMediaUrl: url, sourceMediaHash: hash, tiktokPostOptions: { durationSeconds: 6 } }] })
+    expect(queueSend).toHaveBeenCalledOnce()
   })
 
 })

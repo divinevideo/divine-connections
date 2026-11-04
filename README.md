@@ -616,9 +616,12 @@ Send `tiktokPostOptions` alongside `platforms: ["tiktok"]` to
 
 Replace the synthetic `connectionId` and `creatorInfo` example with the values returned by GET.
 The API re-fetches current TikTok settings and validates the source duration.
-URL, hash and duration come from one selected media descriptor; another rendition
-or top-level duration cannot fill a missing imeta duration. Legacy top-level
-metadata is eligible only when its media URL and duration are unambiguous. A
+The first usable URL and its hash come from one selected media descriptor;
+multiple URLs inside that descriptor may represent streaming/fallback aliases of
+the same clip. A unique measured event-level duration is accepted for one
+unambiguous source group, as emitted by Divine mobile. Conflicting duration
+metadata or duration borrowed from a distinct rendition is rejected. Legacy
+top-level metadata must likewise identify an unambiguous source and duration. A
 changed connection/account or settings requires a new preview/confirmation; a
 settings change returns `409 tiktok_confirmation_changed`. Confirmed captions
 longer than 2200 UTF-16 characters are rejected, never silently truncated. Jobs

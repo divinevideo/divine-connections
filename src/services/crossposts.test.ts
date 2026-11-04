@@ -1,6 +1,7 @@
 // ABOUTME: Verifies crossposting persistence and API behavior.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { SOURCE_METADATA_CASES } from '../funnelcake/source-metadata.test-helpers'
 import { createAutomaticCrossposts, createManualCrossposts } from './crossposts'
 import { upsertConnection } from '../db/connections'
 import { setPreference } from '../db/preferences'
@@ -360,4 +361,13 @@ describe('crosspost service', () => {
       }),
     ).rejects.toMatchObject({ status: 400, code: 'not_eligible' })
   })
+  it.each(SOURCE_METADATA_CASES)('preserves X, Instagram and YouTube enqueue compatibility for $name', async ({ tags, url, hash }) => {
+    for (const platform of ['x', 'instagram', 'youtube'] as const) await addConnectedPlatform(db, platform, 'conn_' + platform)
+    fetchMock.mockResolvedValueOnce(Response.json({ event: event({ tags }) }))
+    const result = await createManualCrossposts({ ...testEnv(db, queueSend), ENABLE_INSTAGRAM: 'true', INSTAGRAM_CLIENT_ID: 'synthetic-client', INSTAGRAM_CLIENT_SECRET: 'synthetic-secret' }, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['x', 'instagram', 'youtube'] })
+    expect(result.jobs).toHaveLength(3)
+    for (const job of result.jobs) expect(job).toMatchObject({ sourceMediaUrl: url, sourceMediaHash: hash, status: 'queued' })
+    expect(queueSend).toHaveBeenCalledTimes(3)
+  })
+
 })
