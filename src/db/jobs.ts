@@ -201,6 +201,7 @@ export async function claimJobForPublish(db: D1Database, id: string, now: number
     SET status = 'uploading', updated_at = ?, error_code = NULL, error_message = NULL
     WHERE id = ?
       AND status IN ('queued', 'failed')
+      AND (error_code IS NULL OR error_code != 'provider_payment_required')
       AND expires_at > ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)
     RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,

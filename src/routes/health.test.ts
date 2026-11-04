@@ -170,3 +170,23 @@ describe('Instagram defaults before connecting', () => {
     expect(requests).toEqual([{ mode: status === 'connected' ? 'automatic' : 'disabled', instagramDestination: 'story' }])
   })
 })
+
+it('explains X billing failures without displaying raw provider details', () => {
+  const source = html.split('function jobLabel(job) {')[1].split('function renderVideoRows()')[0]
+  const label = new Function('job', 'platformName', 'escapeHtml', 'function jobLabel(job) {' + source + ';return jobLabel(job);')
+  const rendered = label({ platform: 'x', status: 'failed', errorCode: 'provider_payment_required', errorMessage: 'private-provider-sentinel' }, () => 'X', (value: string) => value)
+  expect(rendered).toContain('X developer app is out of API credits')
+  expect(rendered).toContain('Contact Divine support')
+  expect(rendered).not.toContain('private-provider-sentinel')
+})
+
+it.each([
+  ['story', 'View Story'],
+  ['reel', 'View Reel'],
+  ['reel_feed', 'View Reel'],
+  [null, 'View post'],
+])('labels a posted Instagram %s link with its destination', (instagramDestination, expected) => {
+  const source = html.split('function jobLabel(job) {')[1].split('function renderVideoRows()')[0]
+  const label = new Function('job', 'platformName', 'escapeHtml', 'function jobLabel(job) {' + source + ';return jobLabel(job);')
+  expect(label({ platform: 'instagram', status: 'posted', instagramDestination, externalPostUrl: 'https://www.instagram.com/reel/synthetic/' }, () => 'Instagram', (value: string) => value)).toContain('>' + expected + '</a>')
+})

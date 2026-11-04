@@ -1145,12 +1145,20 @@ export function renderHome(env: Env): string {
 
       function jobLabel(job) {
         if (job.status === 'posted') {
+          const linkLabel = job.platform === 'instagram' && job.instagramDestination
+            ? (job.instagramDestination === 'story' ? 'View Story' : 'View Reel')
+            : 'View post';
           const link = job.externalPostUrl
-            ? ' <a href="' + escapeHtml(job.externalPostUrl) + '" target="_blank" rel="noopener">View post</a>'
+            ? ' <a href="' + escapeHtml(job.externalPostUrl) + '" target="_blank" rel="noopener">' + linkLabel + '</a>'
             : '';
           return 'Posted to ' + escapeHtml(platformName(job.platform)) + '.' + link;
         }
         if (job.status === 'failed') {
+          if (job.errorCode === 'provider_payment_required') {
+            return job.platform === 'x'
+              ? 'The X developer app is out of API credits. Contact Divine support to resolve this.'
+              : escapeHtml(platformName(job.platform)) + ' requires a billing update. Contact Divine support to resolve this.';
+          }
           return escapeHtml(platformName(job.platform)) + ' failed: ' + escapeHtml(job.errorMessage || job.errorCode || 'unknown error');
         }
         if (job.status === 'needs_reauth') {
