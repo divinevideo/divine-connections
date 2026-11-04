@@ -1,6 +1,6 @@
 # Video Provider Expansion Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Deliver YouTube visibility/processing, compliant TikTok manual posting, and Snapchat Spotlight/public Story publishing without enabling unverified providers.
 
@@ -35,13 +35,13 @@
 
 **Interfaces:** Add optional `youtubePrivacyStatus` ('private'|'unlisted'|'public'|null) to preferences, jobs and publish input; optional `youtubeTitle` on jobs/publish input. Manual crossposts accept an unknown youtubePrivacyStatus validated before job creation. Saved preference or configured default applies when absent; job options are immutable. Preserve existing updatePreference call sites by adding an optional final options argument or compatible equivalent. Persist options transactionally with jobs. Adapter polling consumes a known external video ID from sanitized provider checkpoint.
 
-- [ ] Write failing regression tests for private/unlisted/public preference round trips; manual override/saved automatic snapshots; duplicate retains original; invalid/unselected-platform values rejected; legacy configured fallback.
-- [ ] Run affected tests and inspect expected failures.
-- [ ] Implement additive option storage, API/UI controls and source-derived Unicode-safe YouTube title. Preserve complete source description within limits; title excludes attribution.
-- [ ] Write failing adapter/publisher tests for processing→posted, rejected/failed processing, missing ID, privacy mismatch and interruption after dispatch.
-- [ ] Implement processing polling, canonical destination links, sanitized ID checkpoints and dispatch ambiguity fence. Never reupload an ambiguous or accepted known upload. UI distinguishes uploaded privately from public publication.
-- [ ] Run affected tests, npm run test:once, npm run typecheck, git diff --check. Expected: all pass; no provider enabled or real posts sent.
-- [ ] Commit, report exact verification and limitations, then independent task review.
+- [x] Write failing regression tests for private/unlisted/public preference round trips; manual override/saved automatic snapshots; duplicate retains original; invalid/unselected-platform values rejected; legacy configured fallback.
+- [x] Run affected tests and inspect expected failures.
+- [x] Implement additive option storage, API/UI controls and source-derived Unicode-safe YouTube title. Preserve complete source description within limits; title excludes attribution.
+- [x] Write failing adapter/publisher tests for processing→posted, rejected/failed processing, missing ID, privacy mismatch and interruption after dispatch.
+- [x] Implement processing polling, canonical destination links, sanitized ID checkpoints and dispatch ambiguity fence. Never reupload an ambiguous or accepted known upload. UI distinguishes uploaded privately from public publication.
+- [x] Run affected tests, npm run test:once, npm run typecheck, git diff --check. Expected: all pass; no provider enabled or real posts sent.
+- [x] Commit, report exact verification and limitations, then independent task review.
 
 ### Task 2: TikTok manual consent and controls
 
@@ -49,14 +49,14 @@
 
 **Interfaces:** Typed `TikTokPostOptions` job/publish input includes privacyLevel, allowComment/allowDuet/allowStitch booleans, brandOrganic/brandContent booleans, confirmedCaption string, explicit musicUsageConfirmed true, verified duration and creator-info confirmation data as required. Authenticated GET `/connections/tiktok/creator-info` returns safe current creator info only for the caller's connection. Manual job body accepts `tiktokPostOptions`; require and server-validate using fresh creator_info/source duration. Any new source duration data is derived from validated event metadata, never trusted client input. Missing authoritative duration fails eligibility, not silent guessing.
 
-- [ ] Write failing tests for owner isolation, latest creator info, duration/limit errors, explicit valid privacy, interaction restrictions, disclosure/consent validation and missing options.
-- [ ] Write failing tests rejecting automatic TikTok preferences and excluding legacy automatic preferences from all dispatch paths.
-- [ ] Run focused tests; inspect failures.
-- [ ] Implement preview/confirmation UI with editable Divine text, no default privacy, unchecked interactions, commercial disclosures and exact provider-required consent. Disable submit until complete; safe text rendering for provider/user values.
-- [ ] Snapshot exact confirmed caption/options; never re-add attribution or truncate consented caption after confirmation (reject excessive length instead). Wire creator API, routes, options and adapter. Preserve processing polling; reject empty publish IDs and HTTP-200 provider errors.
-- [ ] Add regression asserting removal of all preset attribution survives enqueue/publish unchanged; duplicate submission does not mutate a job. Ensure required controls are enforced API-side.
-- [ ] Run affected tests, full suite, typecheck and diff check. Expected: pass, supportsAutomatic=false, provider remains disabled.
-- [ ] Commit/report, then independent task review.
+- [x] Write failing tests for owner isolation, latest creator info, duration/limit errors, explicit valid privacy, interaction restrictions, disclosure/consent validation and missing options.
+- [x] Write failing tests rejecting automatic TikTok preferences and excluding legacy automatic preferences from all dispatch paths.
+- [x] Run focused tests; inspect failures.
+- [x] Implement preview/confirmation UI with editable Divine text, no default privacy, unchecked interactions, commercial disclosures and exact provider-required consent. Disable submit until complete; safe text rendering for provider/user values.
+- [x] Snapshot exact confirmed caption/options; never re-add attribution or truncate consented caption after confirmation (reject excessive length instead). Wire creator API, routes, options and adapter. Preserve processing polling; reject empty publish IDs and HTTP-200 provider errors.
+- [x] Add regression asserting removal of all preset attribution survives enqueue/publish unchanged; duplicate submission does not mutate a job. Ensure required controls are enforced API-side.
+- [x] Run affected tests, full suite, typecheck and diff check. Expected: pass, supportsAutomatic=false, provider remains disabled.
+- [x] Commit/report, then independent task review.
 
 ### Task 3: Snapchat OAuth, profiles and both destinations
 
@@ -64,21 +64,30 @@
 
 **Interfaces:** Platform union adds 'snapchat'. Optional `snapchatDestination` ('spotlight'|'story'|null) on preferences/jobs/publish input; saved default is spotlight, explicit per-post override frozen in job. Env adds ENABLE_SNAPCHAT, SNAPCHAT_CLIENT_ID, SNAPCHAT_CLIENT_SECRET and any separately documented approval/readiness flag needed. Use current Snap OAuth/Public Profile contracts verified from primary docs. Account ID is a confirmed authorized public-profile ID; expose authenticated eligible-profile selection if multiple, without choosing a profile silently. Connection/profile selection must preserve encrypted token ownership and single account/destination job semantics.
 
-- [ ] Verify current Snap OAuth scopes, profile discovery/authorization, media encryption/upload, destination and processing endpoints from primary docs. Record contracts and safe setup checklist; no secrets or app activation.
-- [ ] Write failing tests for OAuth/refresh/missing fields, profile selection/ownership, disabled setup readiness, both destination options and immutable snapshots/duplicate behavior.
-- [ ] Implement adapter/registry/core and authenticated profile-selection UX with explicit confirmation. Keep credentials/app access missing states actionable, never pretend Login Kit is publishing access.
-- [ ] Write failing API-contract tests for media encryption/container/chunks/finalize and destination publish; nested 200 errors, limits, invalid upload URLs, permission loss, polling completion/failure and ambiguous dispatch without replay.
-- [ ] Implement bounded upload and resumable/provider checkpoints; apply caption only to supported fields. Validate authoritative media duration/dimensions/size per destination and fail actionably on missing/invalid eligibility. Do not transcode or add text overlays. No arbitrary response URL receives access tokens.
-- [ ] Wire both destination settings/manual override/default and automatic opt-in; render statuses and links accurately. Add migration, API docs, readiness and rollout instructions.
-- [ ] Run affected tests/full suite/typecheck/diff check. Expected: all pass, no Snapchat enablement or real post.
-- [ ] Commit/report, then independent task review.
+- [x] Verify current Snap OAuth scopes, profile discovery/authorization, media encryption/upload, destination and processing endpoints from primary docs. Record contracts and safe setup checklist; no secrets or app activation.
+- [x] Write failing tests for OAuth/refresh/missing fields, profile selection/ownership, disabled setup readiness, both destination options and immutable snapshots/duplicate behavior.
+- [x] Implement adapter/registry/core and authenticated profile-selection UX with explicit confirmation. Keep credentials/app access missing states actionable, never pretend Login Kit is publishing access.
+- [x] Write failing API-contract tests for media encryption/container/chunks/finalize and destination publish; nested 200 errors, limits, invalid upload URLs, permission loss, polling completion/failure and ambiguous dispatch without replay.
+- [x] Implement bounded upload and resumable/provider checkpoints; apply caption only to supported fields. Validate authoritative media duration/dimensions/size per destination and fail actionably on missing/invalid eligibility. Do not transcode or add text overlays. No arbitrary response URL receives access tokens.
+- [x] Wire both destination settings/manual override/default and automatic opt-in; render statuses and links accurately. Add migration, API docs, readiness and rollout instructions.
+- [x] Run affected tests/full suite/typecheck/diff check. Expected: all pass, no Snapchat enablement or real post.
+- [x] Commit/report, then independent task review.
 
 ### Task 4: Integration, delivery and rollout handback
 
-**Files:** README.md; docs/provider-rollout.md; task ledger; targeted regression tests where integration reveals defects.
+**Files:** README.md; docs/provider-rollout.md; docs/cutover-secrets.md; approved spec status; scripts/install-publishing-secrets.sh and mocked tests; scripts/check-production-health.sh and tests (or equivalent focused helper); package.json; .github/workflows/ci.yml and production-health.yml; src/utils/errors.ts/tests; src/services/publisher.ts/tests; src/routes/health.ts/tests as needed. Preserve existing workflow permissions, conditions and deployment targets.
 
-- [ ] Reconcile pending PR #49/#50 and schema migration order without overwriting other agents' branches. Preserve exact confirmed TikTok caption and existing IG/X behavior.
-- [ ] Run full suite/typecheck/diff check. Expected: pass; inspect every required/relevant CI check after pushing.
-- [ ] Fresh adversarial review of complete implementation against approved spec, with evidence for security/consent/idempotency claims. Fix Critical/Important findings with regression tests.
-- [ ] Commit/push/open implementation PR, request mapped reviewers once and publish verified independent review. Hand back actual GitHub approval requirement without bypassing it.
-- [ ] Document exact external setup/dependencies and secure credential channel. Enable/test only after verified provider credentials/access and maintainer-authorized video/destination. If unavailable, report blocked activation separately from delivered source implementation; do not fabricate live success.
+**Setup evidence:** Read the controller's ignored task-4-setup-notes.md before implementing. It contains verified CLI behavior, current setup dependencies and privacy boundaries. Copy only safe technical substance into tracked docs.
+
+- [ ] Recheck origin/main and PR49/50 heads. Integrate pending PR49 owning branch into this feature (or updated main if landed), preserving its original commits and human README contribution; PR50 already integrated. Do not push either owning branch or merge default. Resolve additive migration ordering and preserve IG/X behavior and exact TikTok consent.
+- [ ] Write failing regression for HTTP402 on pure status polling of an accepted external post: retain known ID/processing and bounded polls, then truthful unknown/manual reconciliation; never republish. Preserve pre-dispatch billing terminal handling and Snapchat media_ready outward POST fences. Implement scoped fix. Assess stale IG default-destination save UI: a safe Off downgrade must be visible after save rather than falsely showing Automatic.
+- [ ] Verify primary YouTube error contract and write failing publisher regression for quotaExceeded HTTP403 preserving connected credentials. Implement narrow reason classification/accurate quota diagnostics while retaining true authorization handling; distinguish uploadLimitExceeded without inventing retry times.
+- [ ] Write meaningful mocked secure-helper tests, then implement a selected-provider-only installer for youtube/tiktok/snapchat. Collect the complete credential pair using hidden prompts before any write; serialize only those two fields to a single pinned Wrangler secret bulk --name divine-crossposter call via JSON stdin. No secrets in argv/output/files/history; no encryption/IG/X/Discord changes, null/delete values, enablement or deployment. Tests must be incapable of writing real Cloudflare secrets even with cached local OAuth (explicit mock runner plus invalid credential environment), using synthetic credentials only. Add separate test:provider-setup command and CI step without changing test:once argument forwarding.
+- [ ] Write failure-output tests for production probe HTTP/release/readiness/provider-state checks and implement safe stage-specific summaries. Output only allowlisted hosts/provider names/state values; no raw response/user data/tokens. Preserve notification mechanism, deployment conditions and workflow permissions.
+- [ ] Document current safe OAuth setup (API key does not grant publishing), scopes/callbacks/access/approval gates, historical preserved Worker, native client limitations and external owner dependencies without sensitive resource IDs. Correct historical cutover banner; mark spec approved in session. Acceptance deployment, if needed later, requires separate Worker/host/D1/key and registered test callback; do not provision or activate here.
+- [ ] Run focused regressions, full suite, helper/probe tests, typecheck and diff check. Commit and report exact evidence/limits; independent task review. Flags remain disabled; no credential writes or live publications.
+
+**Controller-owned final delivery (after task review):**
+- [ ] Fresh adversarial whole-branch review against approved spec, one fix wave and scoped re-review for Important/Critical findings.
+- [ ] Rewrite final PR53 title/body for complete scope and preserved contributor provenance; commit/push own branch, mark ready, request mapped reviewers once, publish verified independent review. Inspect latest required/relevant CI. No default-branch merge.
+- [ ] Hand back concrete source outcome and separately identify external activation gates; do not fabricate live acceptance. Preserve private ignored evidence before worktree cleanup.

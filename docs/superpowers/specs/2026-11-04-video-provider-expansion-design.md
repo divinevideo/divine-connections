@@ -1,6 +1,6 @@
 # YouTube, TikTok and Snapchat publishing
 
-Status: proposed implementation design; awaiting maintainer approval.
+Status: approved by maintainer in session; implementation authorized.
 
 ## Intent and agreed scope
 
