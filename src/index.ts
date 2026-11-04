@@ -1,6 +1,7 @@
-// ABOUTME: Worker entry: the crossposter publishing API, served on every host,
-// ABOUTME: plus the crosspost queue consumer and scheduled handlers.
+// ABOUTME: Worker entry: the crossposter publishing API on every host but verify.divine.video,
+// ABOUTME: which redirects to the verifier; plus the crosspost queue consumer and scheduled handlers.
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import { operations } from './routes/operations'
 import { connections } from './routes/connections'
 import { crossposts } from './routes/crossposts'
@@ -25,8 +26,27 @@ app.route('/', webhooks)
 
 export { app }
 
+// verify.divine.video served the verification copy this worker used to carry.
+// It now redirects every request to the live verifier, keeping the path. The
+// query is dropped: sign-in codes and crossposting connection details still
+// arrive here in it, and must not be passed to another service. 308 keeps a
+// POST and its body. Preflights and redirects carry the CORS headers this host
+// sent before, so browser callers reach the redirect. /connections answers 404
+// instead: a crossposting page left open here makes authenticated calls there,
+// and they must not follow to the verifier.
+// TODO(#2): remove once Keycast no longer returns here and the domain is dropped.
+const LEGACY_VERIFY_HOST = 'verify.divine.video'
+const legacyVerifyApp = new Hono<{ Bindings: Env }>()
+legacyVerifyApp.use('*', cors({ origin: '*' }))
+// Hono's /connections/* also matches /connections itself.
+legacyVerifyApp.all('/connections/*', (c) => c.notFound())
+legacyVerifyApp.all('*', (c) => c.redirect(`https://verifier.divine.video${new URL(c.req.url).pathname}`, 308))
+
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> | Response {
+    // A fully qualified host (trailing dot) reaches the worker as written.
+    const host = new URL(request.url).hostname.replace(/\.$/, '')
+    if (host === LEGACY_VERIFY_HOST) return legacyVerifyApp.fetch(request, env, ctx)
     return app.fetch(request, env, ctx)
   },
   async queue(batch: MessageBatch<{ jobId: string }>, env: Env, _ctx: ExecutionContext): Promise<void> {

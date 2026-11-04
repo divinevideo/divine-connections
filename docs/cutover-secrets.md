@@ -9,7 +9,8 @@ comes from. It does not record which ones are installed today; run
 Identity verification, and any secret it needs, is not part of this worker for
 now. It runs in the verifier service at `verifier.divine.video`
 (`divinevideo/divine-identify-verification-service`); see
-divinevideo/divine-connections#2.
+divinevideo/divine-connections#2. `verify.divine.video` still routes to this
+worker and redirects to the verifier until the cutover finishes.
 
 ## Inventory
 

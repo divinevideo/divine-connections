@@ -2,7 +2,7 @@
 
 Cloudflare Worker for opt-in Divine video crossposting, served at `crossposter.divine.video`. It was scaffolded from divine-crossposter: a creator connects a platform account, chooses manual or automatic posting, and the worker publishes their Divine videos there on their behalf. Nothing posts until the creator opts in.
 
-Identity verification is not part of this Worker for now. It runs in the verifier service at `verifier.divine.video` ([divinevideo/divine-identify-verification-service](https://github.com/divinevideo/divine-identify-verification-service)). The July plans (`docs/plans/2026-07-28-divine-connections-design.md`, `docs/plans/2026-07-29-divine-connections-implementation.md`) brought a copy of verification into this repo; that copy has been removed, and how the verifier's code joins this repo is being worked out in [#2](https://github.com/divinevideo/divine-connections/issues/2). The `verifications` table that copy created (migrations `0004` to `0006`) stays in D1, but the Worker no longer reads or writes it.
+Identity verification is not part of this Worker for now. It runs in the verifier service at `verifier.divine.video` ([divinevideo/divine-identify-verification-service](https://github.com/divinevideo/divine-identify-verification-service)). The July plans (`docs/plans/2026-07-28-divine-connections-design.md`, `docs/plans/2026-07-29-divine-connections-implementation.md`) brought a copy of verification into this repo; that copy has been removed, and how the verifier's code joins this repo is being worked out in [#2](https://github.com/divinevideo/divine-connections/issues/2). `verify.divine.video` still routes to this Worker and redirects to the verifier until the cutover finishes. The `verifications` table that copy created (migrations `0004` to `0006`) stays in D1; the Worker no longer reads it. Disconnecting an account marks its sign-in (OAuth) badge rows revoked: the row for its current handle, and any row recorded with the connection's id, such as one for a handle it had before a reconnect.
 
 The service owns publishing consent, OAuth publish grants, per-platform posting preferences, crosspost job state, retries, and external post IDs. Platform OAuth and publishing details stay server-side.
 
@@ -79,7 +79,7 @@ The initial schema (`migrations/0001_initial.sql`) creates `oauth_states`, `conn
 
 ## Configuration
 
-The Worker is deployed onto the Cloudflare worker named `divine-crossposter`, so it keeps the secrets attached to that name (the header of `wrangler.toml` explains why). Its one route is the custom domain `crossposter.divine.video`. It serves the same app on any host that reaches it.
+The Worker is deployed onto the Cloudflare worker named `divine-crossposter`, so it keeps the secrets attached to that name (the header of `wrangler.toml` explains why). Its routes are the custom domains `crossposter.divine.video` and `verify.divine.video`; the second only redirects to the verifier until the cutover finishes. It serves the same app on any other host that reaches it.
 
 Bluesky crossposting does not exist yet. Bluesky OAuth is deferred to #1 and arrives with it.
 
@@ -264,7 +264,7 @@ Merges to `main` deploy automatically through GitHub Actions (`.github/workflows
 1. Checks that the Cloudflare credentials and `OPS_ALERT_WEBHOOK_URL` Actions secrets are present, and that the Worker already has its `OPS_ALERT_WEBHOOK_URL` and `OPS_OPERATOR_PUBKEYS` secrets.
 2. Applies remote D1 migrations to the shared `divine-crossposter` database with Wrangler.
 3. Deploys the Worker with `npm run deploy`, recording the commit as `RELEASE_SHA`.
-4. Smoke-tests `https://crossposter.divine.video`: `/health` reports `"ok":true`, the `divine-connections` service, and the commit just deployed as its `release`; then the home page renders, `/readiness` reports `"ok":true`, and `/api/providers` reports Instagram and X enabled.
+4. Smoke-tests `https://crossposter.divine.video`: `/health` reports `"ok":true`, the `divine-connections` service, and the commit just deployed as its `release`; then the home page renders, `/readiness` reports `"ok":true`, `https://verify.divine.video/health` answers 308 to the same path on `verifier.divine.video`, and `/api/providers` reports Instagram and X enabled.
 
 The deploy job enters the `production` GitHub environment. `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` may therefore be repository secrets, production-environment secrets, or selected-organization secrets that include this repository. Keep the API token limited to the Divine account and these permissions: Account Settings Read, Workers Scripts Edit, D1 Edit, Queues Edit, and Workers Routes Edit for the `divine.video` zone only.
 

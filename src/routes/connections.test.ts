@@ -5,7 +5,7 @@ import { createOAuthAttempt, getOAuthAttempt } from '../db/oauth-attempts'
 import { createOAuthState } from '../db/oauth-states'
 import { getPreferences, setPreference } from '../db/preferences'
 import { NIP98_TEST_PUBKEY, nip98Header, signNip98Event } from '../auth/test-helpers'
-import { applyMigrations, connection, PUBKEY_A, verificationRows } from '../db/test-helpers'
+import { applyMigrations, connection, PUBKEY_A, PUBKEY_B, verificationRows } from '../db/test-helpers'
 import { decryptToken } from '../utils/crypto'
 import { transitionAttempt } from '../services/connections'
 import type { Env, Platform } from '../types'
@@ -930,45 +930,166 @@ describe('connection routes', () => {
     ])
   })
 
-  it('disconnect succeeds and leaves an existing verifications row untouched', async () => {
-    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x' }))
-    await upsertConnection(db, connection({ id: 'conn_2', externalAccountId: 'external-account-2' }))
-    await setPreference(db, {
-      pubkey: PUBKEY_A,
-      platform: 'x',
-      connectionId: 'conn_1',
-      mode: 'automatic',
-      automaticEnabledAt: 1_500,
-      createdAt: 1_000,
-      updatedAt: 1_500,
-    })
-    // A live row left by the earlier badge writes, linked to the connection being disconnected.
+  // Badge rows the verification copy wrote on connect, and migration 0006
+  // backfilled. Disconnect marks the account's row revoked.
+  async function insertVerification(
+    db: D1Database,
+    row: {
+      pubkey: string
+      platform: string
+      identity: string
+      identityKey: string
+      connectionId: string | null
+      revokedAt?: number
+      proofUrl?: string
+    },
+  ): Promise<void> {
     await db
       .prepare(
         `INSERT INTO verifications (pubkey, platform, identity, identity_key, method, proof_url, connection_id, verified_at, revoked_at)
-        VALUES (?, 'x', 'alice', 'alice', 'oauth', NULL, 'conn_1', 1000, NULL)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1000, ?)`,
       )
-      .bind(PUBKEY_A)
+      .bind(
+        row.pubkey,
+        row.platform,
+        row.identity,
+        row.identityKey,
+        row.proofUrl ? 'proof-post' : 'oauth',
+        row.proofUrl ?? null,
+        row.connectionId,
+        row.revokedAt ?? null,
+      )
       .run()
-    const before = await verificationRows(db)
-    fetchMock.mockResolvedValueOnce(authResponse())
+  }
 
-    const response = await app.request(
-      '/connections/x/conn_1',
+  const DISCONNECTED_AT = Math.floor(Date.parse('2026-07-07T00:00:00.000Z') / 1000)
+
+  async function disconnect(db: D1Database, platform: Platform, id: string, overrides: Partial<Env> = {}): Promise<Response> {
+    fetchMock.mockResolvedValueOnce(authResponse())
+    return app.request(
+      `/connections/${platform}/${id}`,
       { method: 'DELETE', headers: { authorization: 'Bearer keycast-token' } },
-      testEnv(db),
+      testEnv(db, overrides),
     )
+  }
+
+  it('disconnect revokes the account badge row and leaves other rows live', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountName: 'Alice' }))
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'Alice', identityKey: 'alice', connectionId: 'conn_1' })
+    await insertVerification(db, { pubkey: PUBKEY_B, platform: 'x', identity: 'alice', identityKey: 'alice', connectionId: 'conn_b' })
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'tiktok', identity: 'alice', identityKey: 'alice', connectionId: 'conn_2' })
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'bob', identityKey: 'bob', connectionId: 'conn_bob' })
+
+    const response = await disconnect(db, 'x', 'conn_1')
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ disconnected: true })
+    await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([{ id: 'conn_1', status: 'disconnected' }])
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { pubkey: PUBKEY_A, platform: 'tiktok', identity_key: 'alice', revoked_at: null },
+      { pubkey: PUBKEY_A, platform: 'x', identity_key: 'alice', revoked_at: DISCONNECTED_AT },
+      { pubkey: PUBKEY_A, platform: 'x', identity_key: 'bob', revoked_at: null },
+      { pubkey: PUBKEY_B, platform: 'x', identity_key: 'alice', revoked_at: null },
+    ])
+  })
+
+  // A reconnect keeps the original connection id, but the badge row it wrote
+  // recorded a fresh id that no connection has.
+  it('disconnect revokes the badge row even when it recorded another connection id', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountName: 'alice' }))
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'alice', identityKey: 'alice', connectionId: 'conn_from_reconnect' })
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { connection_id: 'conn_from_reconnect', revoked_at: DISCONNECTED_AT },
+    ])
+  })
+
+  // YouTube badges name the channel id, whose case is significant. The row
+  // carries a reconnect's fresh id, so only the channel id can match it.
+  it('disconnect revokes a YouTube badge by channel id, matching its case exactly', async () => {
+    await upsertConnection(
+      db,
+      connection({ id: 'conn_yt', platform: 'youtube', externalAccountId: 'UCdivineChannel', externalAccountName: 'Divine Channel' }),
+    )
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'youtube', identity: 'UCdivineChannel', identityKey: 'UCdivineChannel', connectionId: 'conn_from_reconnect' })
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'youtube', identity: 'ucdivinechannel', identityKey: 'ucdivinechannel', connectionId: 'conn_other_channel' })
+
+    const response = await disconnect(db, 'youtube', 'conn_yt')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { identity_key: 'UCdivineChannel', revoked_at: DISCONNECTED_AT },
+      { identity_key: 'ucdivinechannel', revoked_at: null },
+    ])
+  })
+
+  // The connect upsert keeps the connection id but stores the new handle, so
+  // the badge row written under the old handle is found by connection id.
+  it('disconnect revokes the badge row of a handle the account had before a reconnect', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountId: 'x-account-1', externalAccountName: 'oldname' }))
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'oldname', identityKey: 'oldname', connectionId: 'conn_1' })
+    await createTrackedState(db, { attemptId: 'oauth_attempt_rename', stateId: 'private-state-rename' })
+    mockSuccessfulXCallback(fetchMock)
+    const reconnect = await app.request(
+      '/connections/x/callback?code=private-auth-code&state=private-state-rename',
+      {},
+      testEnv(db),
+    )
+    expect(reconnect.headers.get('location')).toContain('connection=connected')
     await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([
-      { id: 'conn_1', status: 'disconnected' },
-      { id: 'conn_2', status: 'connected' },
+      { id: 'conn_1', externalAccountName: 'divine', status: 'connected' },
     ])
-    await expect(getPreferences(db, PUBKEY_A)).resolves.toMatchObject([
-      { platform: 'x', connectionId: null, mode: 'disabled', automaticEnabledAt: null },
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { identity_key: 'oldname', connection_id: 'conn_1', revoked_at: DISCONNECTED_AT },
     ])
-    expect(before).toMatchObject([{ connection_id: 'conn_1', revoked_at: null }])
-    await expect(verificationRows(db)).resolves.toEqual(before)
+  })
+
+  // Only badges a sign-in connection wrote are tied to it. A proof post shows
+  // the account separately, even when the row also carries the connection id.
+  it('disconnect leaves a proof-post badge row for the same account live', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountName: 'alice' }))
+    await insertVerification(db, {
+      pubkey: PUBKEY_A,
+      platform: 'x',
+      identity: 'alice',
+      identityKey: 'alice',
+      connectionId: 'conn_1',
+      proofUrl: 'https://x.com/alice/status/1',
+    })
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { identity_key: 'alice', method: 'proof-post', revoked_at: null },
+    ])
+  })
+
+  it('disconnect keeps the date on a badge row that was already revoked', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountName: 'alice' }))
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'alice', identityKey: 'alice', connectionId: 'conn_1', revokedAt: 1_500 })
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([{ identity_key: 'alice', revoked_at: 1_500 }])
+  })
+
+  it('disconnect succeeds when the account has no badge row', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x' }))
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ disconnected: true })
+    await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([{ id: 'conn_1', status: 'disconnected' }])
+    await expect(verificationRows(db)).resolves.toEqual([])
   })
 })

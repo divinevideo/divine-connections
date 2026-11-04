@@ -8,6 +8,7 @@ import {
   getActiveConnectionForPlatform,
   getConnection,
   listConnections,
+  revokeVerificationForConnectionStatement,
 } from '../db/connections'
 import { createOAuthAttempt, updateOAuthAttempt } from '../db/oauth-attempts'
 import { consumeOAuthState, createOAuthState } from '../db/oauth-states'
@@ -432,6 +433,7 @@ export async function disconnectOwnedConnection(
   await env.DB.batch([
     disconnectConnectionStatement(env.DB, { id: connection.id, pubkey, now }),
     disablePreferenceForConnectionStatement(env.DB, { pubkey, platform, connectionId: connection.id, now }),
+    revokeVerificationForConnectionStatement(env.DB, { connection, now }),
   ])
   return { disconnected: true }
 }

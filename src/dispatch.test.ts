@@ -1,5 +1,5 @@
-// ABOUTME: Host tests: every Host header gets the crossposter app, and none of
-// ABOUTME: them reaches the identity-verification routes this worker no longer serves.
+// ABOUTME: Host tests: verify.divine.video redirects to the live verifier, every other
+// ABOUTME: host gets the crossposter app, and none reaches the removed verification routes.
 import { env } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from './index'
@@ -7,9 +7,9 @@ import { applyMigrations, PUBKEY_A } from './db/test-helpers'
 import type { Env } from './types'
 
 const CROSSPOSTER = 'https://crossposter.divine.video'
+const VERIFY = 'https://verify.divine.video'
 const ANY_HOSTS = [
   'crossposter.divine.video',
-  'verify.divine.video',
   'verifier.divine.video',
   'unknown.example',
 ]
@@ -55,6 +55,97 @@ describe('every host', () => {
       expect(providers.status).toBe(200)
       const body = (await providers.json()) as { platforms: Array<{ platform: string }> }
       expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube'])
+    })
+  })
+
+  // verify.divine.video served the verification copy this worker used to carry.
+  // Until the cutover finishes it only redirects to the live verifier.
+  describe('verify.divine.video', () => {
+    it('redirects / to the verifier with a 308', async () => {
+      const response = await hostRequest(`${VERIFY}/`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/')
+    })
+
+    it('keeps the path when redirecting', async () => {
+      const response = await hostRequest(`${VERIFY}/verified/${PUBKEY_A}`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe(`https://verifier.divine.video/verified/${PUBKEY_A}`)
+    })
+
+    // Sign-in codes and crossposting connection details arrive in the query
+    // here; they must not be handed to another service.
+    it('drops the query string when redirecting', async () => {
+      const response = await hostRequest(`${VERIFY}/?code=abc&state=x`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/')
+    })
+
+    it('redirects a POST with 308 so the method and body are kept', async () => {
+      const response = await hostRequest(
+        `${VERIFY}/verify/single`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
+        testEnv(),
+      )
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/verify/single')
+    })
+
+    it('allows any origin on the redirect', async () => {
+      const response = await hostRequest(`${VERIFY}/health`, { headers: { origin: 'https://divine.video' } }, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('access-control-allow-origin')).toBe('*')
+    })
+
+    // Cloudflare keeps a trailing dot in the hostname when the request has one.
+    it('redirects the fully qualified host with a trailing dot', async () => {
+      const response = await hostRequest('https://verify.divine.video./', {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/')
+    })
+
+    // An open crossposting page on this host makes authenticated connection
+    // calls; they must not follow to the verifier.
+    it.each([
+      ['GET', '/connections'],
+      ['GET', '/connections/x/abc'],
+      ['DELETE', '/connections/x/abc'],
+      ['POST', '/connections/x/start'],
+    ] as const)('answers %s %s with 404 instead of redirecting', async (method, path) => {
+      const response = await hostRequest(
+        `${VERIFY}${path}`,
+        { method, headers: { authorization: 'Bearer keycast-token' } },
+        testEnv(),
+      )
+      expect(response.status).toBe(404)
+      expect(response.headers.get('location')).toBeNull()
+    })
+
+    it('still redirects paths that only start with "connections"', async () => {
+      const response = await hostRequest(`${VERIFY}/connectionsx`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/connectionsx')
+    })
+
+    // The CORS preflight answer the verification copy sent on this host.
+    it('answers a CORS preflight with 204 and allows any origin', async () => {
+      const response = await hostRequest(
+        `${VERIFY}/verify/single`,
+        {
+          method: 'OPTIONS',
+          headers: {
+            origin: 'https://divine.video',
+            'access-control-request-method': 'POST',
+            'access-control-request-headers': 'content-type',
+          },
+        },
+        testEnv(),
+      )
+      expect(response.status).toBe(204)
+      expect(response.headers.get('access-control-allow-origin')).toBe('*')
+      expect(response.headers.get('access-control-allow-methods')).toBe('GET,HEAD,PUT,POST,DELETE,PATCH')
+      expect(response.headers.get('access-control-allow-headers')).toBe('content-type')
+      expect(response.headers.get('location')).toBeNull()
     })
   })
 

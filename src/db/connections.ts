@@ -223,6 +223,34 @@ export function disconnectConnectionStatement(
     .bind(input.now, input.id, input.pubkey)
 }
 
+// Marks the account's badge rows in the verifications table revoked. The
+// verification copy this worker carried wrote one on connect (method 'oauth'),
+// and migration 0006 backfilled them, so disconnecting must not leave a live
+// badge behind. Proof-post rows are left alone: a proof post shows the account
+// separately from any connection.
+// A row matches on owner and platform plus either the connection's identity as
+// those writes stored it (YouTube by channel id, case kept; every other
+// platform by account name, lowercased) or this connection's id. Identity
+// catches a reconnect, which kept the original connection id while the row
+// recorded a fresh one; the id catches a handle renamed before a reconnect,
+// which updated the stored name but not the row.
+export function revokeVerificationForConnectionStatement(
+  db: D1Database,
+  input: { connection: ConnectionRecord; now: number },
+): D1PreparedStatement {
+  const { connection } = input
+  const identityKey = connection.platform === 'youtube'
+    ? connection.externalAccountId
+    : connection.externalAccountName.toLowerCase()
+  return db
+    .prepare(
+      `UPDATE verifications SET revoked_at = ?
+       WHERE pubkey = ? AND platform = ? AND method = 'oauth' AND revoked_at IS NULL
+         AND (identity_key = ? OR connection_id = ?)`,
+    )
+    .bind(input.now, connection.pubkey, connection.platform, identityKey, connection.id)
+}
+
 export async function disconnectConnection(
   db: D1Database,
   id: string,

@@ -136,14 +136,14 @@ results influence work.
 
 ## What This Service Is
 
-One Cloudflare Worker for opt-in video crossposting: OAuth connection to external platform accounts, per-platform posting preferences, and crosspost jobs. It serves `crossposter.divine.video` (setup UI and publishing API), and `src/index.ts` serves the same app on every host.
+One Cloudflare Worker for opt-in video crossposting: OAuth connection to external platform accounts, per-platform posting preferences, and crosspost jobs. It serves `crossposter.divine.video` (setup UI and publishing API), and `src/index.ts` serves the same app on every host except `verify.divine.video`.
 
-Identity verification is not part of this Worker for now. It runs in the verifier service at `verifier.divine.video` (`divinevideo/divine-identify-verification-service`). The 2026-07-28 design and 2026-07-29 implementation plan in `docs/plans/` brought a copy of verification into this repo; that copy has been removed, and how the verifier's code joins this repo is being worked out in divinevideo/divine-connections#2.
+Identity verification is not part of this Worker for now. It runs in the verifier service at `verifier.divine.video` (`divinevideo/divine-identify-verification-service`). The 2026-07-28 design and 2026-07-29 implementation plan in `docs/plans/` brought a copy of verification into this repo; that copy has been removed, and how the verifier's code joins this repo is being worked out in divinevideo/divine-connections#2. `verify.divine.video` still routes to this Worker and redirects to the verifier until the cutover finishes.
 
 ## Project Structure & Module Organization
 
 - Worker source and co-located tests live in `src/`: `platforms/` (OAuth+publish adapters), `services/` (state machines), `routes/` (Hono routers), `db/` (D1 access), `utils/`.
-- D1 migrations in `migrations/`. The D1 database (`divine-crossposter`) holds live production state, so never drop or alter existing tables. That includes the `verifications` table (migrations 0004 to 0006), which the Worker no longer reads or writes.
+- D1 migrations in `migrations/`. The D1 database (`divine-crossposter`) holds live production state, so never drop or alter existing tables. That includes the `verifications` table (migrations 0004 to 0006), which the Worker no longer reads; disconnect only marks the account's sign-in (OAuth) badge rows revoked (its current handle's row, and any row recorded with the connection's id, such as an older handle's).
 - Product and rollout context lives in `docs/plans/` and `README.md`.
 
 ## Build, Test, and Development Commands

@@ -10,8 +10,16 @@ name = "divine-crossposter"
 main = "src/index.ts"
 compatibility_date = "2025-09-06"
 
+# verify.divine.video served the verification copy this worker used to carry.
+# It stays routed here only to redirect to the live verifier
+# (verifier.divine.video) until the cutover finishes: Keycast still lists
+# https://verify.divine.video/ as a sign-in return address for the
+# 'Divine Identity Verification' client.
+# TODO(#2): once Keycast no longer lists it, drop this domain and the redirect
+# in src/index.ts.
 routes = [
-  { pattern = "crossposter.divine.video", custom_domain = true }
+  { pattern = "crossposter.divine.video", custom_domain = true },
+  { pattern = "verify.divine.video", custom_domain = true }
 ]
 
 [vars]
