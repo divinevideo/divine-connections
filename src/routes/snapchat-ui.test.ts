@@ -35,3 +35,27 @@ describe('Snapchat UI', () => {
     expect(label({ platform: 'snapchat', status: 'posted', snapchatDestination: 'story' })).toContain('public Story')
   })
 })
+
+it('submits the exact profile displayed at confirmation even if the cached selection changes', async () => {
+  const source = html.split('async function triggerCrosspost(videoId, platform) {')[1]?.split('async function connectPlatform')[0]
+  const account = { id: 'conn_a', externalAccountId: 'profile_a', platform: 'snapchat', status: 'connected', externalAccountName: 'Profile A', snapchatProfileConfirmed: true }
+  let payload: any
+  const api = vi.fn(async (_path, init) => { payload = JSON.parse(init.body); return { jobs: [] } })
+  const confirm = vi.fn((message: string) => {
+    expect(message).toContain('Profile A')
+    account.id = 'conn_b'; account.externalAccountId = 'profile_b'
+    return true
+  })
+  const trigger = new Function('window', 'connections', 'snapchatVideoDestination', 'renderVideoRows', 'api', 'videoJobs', 'setStatus', 'platformName', 'videoPolls', 'clearTimeout', 'setTimeout', 'return async function triggerCrosspost(videoId, platform) {' + source)(
+    { confirm }, [account], () => 'story', vi.fn(), api, {}, vi.fn(), () => 'Snapchat', {}, vi.fn(), vi.fn())
+  await trigger('video', 'snapchat')
+  expect(payload).toMatchObject({ snapchatProfile: { connectionId: 'conn_a', profileId: 'profile_a' }, snapchatDestination: 'story' })
+})
+
+it('refreshes connection controls after discovery fails so reconnect is available', async () => {
+  const source = html.split('async function selectSnapchatProfile(connectionId) {')[1]?.split('async function triggerCrosspost')[0]
+  const refresh = vi.fn(async () => undefined)
+  const select = new Function('api', 'refreshAccount', 'return async function selectSnapchatProfile(connectionId) {' + source)(async () => { throw Error('Reconnect Snapchat') }, refresh)
+  await expect(select('conn')).rejects.toThrow('Reconnect Snapchat')
+  expect(refresh).toHaveBeenCalledOnce()
+})

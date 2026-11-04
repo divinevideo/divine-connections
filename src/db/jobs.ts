@@ -1,7 +1,7 @@
 // ABOUTME: Stores crosspost jobs and controls their publishing lifecycle.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { allPrepared, changes, firstPrepared, runPrepared } from './client'
-import type { SnapchatDestination, CreateJobInput, ErrorCode, InstagramDestination, JobRecord, JobStatus, Platform, UpdateJobStatusInput, YouTubePrivacyStatus } from '../types'
+import type { ConnectionRecord, SnapchatDestination, CreateJobInput, ErrorCode, InstagramDestination, JobRecord, JobStatus, Platform, UpdateJobStatusInput, YouTubePrivacyStatus } from '../types'
 
 export const MAX_RETRY_COUNT = 5
 
@@ -255,7 +255,26 @@ export async function transitionClaimToDispatching(
   id: string,
   claimUpdatedAt: number,
   now: number,
+  snapchatConnection?: ConnectionRecord,
 ): Promise<boolean> {
+  if (snapchatConnection) {
+    // Consent, credentials and job ownership must still match in the same
+    // statement that records dispatch. A separate read leaves a reselection gap.
+    const result = await runPrepared(db, `UPDATE jobs
+      SET status = 'dispatching', updated_at = ?, error_code = NULL,
+          error_message = NULL, next_retry_at = NULL
+      WHERE id = ? AND status = 'uploading' AND updated_at = ?
+        AND platform = 'snapchat' AND connection_id = ? AND pubkey = ? AND external_account_id = ?
+        AND EXISTS (SELECT 1 FROM connections
+          WHERE id = jobs.connection_id AND pubkey = jobs.pubkey AND platform = 'snapchat'
+            AND external_account_id = jobs.external_account_id AND status = 'connected'
+            AND metadata_json = ? AND encrypted_access_token = ?
+            AND json_extract(metadata_json, '$.account.profileConfirmed') = 1)`,
+      now, id, claimUpdatedAt, snapchatConnection.id, snapchatConnection.pubkey,
+      snapchatConnection.externalAccountId, snapchatConnection.metadataJson,
+      snapchatConnection.encryptedAccessToken)
+    return changes(result) === 1
+  }
   const job = await updateClaimedJobStatus(
     db,
     {

@@ -33,28 +33,28 @@ describe('Snapchat choices', () => {
   it('freezes manual destination and duplicate keeps original choices', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(source())))
     await setPreference(db, pref('spotlight'))
-    const first = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'], snapchatDestination: 'story' })
+    const first = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'], snapchatProfile: { connectionId: 'conn_1', profileId: profile }, snapchatDestination: 'story' })
     await setPreference(db, pref('spotlight'))
-    const second = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'], snapchatDestination: 'spotlight' })
+    const second = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'], snapchatProfile: { connectionId: 'conn_1', profileId: profile }, snapchatDestination: 'spotlight' })
     expect(first.jobs[0]).toMatchObject({ snapchatDestination: 'story', sourceMedia: { durationSeconds: 6, width: 1080, height: 1920 } })
     expect(second.jobs[0].id).toBe(first.jobs[0].id); expect(second.jobs[0].snapchatDestination).toBe('story'); expect(send).toHaveBeenCalledTimes(1)
     expect((await getPreferences(db, PUBKEY_A))[0].snapchatDestination).toBe('spotlight')
   })
   it.each(SOURCE_METADATA_CASES.filter(c => c.tags.some(t => t.some(v => v.includes('dim')))))('accepts authoritative $name metadata', async item => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(source(item.tags))))
-    const result = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'] })
+    const result = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'], snapchatProfile: { connectionId: 'conn_1', profileId: profile } })
     expect(result.jobs[0]).toMatchObject({ sourceMediaUrl: item.url, sourceMedia: { durationSeconds: 6, width: 1080, height: 1920 }, snapchatDestination: 'spotlight' })
   })
   it('does not borrow dimensions from a different source descriptor', async () => {
     const tags = [['imeta', 'url https://media.divine.video/a.mp4', 'x a', 'duration 6'], ['imeta', 'url https://media.divine.video/b.mp4', 'x b', 'duration 6', 'dim 1080x1920']]
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(source(tags))))
-    await expect(createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'] })).rejects.toMatchObject({ code: 'not_eligible' })
+    await expect(createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'], snapchatProfile: { connectionId: 'conn_1', profileId: profile } })).rejects.toMatchObject({ code: 'not_eligible' })
   })
   it('requires confirmed profile and source ownership', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(source())))
-    await expect(createManualCrossposts(env, { pubkey: PUBKEY_B, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'] })).rejects.toBeInstanceOf(Error)
+    await expect(createManualCrossposts(env, { pubkey: PUBKEY_B, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'], snapchatProfile: { connectionId: 'conn_1', profileId: profile } })).rejects.toBeInstanceOf(Error)
     await db.prepare("UPDATE connections SET metadata_json = '{}' WHERE id = 'conn_1'").run()
-    await expect(createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'] })).rejects.toMatchObject({ code: 'not_eligible' })
+    await expect(createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['snapchat'], snapchatProfile: { connectionId: 'conn_1', profileId: profile } })).rejects.toMatchObject({ code: 'not_eligible' })
   })
   it('automatic is explicit and uses saved destination', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(source())))
@@ -140,3 +140,90 @@ it('records automatic Snapchat ineligibility without blocking another opted-in p
   expect(result.jobs.find(j => j.platform === 'snapchat')).toMatchObject({ status: 'failed', errorCode: 'not_eligible', nextRetryAt: null })
   expect(result.jobs.find(j => j.platform === 'x')).toMatchObject({ status: 'queued' }); expect(send).toHaveBeenCalledOnce()
 })
+
+it('prevents publication when an already-started profile selection wins during publisher token refresh', async () => {
+  const { confirmSnapchatProfile } = await import('./snapchat-profiles')
+  const { recordAttempt } = await import('../db/attempts')
+  const now = Math.floor(Date.now() / 1000)
+  await db.prepare("UPDATE connections SET token_expires_at = ?, encrypted_refresh_token = ? WHERE id = 'conn_1'")
+    .bind(now + 3600, await encryptToken('refresh', key)).run()
+  const before = (await getConnection(db, 'conn_1', PUBKEY_A))!
+  await createOrGetJob(db, job({ platform: 'snapchat', externalAccountId: profile, status: 'processing', expiresAt: now + 86400 }))
+  await recordAttempt(db, { id: 'ready-race', jobId: 'job_1', status: 'processing', errorCode: null, errorMessage: null, providerStatus: null,
+    providerResponseJson: JSON.stringify({ stage: 'media_ready', profileId: profile, mediaId: media, destination: 'story', sourceLink: 'https://divine.video/video/' + VIDEO_EVENT_ID, mediaCreatedAt: String(Date.now()) }), createdAt: now - 1 })
+  let announceDiscovery!: () => void
+  const discoveryStarted = new Promise<void>(resolve => { announceDiscovery = resolve })
+  let releaseDiscovery!: () => void
+  const discoveryRelease = new Promise<void>(resolve => { releaseDiscovery = resolve })
+  let selection!: Promise<unknown>
+  let publications = 0
+  vi.stubGlobal('fetch', vi.fn(async url => {
+    const endpoint = String(url)
+    if (endpoint.endsWith('/my_profile')) {
+      announceDiscovery(); await discoveryRelease
+      return Response.json({ request_status: 'SUCCESS', public_profile: { id: profile, organization_id: media, snap_user_name: 'first' } })
+    }
+    if (endpoint.includes('/organizations/')) return Response.json({ request_status: 'SUCCESS', public_profiles: [{ sub_request_status: 'SUCCESS', public_profile: { id: media, snap_user_name: 'second' } }] })
+    if (endpoint.endsWith('/access_token')) {
+      releaseDiscovery(); await selection
+      return Response.json({ access_token: 'losing-refresh', refresh_token: 'losing-refresh-token', expires_in: 3600 })
+    }
+    if (endpoint.endsWith('/stories')) { publications++; return Response.json({ request_status: 'SUCCESS' }) }
+    throw Error('Unexpected endpoint ' + endpoint)
+  }))
+  selection = confirmSnapchatProfile(env, PUBKEY_A, 'conn_1', { profileId: media, confirmed: true })
+  await discoveryStarted
+  // Selection has already obtained its token and waits on provider discovery;
+  // the publisher now encounters a token requiring refresh.
+  await db.prepare("UPDATE connections SET token_expires_at = 1 WHERE id = 'conn_1'").run()
+  const result = await processCrosspostJob(env, 'job_1', { now, fenceNow: now })
+  expect(result.status).toBe('needs_reauth')
+  expect(publications).toBe(0)
+  const winner = (await getConnection(db, 'conn_1', PUBKEY_A))!
+  expect(winner).toMatchObject({ status: 'connected', externalAccountId: media, encryptedAccessToken: before.encryptedAccessToken })
+})
+
+it.each(['profile', 'confirmation', 'revision', 'token'] as const)(
+  'atomically rejects a %s change after token acquisition and before publication', async change => {
+    const { recordAttempt } = await import('../db/attempts')
+    await createOrGetJob(db, job({ platform: 'snapchat', externalAccountId: profile, status: 'processing' }))
+    await recordAttempt(db, { id: 'ready-fence', jobId: 'job_1', status: 'processing', errorCode: null, errorMessage: null, providerStatus: null,
+      providerResponseJson: JSON.stringify({ stage: 'media_ready', profileId: profile, mediaId: media, destination: 'story', sourceLink: 'https://divine.video/video/' + VIDEO_EVENT_ID, mediaCreatedAt: String(Date.now()) }), createdAt: 1500 })
+    let changed = false
+    const dbProxy = new Proxy(db, { get(target, property) {
+      if (property === 'prepare') return (sql: string) => {
+        const statement = target.prepare(sql)
+        if (!sql.startsWith('SELECT * FROM job_attempts')) return statement
+        return new Proxy(statement, { get(statementTarget, method) {
+          if (method === 'bind') return (...values: unknown[]) => {
+            const bound = statementTarget.bind(...values)
+            return new Proxy(bound, { get(boundTarget, boundMethod) {
+              if (boundMethod === 'all') return async () => {
+                if (!changed) {
+                  changed = true
+                  if (change === 'profile') await db.prepare("UPDATE connections SET external_account_id = ? WHERE id = 'conn_1'").bind(media).run()
+                  if (change === 'token') await db.prepare("UPDATE connections SET encrypted_access_token = ? WHERE id = 'conn_1'").bind(await encryptToken('reconnected', key)).run()
+                  if (change === 'confirmation' || change === 'revision') await db.prepare("UPDATE connections SET metadata_json = ? WHERE id = 'conn_1'")
+                    .bind(JSON.stringify({ account: { profileConfirmed: change !== 'confirmation', selectionRevision: 'winner' } })).run()
+                }
+                return boundTarget.all()
+              }
+              const value = Reflect.get(boundTarget, boundMethod)
+              return typeof value === 'function' ? value.bind(boundTarget) : value
+            } })
+          }
+          const value = Reflect.get(statementTarget, method)
+          return typeof value === 'function' ? value.bind(statementTarget) : value
+        } })
+      }
+      const value = Reflect.get(target, property)
+      return typeof value === 'function' ? value.bind(target) : value
+    } })
+    const upstream = vi.fn(async () => Response.json({ request_status: 'SUCCESS' }))
+    vi.stubGlobal('fetch', upstream)
+    expect((await processCrosspostJob({ ...env, DB: dbProxy }, 'job_1', { now: 2000, fenceNow: 2000 })).status).toBe('needs_reauth')
+    expect(changed).toBe(true)
+    expect(upstream).not.toHaveBeenCalled()
+    expect((await getConnection(db, 'conn_1', PUBKEY_A))!.status).toBe('connected')
+  },
+)

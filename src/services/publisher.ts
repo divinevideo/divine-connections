@@ -1,7 +1,7 @@
 // ABOUTME: Claims queued crosspost jobs and publishes them through provider adapters.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { videoUrlFor } from './attribution'
-import { usableConnectionToken, ConnectionTokenReauthError } from './connection-token'
+import { usableConnectionToken, ConnectionTokenReauthError, sameConnectionSelection } from './connection-token'
 import { recordDiagnosticSafely } from './reliability'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, markConnectionNeedsReauth, upsertConnection } from '../db/connections'
@@ -16,7 +16,7 @@ import {
 } from '../db/jobs'
 import { getAdapter } from '../platforms/registry'
 import { PlatformAdapterError, asRecord } from '../platforms/adapter'
-import type { Env, ErrorCode, JobAttemptRecord, JobRecord, JobStatus, Platform } from '../types'
+import type { ConnectionRecord, Env, ErrorCode, JobAttemptRecord, JobRecord, JobStatus, Platform } from '../types'
 import { decryptToken, encryptToken, generateRandomId } from '../utils/crypto'
 import { sanitizeProviderMetadata } from '../utils/provider-metadata'
 
@@ -150,7 +150,12 @@ async function accessTokenForJob(
     return null
   }
 
-  if (job.platform === 'snapchat' && (connection.externalAccountId !== job.externalAccountId || asRecord(asRecord(JSON.parse(connection.metadataJson || '{}')).account).profileConfirmed !== true)) throw new ConnectionTokenReauthError('snapchat', 'Snapchat profile changed; confirm the original destination before posting')
+  if (job.platform === 'snapchat') {
+    const account = asRecord(asRecord(JSON.parse(connection.metadataJson || '{}')).account)
+    if (connection.externalAccountId !== job.externalAccountId || account.profileConfirmed !== true) {
+      throw new ConnectionTokenReauthError('snapchat', 'Snapchat profile changed; confirm the original destination before posting')
+    }
+  }
   if (job.platform === 'tiktok' || job.platform === 'snapchat') return usableConnectionToken(env, connection, now)
 
   if (!connection.tokenExpiresAt || connection.tokenExpiresAt > now + 60 || !connection.encryptedRefreshToken) {
@@ -560,20 +565,44 @@ export async function processCrosspostJob(
 
   let ownership: ClaimOwnership = { status: 'uploading', updatedAt: job.updatedAt }
   let dispatchFenceRaised = false
+  let snapchatDispatchConnection: ConnectionRecord | undefined
   const beforeExternalPost = async (): Promise<void> => {
     const fenceTimestamp = options.fenceNow ?? nowSeconds()
-    const transitioned = await transitionClaimToDispatching(env.DB, job.id, ownership.updatedAt, fenceTimestamp)
-    if (!transitioned) throw new PublishClaimLostError()
+    const transitioned = await transitionClaimToDispatching(
+      env.DB, job.id, ownership.updatedAt, fenceTimestamp, snapchatDispatchConnection,
+    )
+    if (!transitioned) {
+      const current = await getJob(env.DB, job.id)
+      if (snapchatDispatchConnection && current?.status === 'uploading' && current.updatedAt === ownership.updatedAt) {
+        throw new ConnectionTokenReauthError('snapchat', 'Snapchat connection changed; confirm the destination again')
+      }
+      throw new PublishClaimLostError()
+    }
     ownership = { status: 'dispatching', updatedAt: fenceTimestamp }
     dispatchFenceRaised = true
   }
 
   try {
     try {
+      const initialSnapchatConnection = job.platform === 'snapchat'
+        ? await getConnection(env.DB, job.connectionId, job.pubkey)
+        : null
       const accessToken = await accessTokenForJob(env, job, ownership, now)
       if (!accessToken) {
         await recordDiagnosticSafely(env, { reference: job.id, platform: job.platform, operation: 'publish', stage: 'needs_reauth', outcome: 'failed', now })
         return { status: 'needs_reauth' }
+      }
+
+      if (job.platform === 'snapchat') {
+        const current = await getConnection(env.DB, job.connectionId, job.pubkey)
+        const account = asRecord(asRecord(JSON.parse(current?.metadataJson || '{}')).account)
+        if (!initialSnapchatConnection || !current || current.status !== 'connected' ||
+            !sameConnectionSelection(initialSnapchatConnection, current) ||
+            current.externalAccountId !== job.externalAccountId || account.profileConfirmed !== true ||
+            await decryptToken(current.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY) !== accessToken) {
+          throw new ConnectionTokenReauthError('snapchat', 'Snapchat connection changed; confirm the destination again')
+        }
+        snapchatDispatchConnection = current
       }
 
       const snapAttempts = job.platform === 'snapchat' ? await listAttempts(env.DB, job.id) : []

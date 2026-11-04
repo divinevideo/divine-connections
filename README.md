@@ -664,10 +664,15 @@ On the authenticated publishing host:
   `{"mode":"automatic","snapchatDestination":"story"}`. Modes remain
   `disabled`, `manual`, `automatic`. Destination defaults to `spotlight`.
 - `POST /videos/:event_id/crossposts` accepts
-  `{"platforms":["snapchat"],"snapchatDestination":"story"}`. The override and
+  `{"platforms":["snapchat"],"snapchatProfile":{"connectionId":"<confirmed-connection-id>","profileId":"<confirmed-profile-uuid>"},"snapchatDestination":"story"}`.
+  The confirmed identity must match the current selection; missing or stale consent
+  returns HTTP 409 and requires fresh confirmation. The profile, override and
   authoritative duration/dimensions are frozen in additive job-options storage.
   Duplicate requests retain the original destination. Invalid/foreign options
   return HTTP 400. Profile selection routes are absent from verifier hosts.
+- Public `/verified` and `/verify` lookups accept Snapchat OAuth projections by
+  stable profile ID. Snapchat does not support proof-post verification. Discovery
+  permission loss marks only the matching connection for reconnection.
 
 Spotlight uses the first 160 Unicode code points of original Divine text, without
 adding attribution text; the separate supported `link` field always carries the

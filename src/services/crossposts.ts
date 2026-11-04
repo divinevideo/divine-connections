@@ -286,7 +286,7 @@ async function requireManualConnection(env: Env, pubkey: string, platform: Platf
 
 export async function createManualCrossposts(
   env: Env,
-  input: { pubkey: string; eventId: string; platforms: string[]; snapchatDestination?: unknown; instagramDestination?: unknown; youtubePrivacyStatus?: unknown; tiktokPostOptions?: unknown },
+  input: { pubkey: string; eventId: string; platforms: string[]; snapchatProfile?: unknown; snapchatDestination?: unknown; instagramDestination?: unknown; youtubePrivacyStatus?: unknown; tiktokPostOptions?: unknown },
 ): Promise<CrosspostJobsResult> {
   const eventId = ensureEventId(input.eventId)
   if (!Array.isArray(input.platforms) || input.platforms.length === 0) {
@@ -298,6 +298,15 @@ export async function createManualCrossposts(
   const override = parseInstagramDestination(input.instagramDestination, platforms.includes('instagram'))
   const youtubeOverride = parseYouTubePrivacyOption(input.youtubePrivacyStatus, platforms.includes('youtube'))
   const connections = await Promise.all(platforms.map((platform) => requireManualConnection(env, input.pubkey, platform)))
+  const snapchatConnection = connections.find(connection => connection.platform === 'snapchat')
+  if (snapchatConnection) {
+    const confirmed = asRecord(input.snapchatProfile)
+    if (confirmed.connectionId !== snapchatConnection.id || confirmed.profileId !== snapchatConnection.externalAccountId) {
+      throw new HttpError(409, 'snapchat_profile_changed', 'Your Snapchat public profile changed. Reload and confirm the selected profile before posting.')
+    }
+  } else if (input.snapchatProfile !== undefined) {
+    throw new HttpError(400, 'not_eligible', 'Snapchat profile confirmation requires a Snapchat destination')
+  }
   const snapshot = validateEvent(await fetchVideoEvent(env, eventId), input.pubkey, eventId)
   if (input.tiktokPostOptions !== undefined && !platforms.includes('tiktok')) throw new HttpError(400, 'not_eligible', 'TikTok options require a TikTok destination')
   const tiktokConnection = connections.find(connection => connection.platform === 'tiktok')

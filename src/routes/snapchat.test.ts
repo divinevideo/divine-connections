@@ -99,3 +99,58 @@ it('reselects an existing organization profile after reconnecting the OAuth owne
   expect(selected.status).toBe('connected'); expect(await decryptToken(selected.encryptedAccessToken, key)).toBe('access')
   expect((await getConnection(db, 'conn_1', PUBKEY_A))!.status).toBe('disconnected')
 })
+
+it('rejects stale manual profile consent after another tab selects a different authorized profile', async () => {
+  const { VIDEO_EVENT_ID } = await import('../db/test-helpers')
+  const { SOURCE_METADATA_CASES } = await import('../funnelcake/source-metadata.test-helpers')
+  env.CROSSPOST_QUEUE = { send: vi.fn() } as unknown as Env['CROSSPOST_QUEUE']
+  await req('/connections/snapchat/conn_1/profile', { profileId: profile, confirmed: true })
+  const staleConsent = { connectionId: 'conn_1', profileId: profile }
+  await req('/connections/snapchat/conn_1/profile', { profileId: other, confirmed: true })
+  vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('login.divine.video')
+    ? Response.json({ result: owner })
+    : Response.json({ id: VIDEO_EVENT_ID, pubkey: PUBKEY_A, kind: 34236, created_at: 2000, content: 'Human caption', tags: SOURCE_METADATA_CASES[0].tags, sig: 'f'.repeat(128) })))
+  const stale = await req('/videos/' + VIDEO_EVENT_ID + '/crossposts', { platforms: ['snapchat'], snapchatDestination: 'story', snapchatProfile: staleConsent })
+  expect(stale.status).toBe(409)
+  expect(await stale.json()).toMatchObject({ error: { code: 'snapchat_profile_changed' } })
+  expect(await db.prepare('SELECT COUNT(*) AS count FROM jobs').first()).toEqual({ count: 0 })
+  expect(env.CROSSPOST_QUEUE.send).not.toHaveBeenCalled()
+  const fresh = await req('/videos/' + VIDEO_EVENT_ID + '/crossposts', { platforms: ['snapchat'], snapchatDestination: 'story', snapchatProfile: { connectionId: 'conn_1', profileId: other } })
+  expect(fresh.status).toBe(200)
+  expect(await fresh.json()).toMatchObject({ jobs: [{ connectionId: 'conn_1', externalAccountId: other, snapchatDestination: 'story' }] })
+})
+
+it('serves the confirmed Snapchat OAuth projection through public lookup and verify routes without proof posts', async () => {
+  await req('/connections/snapchat/conn_1/profile', { profileId: other, confirmed: true })
+  const lookup = await req('/verified?platform=snapchat&identity=' + other, undefined, 'verifier.divine.video')
+  expect(lookup.status).toBe(200)
+  expect(await lookup.json()).toMatchObject({ platform: 'snapchat', identity: other, pubkey: PUBKEY_A, method: 'oauth' })
+  const claim = await req('/verify/single', { platform: 'snapchat', identity: other, pubkey: PUBKEY_A }, 'verifier.divine.video')
+  expect(claim.status).toBe(200)
+  expect(await claim.json()).toMatchObject({ verified: true, method: 'oauth' })
+  const batch = await req('/verify', { claims: [{ platform: 'snapchat', identity: other, pubkey: PUBKEY_A }] }, 'verifier.divine.video')
+  expect(batch.status).toBe(200)
+  expect(await batch.json()).toMatchObject({ results: [{ verified: true, method: 'oauth' }] })
+  const unsupported = await req('/verify/single', { platform: 'snapchat', identity: profile, pubkey: PUBKEY_B, proof: 'invented-proof-post' }, 'verifier.divine.video')
+  expect(unsupported.status).toBe(200)
+  expect(await unsupported.json()).toMatchObject({ verified: false, error: expect.stringContaining('account connection') })
+  const platforms = await req('/platforms', undefined, 'verifier.divine.video')
+  expect(await platforms.json()).toMatchObject({ platforms: { snapchat: { methods: ['oauth'] } } })
+})
+
+it.each(['no winner', 'reconnected winner', 'reselected winner'])('persists discovery permission loss only for the matching credentials and profile (%s)', async winner => {
+  const replacement = await encryptToken('winning-access', key)
+  vi.stubGlobal('fetch', vi.fn(async url => {
+    if (String(url).includes('login.divine.video')) return Response.json({ result: owner })
+    if (winner === 'reconnected winner') await db.prepare("UPDATE connections SET encrypted_access_token = ?, token_expires_at = NULL WHERE id = 'conn_1'").bind(replacement).run()
+    if (winner === 'reselected winner') await db.prepare("UPDATE connections SET external_account_id = ?, metadata_json = ? WHERE id = 'conn_1'").bind(other, JSON.stringify({ account: { profileConfirmed: true, selectionRevision: 'winning-selection' } })).run()
+    return Response.json({ request_status: 'ERROR', error_code: 'AUTHORIZATION_PERMISSION_DENIED' }, { status: 403 })
+  }))
+  const response = await req('/connections/snapchat/conn_1/profiles')
+  expect(response.status).toBe(401)
+  expect(await response.json()).toMatchObject({ error: { code: 'needs_reauth' } })
+  const saved = (await getConnection(db, 'conn_1', PUBKEY_A))!
+  expect(saved.status).toBe(winner === 'no winner' ? 'needs_reauth' : 'connected')
+  if (winner === 'reconnected winner') expect(saved.encryptedAccessToken).toBe(replacement)
+  if (winner === 'reselected winner') expect(saved.externalAccountId).toBe(other)
+})

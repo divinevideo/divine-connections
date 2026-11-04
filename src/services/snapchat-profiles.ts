@@ -4,39 +4,76 @@ import { getConnection } from '../db/connections'
 import { fetchSnapchatProfiles } from '../platforms/snapchat'
 import { asRecord, PlatformAdapterError } from '../platforms/adapter'
 import { getAdapter } from '../platforms/registry'
-import { usableConnectionToken } from './connection-token'
+import { ConnectionTokenReauthError, markConnectionCredentialsRejected, sameConnectionSelection, usableConnectionToken } from './connection-token'
 import { recordDiagnosticSafely } from './reliability'
 import { HttpError } from '../utils/http'
-import type { Env } from '../types'
+import { decryptToken } from '../utils/crypto'
+import type { ConnectionRecord, Env } from '../types'
 
 async function discover(env: Env, pubkey: string, connectionId: string) {
-  if (!getAdapter(env, 'snapchat')) throw new HttpError(400, 'not_connected', 'Snapchat Public Profile publishing is unavailable; app access must be approved')
+  if (!getAdapter(env, 'snapchat')) {
+    throw new HttpError(400, 'not_connected', 'Snapchat Public Profile publishing is unavailable; app access must be approved')
+  }
   const initial = await getConnection(env.DB, connectionId, pubkey)
-  if (!initial || initial.platform !== 'snapchat' || initial.status !== 'connected') throw new HttpError(404, 'not_connected', 'Snapchat connection not found')
+  if (!initial || initial.platform !== 'snapchat' || initial.status !== 'connected') {
+    throw new HttpError(404, 'not_connected', 'Snapchat connection not found')
+  }
+
+  let credentialsUsed: ConnectionRecord | null = null
   try {
     const token = await usableConnectionToken(env, initial)
     const current = await getConnection(env.DB, connectionId, pubkey)
-    if (!current || current.status !== 'connected' || current.externalAccountId !== initial.externalAccountId) throw new HttpError(409, 'connection_changed', 'Snapchat connection changed; try again')
+    if (!current || current.status !== 'connected' || !sameConnectionSelection(initial, current)) {
+      throw new ConnectionTokenReauthError('snapchat', 'Snapchat connection changed; reload and confirm again')
+    }
+    // The helper may have refreshed the grant. Bind any later provider denial to
+    // exactly the encrypted credentials whose plaintext is used for discovery.
+    if (await decryptToken(current.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY) !== token) {
+      throw new ConnectionTokenReauthError('snapchat', 'Snapchat credentials changed; reload and try again')
+    }
+    credentialsUsed = current
     return { connection: current, profiles: await fetchSnapchatProfiles(token) }
   } catch (error) {
-    await recordDiagnosticSafely(env, { reference: connectionId, platform: 'snapchat', operation: 'connect', stage: 'profile_selection', outcome: 'failed', now: Math.floor(Date.now()/1000), error })
-    if (error instanceof PlatformAdapterError) throw new HttpError(error.code === 'needs_reauth' ? 401 : error.code === 'rate_limited' ? 429 : 503, error.code, error.message)
+    const now = Math.floor(Date.now() / 1000)
+    if (credentialsUsed && error instanceof PlatformAdapterError &&
+        error.code === 'needs_reauth' && !(error instanceof ConnectionTokenReauthError)) {
+      await markConnectionCredentialsRejected(env, credentialsUsed, now)
+    }
+    await recordDiagnosticSafely(env, {
+      reference: connectionId, platform: 'snapchat', operation: 'connect',
+      stage: 'profile_selection', outcome: 'failed', now, error,
+    })
+    if (error instanceof PlatformAdapterError) {
+      const status = error.code === 'needs_reauth' ? 401 : error.code === 'rate_limited' ? 429 : 503
+      throw new HttpError(status, error.code, error.message)
+    }
     throw error
   }
 }
 export async function listSnapchatProfiles(env: Env, pubkey: string, connectionId: string) {
   const { connection, profiles } = await discover(env, pubkey, connectionId)
-  return { connectionId, selectedProfileId: asRecord(asRecord(JSON.parse(connection.metadataJson || '{}')).account).profileConfirmed === true ? connection.externalAccountId : null,
-    profiles: profiles.map(profile => ({ id: profile.id, name: profile.name, displayName: profile.metadata.displayName })) }
+  const account = asRecord(asRecord(JSON.parse(connection.metadataJson || '{}')).account)
+  return {
+    connectionId,
+    selectedProfileId: account.profileConfirmed === true ? connection.externalAccountId : null,
+    profiles: profiles.map(profile => ({ id: profile.id, name: profile.name, displayName: profile.metadata.displayName })),
+  }
 }
 export async function confirmSnapchatProfile(env: Env, pubkey: string, connectionId: string, body: unknown) {
   const input = asRecord(body)
-  if (input.confirmed !== true || typeof input.profileId !== 'string') throw new HttpError(400, 'not_eligible', 'Choose and explicitly confirm your Snapchat public profile')
+  if (input.confirmed !== true || typeof input.profileId !== 'string') {
+    throw new HttpError(400, 'not_eligible', 'Choose and explicitly confirm your Snapchat public profile')
+  }
   const { connection, profiles } = await discover(env, pubkey, connectionId)
   const selected = profiles.find(profile => profile.id === input.profileId)
-  if (!selected) throw new HttpError(400, 'not_eligible', 'Choose a currently authorized Snapchat public profile')
-  const now = Math.floor(Date.now()/1000)
-  const metadata = JSON.stringify({ ...asRecord(JSON.parse(connection.metadataJson || '{}')), account: { ...selected.metadata, profileConfirmed: true } })
+  if (!selected) {
+    throw new HttpError(400, 'not_eligible', 'Choose a currently authorized Snapchat public profile')
+  }
+  const now = Math.floor(Date.now() / 1000)
+  const metadata = JSON.stringify({
+    ...asRecord(JSON.parse(connection.metadataJson || '{}')),
+    account: { ...selected.metadata, profileConfirmed: true, selectionRevision: crypto.randomUUID() },
+  })
   const existing = await env.DB.prepare("SELECT id FROM connections WHERE pubkey = ? AND platform = 'snapchat' AND external_account_id = ?").bind(pubkey, selected.id).first<{ id: string }>()
   const selectedConnectionId = existing?.id ?? connectionId
   const reuseExisting = selectedConnectionId !== connectionId
@@ -70,7 +107,11 @@ export async function confirmSnapchatProfile(env: Env, pubkey: string, connectio
       .bind(pubkey, selected.id, selected.id.toLowerCase(), selectedConnectionId, now, selectedConnectionId, pubkey, metadata, selected.id),
   )
   const results = await env.DB.batch(statements)
-  if (results[0].meta.changes !== 1 || (reuseExisting && results[1].meta.changes !== 1)) throw new HttpError(409, 'connection_changed', 'Snapchat connection changed; reload and confirm again')
+  const sourceChanged = results[0].meta.changes === 1
+  const selectedChanged = !reuseExisting || results[1].meta.changes === 1
+  if (!sourceChanged || !selectedChanged) {
+    throw new HttpError(409, 'connection_changed', 'Snapchat connection changed; reload and confirm again')
+  }
   // The OAuth projection uses the stable authorized profile ID, never its display label.
   await recordDiagnosticSafely(env, { reference: connectionId, platform: 'snapchat', operation: 'connect', stage: 'profile_confirmed', outcome: 'succeeded', now })
   return { connectionId: selectedConnectionId, profileId: selected.id, name: selected.name, confirmed: true }

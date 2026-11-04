@@ -1363,7 +1363,10 @@ export function renderHome(env: Env): string {
       }
 
       async function selectSnapchatProfile(connectionId) {
-        const data = await api('/connections/snapchat/' + encodeURIComponent(connectionId) + '/profiles');
+        const data = await api('/connections/snapchat/' + encodeURIComponent(connectionId) + '/profiles').catch(async (error) => {
+          await refreshAccount().catch(() => undefined);
+          throw error;
+        });
         const dialog = document.createElement('dialog');
         dialog.innerHTML = snapchatProfileMarkup(data);
         document.body.appendChild(dialog);
@@ -1376,15 +1379,22 @@ export function renderHome(env: Env): string {
           form.addEventListener('submit', (event) => { event.preventDefault(); const value = form.querySelector('[name="profileId"]').value; if (data.profiles.some(profile => profile.id === value)) finish(value); });
         });
         if (!selected) return;
-        await api('/connections/snapchat/' + encodeURIComponent(connectionId) + '/profile', { method: 'POST', body: JSON.stringify({ profileId: selected, confirmed: true }) });
+        await api('/connections/snapchat/' + encodeURIComponent(connectionId) + '/profile', { method: 'POST', body: JSON.stringify({ profileId: selected, confirmed: true }) }).catch(async (error) => {
+          await refreshAccount().catch(() => undefined);
+          throw error;
+        });
         await refreshAccount();
         setStatus('Snapchat public profile confirmed. Crossposting is manual until you choose automatic.');
       }
 
       async function triggerCrosspost(videoId, platform) {
+        let snapchatProfile;
+        let snapchatDestination;
         if (platform === 'snapchat') {
           const account = connections.find((item) => item.platform === 'snapchat' && item.status === 'connected');
-          const destination = snapchatVideoDestination(videoId);
+          snapchatProfile = { connectionId: account?.id, profileId: account?.externalAccountId };
+          snapchatDestination = snapchatVideoDestination(videoId);
+          const destination = snapchatDestination;
           if (!window.confirm('Post this Divine video to ' + (account?.externalAccountName || 'your public profile') + ' as ' + (destination === 'story' ? 'a public Story? This shares a source link without text overlays.' : 'Spotlight? The first 160 characters of your Divine text and a source link are included. Snapchat must approve it before it is live.'))) { renderVideoRows(); return; }
         }
         let tiktokPostOptions;
@@ -1401,7 +1411,10 @@ export function renderHome(env: Env): string {
         }
         const data = await api('/videos/' + videoId + '/crossposts', {
           method: 'POST',
-          body: JSON.stringify({ platforms: [platform], ...(platform === 'snapchat' ? { snapchatDestination: snapchatVideoDestination(videoId) } : {}), ...(platform === 'tiktok' ? { tiktokPostOptions } : {}), ...(platform === 'youtube' ? { youtubePrivacyStatus: youtubeVideoPrivacy(videoId) } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
+          body: JSON.stringify({ platforms: [platform], ...(platform === 'snapchat' ? { snapchatProfile, snapchatDestination } : {}), ...(platform === 'tiktok' ? { tiktokPostOptions } : {}), ...(platform === 'youtube' ? { youtubePrivacyStatus: youtubeVideoPrivacy(videoId) } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
+        }).catch(async (error) => {
+          if (platform === 'snapchat') await refreshAccount().catch(() => undefined);
+          throw error;
         });
         videoJobs[videoId] = data.jobs || [];
         renderVideoRows();
