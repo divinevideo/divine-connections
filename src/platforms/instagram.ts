@@ -30,6 +30,21 @@ function longLivedTokenSet(response: Record<string, unknown>): TokenSet {
   }
 }
 
+// Meta documents a single token inside data; older responses were flat.
+function shortLivedTokenResponse(response: Record<string, unknown>): Record<string, unknown> {
+  const wrapped = Object.hasOwn(response, 'data')
+  const data = response.data
+  const token = wrapped && Array.isArray(data) && data.length === 1 && !Object.hasOwn(response, 'access_token')
+    ? asRecord(data[0])
+    : wrapped ? {} : response
+  if (typeof token.access_token !== 'string' || !token.access_token.trim()) {
+    throw new PlatformAdapterError('instagram', 'unknown_platform_error',
+      'Instagram did not return exactly one usable authorization token', 200,
+      { error: { message: 'Instagram did not return exactly one usable authorization token' } }, 'code_exchange')
+  }
+  return token
+}
+
 function requireInstagramId(value: unknown, published = false): string {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new PlatformAdapterError('instagram', published ? 'ambiguous_post_result' : 'unknown_platform_error',
@@ -100,7 +115,7 @@ export function createInstagramAdapter(config: InstagramConfig): PlatformAdapter
       return url.toString()
     },
     async exchangeCallback({ code, redirectUri }) {
-      const shortLived = await postForm(
+      const shortLived = shortLivedTokenResponse(await postForm(
         SHORT_LIVED_TOKEN_URL,
         new URLSearchParams({
           client_id: config.clientId,
@@ -109,12 +124,12 @@ export function createInstagramAdapter(config: InstagramConfig): PlatformAdapter
           code,
           grant_type: 'authorization_code',
         }),
-      )
+      ))
 
       const exchangeUrl = new URL(`${GRAPH_ROOT}/access_token`)
       exchangeUrl.searchParams.set('grant_type', 'ig_exchange_token')
       exchangeUrl.searchParams.set('client_secret', config.clientSecret)
-      exchangeUrl.searchParams.set('access_token', String(shortLived.access_token ?? ''))
+      exchangeUrl.searchParams.set('access_token', shortLived.access_token as string)
       const longLived = await getJson(exchangeUrl)
 
       const tokens = longLivedTokenSet(longLived)
