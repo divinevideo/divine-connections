@@ -95,6 +95,35 @@ describe('crosspost service', () => {
     expect(queueSend).not.toHaveBeenCalled()
   })
 
+  describe.each(['manual', 'automatic'] as const)('%s post text', (mode) => {
+    it.each([
+      { name: 'title-only post', content: '', title: 'A tiny human loop #loops', summary: '', expected: 'A tiny human loop #loops' },
+      { name: 'blank content', content: ' \n ', title: '  A small dance 🎉  ', summary: '', expected: 'A small dance 🎉' },
+      { name: 'summary fallback', content: '', title: 'Short title', summary: 'A complete description from the post', expected: 'A complete description from the post' },
+      { name: 'original description', content: 'Original words\nwith a second line', title: 'Short title', summary: 'Older summary', expected: 'Original words\nwith a second line' },
+    ])('preserves $name in X and Instagram captions', async ({ content, title, summary, expected }) => {
+      await addConnectedPlatform(db, 'x', 'conn_x')
+      await addConnectedPlatform(db, 'instagram', 'conn_instagram')
+      const env = { ...testEnv(db, queueSend), ENABLE_X: 'true', TWITTER_CLIENT_ID: 'client', TWITTER_CLIENT_SECRET: 'secret', ENABLE_INSTAGRAM: 'true', INSTAGRAM_CLIENT_ID: 'client', INSTAGRAM_CLIENT_SECRET: 'secret' }
+      const source = event({ content, tags: [...event().tags, ['title', title], ['summary', summary]] })
+      fetchMock.mockResolvedValueOnce(Response.json({ event: source }))
+      if (mode === 'automatic') {
+        for (const platform of ['x', 'instagram'] as const) {
+          await setPreference(db, { pubkey: PUBKEY_A, platform, connectionId: 'conn_' + platform, mode: 'automatic', automaticEnabledAt: 1000, createdAt: 1000, updatedAt: 1000 })
+        }
+      }
+      const result = mode === 'manual'
+        ? await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['x', 'instagram'] })
+        : await createAutomaticCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID })
+      expect(result.jobs).toHaveLength(2)
+      for (const job of result.jobs) {
+        expect(job.caption.startsWith(expected + '\n\n')).toBe(true)
+        expect(job.caption).toContain('https://divine.video/video/' + VIDEO_EVENT_ID)
+      }
+      expect(queueSend).toHaveBeenCalledTimes(2)
+    })
+  })
+
   it('manual crosspost creates one job per selected connected platform', async () => {
     await addConnectedPlatform(db, 'tiktok', 'conn_tiktok')
     await addConnectedPlatform(db, 'youtube', 'conn_youtube')

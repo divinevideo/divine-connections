@@ -140,7 +140,7 @@ function validateEvent(lookup: DivineVideoLookup | null, pubkey: string, eventId
   return {
     mediaUrl: url,
     mediaHash: hash,
-    caption: event.content,
+    caption: event.content.trim() || tagValue(event.tags, 'summary')?.trim() || tagValue(event.tags, 'title')?.trim() || '',
     createdAt: event.created_at,
     authorName: lookup.authorName,
   }
