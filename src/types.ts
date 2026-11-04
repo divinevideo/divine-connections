@@ -65,6 +65,8 @@ export type JobStatus =
 export type ErrorCode =
   | 'rate_limited'
   | 'provider_payment_required'
+  | 'provider_quota_exceeded'
+  | 'provider_upload_limit'
   | 'needs_reauth'
   | 'media_rejected'
   | 'platform_review_required'

@@ -1,6 +1,6 @@
 # Divine Connections
 
-Cloudflare Worker uniting Divine identity verification and opt-in video crossposting over one connections core. One set of OAuth accounts powers both: connecting an external account proves ownership (a durable, queryable `verifications` table backs public badges) and enables publishing. Host-based dispatch serves `verifier.divine.video` (public verification API + self-service landing page) and `crossposter.divine.video` (publishing API). Design: `docs/plans/2026-07-28-divine-connections-design.md`; implementation plan: `docs/plans/2026-07-29-divine-connections-implementation.md`.
+Cloudflare Worker uniting Divine identity verification and opt-in video crossposting over one connections core. One set of OAuth accounts powers both: connecting an external account proves ownership (a durable, queryable `verifications` table backs public badges) and makes opt-in publishing available where supported. Host-based dispatch serves `verify.divine.video` (public verification API + self-service landing page) and `crossposter.divine.video` (publishing API). Design: `docs/plans/2026-07-28-divine-connections-design.md`; implementation plan: `docs/plans/2026-07-29-divine-connections-implementation.md`.
 
 The publishing core below was scaffolded from divine-crossposter and remains accurate: a creator connects a platform account, chooses manual or automatic posting, and the worker publishes their Divine videos there on their behalf. Nothing posts until the creator opts in.
 
@@ -11,7 +11,7 @@ The codebase is a TypeScript Worker built on [Hono](https://hono.dev), using D1 
 ## Features
 
 - **Opt-in only.** No video leaves Divine until a creator connects an account and picks a posting mode. Automatic mode applies only to Divine videos created after the creator turned it on.
-- **Supported platforms.** Instagram Stories/Reels, TikTok, X, and YouTube Shorts, each behind its own adapter. A platform reports as enabled only when its `ENABLE_*` flag is `true` and matching OAuth credentials are configured, so an operator can stage a provider before exposing it.
+- **Supported platforms.** Instagram Stories/Reels, TikTok, X, YouTube videos, and Snapchat Spotlight/public Stories, each behind its own adapter. A platform reports as enabled only when its `ENABLE_*` flag is `true` and matching OAuth credentials are configured, so an operator can stage a provider before exposing it.
 - **Manual and automatic posting.** Manual jobs are created when the creator asks. Automatic jobs are created after a Divine publish, either from a client push or from the scheduled reconciler, for providers that support it. TikTok requires manual confirmation for every post.
 - **Idempotent jobs.** Jobs are keyed by `(pubkey, video_event_id, platform, external_account_id)`, so duplicate requests return the existing job instead of double-posting.
 - **Built-in setup UI.** `GET /` serves a self-contained web app where a creator signs in with their Divine/Nostr account, connects platforms, and sets posting switches. `GET /platforms` shows provider readiness (HTML, or JSON with `?format=json`).
@@ -21,7 +21,7 @@ The codebase is a TypeScript Worker built on [Hono](https://hono.dev), using D1 
 Crossposter is a single Worker with four entry points wired together in `src/index.ts`:
 
 - **HTTP API and UI** — Hono routes for the setup UI, health, provider readiness, OAuth connections, preferences, crosspost creation, and job reads.
-- **Platform adapters** — one adapter per platform (`src/platforms/instagram.ts`, `tiktok.ts`, `x.ts`, `youtube.ts`) behind a shared adapter interface and a registry that reports which providers are configured.
+- **Platform adapters** — one adapter per platform (`src/platforms/instagram.ts`, `tiktok.ts`, `x.ts`, `youtube.ts`, `snapchat.ts`) behind a shared adapter interface and a registry that reports which providers are configured.
 - **Queue consumer** — consumes `{ "jobId": "..." }` messages from `CROSSPOST_QUEUE`, refreshes tokens when needed, calls the platform adapter, records an attempt, and updates job state. Controlled application retries are fresh delayed messages; the current delivery is acknowledged only after that send succeeds.
 - **Scheduled reconciler and watchdog** — a Cron Trigger backs up automatic mode, recovers stale claims, re-enqueues due D1 jobs, and checks both the primary queue and dead-letter queue (DLQ). Divine web/mobile should still push a newly published event after a successful publish.
 
@@ -60,7 +60,7 @@ npm run typecheck
 npm run test:once
 ```
 
-Create the backing infrastructure once per environment:
+For a new isolated development environment only, create its backing infrastructure. Production already has these resources; preserve them:
 
 ```bash
 npx wrangler d1 create divine-crossposter
@@ -79,7 +79,7 @@ The initial schema (`migrations/0001_initial.sql`) creates `oauth_states`, `conn
 
 ## Configuration
 
-The Worker is deployed as `divine-connections`. Until the cutover tracked in #2 it serves only its `*.workers.dev` hostname (the fallback union of both surfaces); at cutover the custom domains `verifier.divine.video` (public verification API + landing page) and `crossposter.divine.video` (publishing API) move to it from the legacy workers, and the queue consumer + reconciler cron re-enable here. The `TODO(#2)` markers in `wrangler.toml` cover all three.
+The merged source deploys onto the historical Worker `divine-crossposter`, preserving its existing encryption key, shared D1 and queue/cron ownership. The configured domains are `crossposter.divine.video` and `verify.divine.video`; publishing stays isolated from verifier hosts. The legacy `verifier.divine.video` cutover remains separate and needs fresh operator verification. Do not replace this Worker or rotate its key during provider setup. See [provider setup and rollout](docs/provider-rollout.md) for disabled-provider credentials, approval gates, native-client limits and acceptance isolation.
 
 Bluesky OAuth is deliberately deferred to #1: Bluesky verifies via AT Protocol identity-link records and public proof posts, and gains OAuth when Bluesky crossposting exists.
 
@@ -87,12 +87,12 @@ Bluesky OAuth is deliberately deferred to #1: Bluesky verifies via AT Protocol i
 
 | Binding | Type | Purpose |
 | --- | --- | --- |
-| `DB` | D1 database | Service-owned state, shared with the legacy crossposter worker (`divine-crossposter`). |
+| `DB` | D1 database | Service-owned state on the preserved historical Worker (`divine-crossposter`); shared legacy tables remain intact. |
 | `CACHE_KV` | KV namespace | Negative verify results, NIP-05 results, and rate-limit windows. D1 owns success state. |
 | `CROSSPOST_QUEUE` | Queue producer | Enqueues publish jobs onto `divine-crossposter-jobs`. |
 | `CROSSPOST_DLQ` | Queue producer/metrics binding | Reads aggregate backlog metrics for `divine-crossposter-jobs-dlq`. |
 
-The queue consumer (`max_batch_size = 10`, `max_batch_timeout = 30`, five native retries, `divine-crossposter-jobs-dlq` as dead-letter queue) and the reconciler/watchdog cron are configured in `wrangler.toml` but commented out behind `TODO(#2)` until cutover — a second consumer would steal jobs from the live crossposter worker, and double cron double-fires ops alerts against the shared D1.
+The queue consumer (`max_batch_size = 10`, `max_batch_timeout = 30`, five native retries, `divine-crossposter-jobs-dlq` as dead-letter queue) and reconciler/watchdog cron are active in the checked-in configuration. Preserve single consumer/cron ownership; do not create a competing Worker against the shared database.
 
 ### Variables
 
@@ -226,11 +226,11 @@ Clients see connection summaries, preferences, job summaries, normalized statuse
 
 Job statuses: `queued`, `uploading`, `dispatching`, `processing`, `posted`, `failed`, `needs_reauth`, `skipped`.
 
-Normalized error codes: `rate_limited`, `provider_payment_required`, `needs_reauth`, `media_rejected`, `platform_review_required`, `processing_timeout`, `expired`, `not_connected`, `not_owner`, `not_eligible`, `unknown_platform_error`, `ambiguous_post_result`.
+Normalized error codes: `rate_limited`, `provider_payment_required`, `provider_quota_exceeded`, `provider_upload_limit`, `needs_reauth`, `media_rejected`, `platform_review_required`, `processing_timeout`, `expired`, `not_connected`, `not_owner`, `not_eligible`, `unknown_platform_error`, `ambiguous_post_result`.
 
 - Transient provider failures and processing polls use bounded application backoff: Crossposter sends a fresh delayed queue message, then acknowledges the current delivery. `message.retry()` is not used. Only unexpected infrastructure failures or a failed fresh-message send remain unacknowledged; Cloudflare retries those deliveries at most five times before moving them to the DLQ.
 - Scheduled reconciliation recovers a stale X `uploading` claim only while the job is unexpired and the incremented retry count remains within the retry budget. An expired claim becomes `skipped`; a claim that exhausts the retry budget remains terminal `failed` with no `nextRetryAt`. A stale X `dispatching` claim has an unknown external outcome, so it becomes terminal `ambiguous_post_result` and requires manual reconciliation; it is never automatically reposted.
-- A provider HTTP 402 is `provider_payment_required`: the job fails with no retry, and a duplicate delivery does not reclaim it. Recovering it after the provider account is funded is a deliberate operator action. A 402 from X after the dispatch fence is still `ambiguous_post_result`.
+- Before publication dispatch, a provider HTTP 402 is `provider_payment_required`: the job fails with no retry, and a duplicate delivery does not reclaim it. Recovering it after the provider account is funded is a deliberate operator action. A 402 from X after the dispatch fence is still `ambiguous_post_result`. Pure status polls of accepted YouTube/TikTok/Snapchat publications retain their checkpoint and bounded polling on 402. Exhausted or expired billing-blocked polls become unknown/manual-reconciliation outcomes (`ambiguous_post_result`), never a reason to repost. Snapchat media-ready continuations cross an outward POST fence and retain that ambiguity protection.
 - If token refresh or publishing returns an auth failure, the connection and job are marked `needs_reauth`; automatic jobs for that platform stop until the user reconnects. Manual retry after reconnect reuses the existing job where possible and preserves attempt history.
 - Disconnecting relies on local D1 state to stop future Divine-initiated crossposts. Provider revocation, where supported, is called best-effort; a failed revocation does not keep local crossposting enabled.
 

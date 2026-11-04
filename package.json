@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:once": "vitest run",
+    "test:provider-setup": "node --test scripts/tests/provider-setup.cjs scripts/tests/production-health.cjs",
     "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {

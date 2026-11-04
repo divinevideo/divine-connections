@@ -78,7 +78,7 @@ async function seedConnectedJob(db: D1Database, platform: Platform, overrides: P
       encryptedAccessToken,
       encryptedRefreshToken: null,
       tokenExpiresAt: null,
-      externalAccountId: 'external-account-1',
+      externalAccountId: overrides.externalAccountId ?? 'external-account-1',
     }),
   )
   const created = await createOrGetJob(db, job({ id: 'job_1', platform, ...(platform === 'tiktok' ? { tiktokPostOptions: tiktokOptions() } : {}), ...overrides }))
@@ -159,6 +159,84 @@ describe('publisher service', () => {
     db = await applyMigrations()
     fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
+  })
+
+  it.each(['tiktok', 'youtube', 'snapchat'] as const)('keeps accepted %s posts processing through billing outages and ends unknown without republishing', async (platform) => {
+    await seedConnectedJob(db, platform, { status: 'processing', externalPostId: '33333333-3333-4333-8333-333333333333', externalAccountId: '11111111-1111-4111-8111-111111111111' })
+    if (platform === 'snapchat') {
+      const current = (await getConnection(db, 'conn_1', PUBKEY_A))!
+      await updateJobStatus(db, { id: 'job_1', status: 'processing', externalPostId: '33333333-3333-4333-8333-333333333333', updatedAt: 1000 })
+      await upsertConnection(db, { ...current, externalAccountId: '11111111-1111-4111-8111-111111111111', metadataJson: JSON.stringify({ account: { profileConfirmed: true } }) })
+      await recordAttempt(db, { id: 'snap_checkpoint', jobId: 'job_1', status: 'processing', errorCode: null, errorMessage: null, providerStatus: null, providerResponseJson: JSON.stringify({ stage: 'spotlight_submitted', spotlightId: '33333333-3333-4333-8333-333333333333', profileId: '11111111-1111-4111-8111-111111111111', destination: 'spotlight' }), createdAt: 1500 })
+    }
+    fetchMock.mockImplementation(async () => Response.json({ error: { message: 'synthetic-private-billing' } }, { status: 402 }))
+    await expect(processCrosspostJob(platformEnv(db, platform), 'job_1', { now: 2000 })).rejects.toBeInstanceOf(PublisherRetryError)
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'processing', externalPostId: '33333333-3333-4333-8333-333333333333', retryCount: 1, nextRetryAt: 2060 })
+    await updateJobStatus(db, { id: 'job_1', status: 'processing', retryCount: 5, nextRetryAt: 2100, updatedAt: 2000 })
+    expect(await processCrosspostJob(platformEnv(db, platform), 'job_1', { now: 2100 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'failed', externalPostId: '33333333-3333-4333-8333-333333333333', errorCode: 'ambiguous_post_result', nextRetryAt: null })
+    expect((await getJob(db, 'job_1'))?.errorMessage).toContain('Check the provider')
+    const count = fetchMock.mock.calls.length
+    await processCrosspostJob(platformEnv(db, platform), 'job_1', { now: 2200 })
+    expect(fetchMock).toHaveBeenCalledTimes(count)
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes('init'))).toBe(true)
+    expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
+  })
+
+  it('ends an accepted billing-blocked upload as unknown when its polling window expires', async () => {
+    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01', errorCode: 'provider_payment_required', expiresAt: 2000 })
+    expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ externalPostId: 'synthetic01', errorCode: 'ambiguous_post_result', nextRetryAt: null })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not overwrite a winning readback when a billing-blocked upload expires', async () => {
+    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01', errorCode: 'provider_payment_required', expiresAt: 2000 })
+    let raced = false
+    const concurrentDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== 'prepare') return Reflect.get(target, property, receiver)
+        return (query: string) => {
+          if (!raced && query.trim().startsWith('UPDATE jobs')) {
+            raced = true
+            // Queue a real concurrent winner before the expiry UPDATE runs.
+            return new Proxy(target.prepare(query), {
+              get(statement, key, statementReceiver) {
+                if (key !== 'bind') return Reflect.get(statement, key, statementReceiver)
+                return (...bindings: unknown[]) => {
+                  const bound = statement.bind(...bindings)
+                  return new Proxy(bound, {
+                    get(result, method, resultReceiver) {
+                      if (method !== 'first' && method !== 'run') return Reflect.get(result, method, resultReceiver)
+                      return async () => {
+                        await updateJobStatus(db, { id: 'job_1', status: 'posted', updatedAt: 1999, errorCode: null, externalPostUrl: 'https://www.youtube.com/watch?v=synthetic01' })
+                        return method === 'first' ? result.first() : result.run()
+                      }
+                    },
+                  })
+                }
+              },
+            })
+          }
+          return target.prepare(query)
+        }
+      },
+    }) as D1Database
+    expect(await processCrosspostJob(platformEnv(concurrentDb, 'youtube'), 'job_1', { now: 2000 })).toEqual({ status: 'posted' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'posted', errorCode: null })
+  })
+
+  it.each([
+    [403, 'quotaExceeded', 'provider_quota_exceeded', 'quota'],
+    [400, 'uploadLimitExceeded', 'provider_upload_limit', 'upload limit'],
+    [403, 'forbidden', 'needs_reauth', 'provider request failed'],
+  ])('handles YouTube %s %s without confusing quota with authorization', async (status, reason, code, message) => {
+    await seedConnectedJob(db, 'youtube')
+    fetchMock.mockImplementation(async (url) => String(url).includes('cdn.divine.video') ? new Response('video') : Response.json({ error: { code: status, errors: [{ reason }], message: 'synthetic upstream detail' } }, { status: Number(status) }))
+    await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000 })
+    expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: code, nextRetryAt: null })
+    expect((await getJob(db, 'job_1'))?.errorMessage).toContain(message)
+    expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: code === 'needs_reauth' ? 'needs_reauth' : 'connected' })
   })
 
   it('does not upload a known YouTube video again after terminal processing rejection', async () => {

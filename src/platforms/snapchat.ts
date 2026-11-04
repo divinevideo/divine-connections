@@ -20,7 +20,7 @@ async function request(url: string, accessToken: string, init: RequestInit = {})
   const nested = ['public_profiles', 'spotlights', 'stories', 'snaps'].flatMap(key => Array.isArray(body[key]) ? body[key] as unknown[] : []).map(asRecord).find(value => value.sub_request_status !== 'SUCCESS' || value.error_code)
   if (!response.ok || body.request_status !== 'SUCCESS' || body.error_code || nested) {
     const reason = String(body.error_code ?? nested?.sub_request_error_reason ?? '')
-    const code = response.status === 401 || response.status === 403 || /AUTHORIZATION|TOKEN|PERMISSION/.test(reason) ? 'needs_reauth' : response.status === 429 || /RATE|THROTTL/.test(reason) ? 'rate_limited' : /MEDIA|VIDEO/.test(reason) ? 'media_rejected' : 'unknown_platform_error'
+    const code = response.status === 402 ? 'provider_payment_required' : response.status === 401 || response.status === 403 || /AUTHORIZATION|TOKEN|PERMISSION/.test(reason) ? 'needs_reauth' : response.status === 429 || /RATE|THROTTL/.test(reason) ? 'rate_limited' : /MEDIA|VIDEO/.test(reason) ? 'media_rejected' : 'unknown_platform_error'
     // Do not persist provider strings: they can echo token, key, URL or caption.
     throw new PlatformAdapterError('snapchat', code, code === 'needs_reauth' ? 'Reconnect Snapchat and confirm public-profile publishing permission' : 'Snapchat request failed', response.status, { error: { type: code } }, safeEndpoint(new URL(url).pathname))
   }
@@ -64,7 +64,7 @@ export function createSnapchatAdapter(options: { clientId: string; clientSecret:
   async function token(params: Record<string, string>): Promise<TokenSet> {
     const response = await fetch(TOKEN, { method: 'POST', redirect: 'error', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: options.clientId, client_secret: options.clientSecret, ...params }) })
     const body = asRecord(await readProviderResponse(response))
-    if (!response.ok || body.error) throw new PlatformAdapterError('snapchat', response.status === 401 || body.error === 'invalid_grant' ? 'needs_reauth' : 'unknown_platform_error', 'Snapchat authorization failed', response.status, undefined, '/login/oauth2/access_token')
+    if (!response.ok || body.error) throw new PlatformAdapterError('snapchat', response.status === 402 ? 'provider_payment_required' : response.status === 401 || body.error === 'invalid_grant' ? 'needs_reauth' : 'unknown_platform_error', 'Snapchat authorization failed', response.status, undefined, '/login/oauth2/access_token')
     if (typeof body.access_token !== 'string' || !body.access_token.trim() || typeof body.expires_in !== 'number' || !Number.isFinite(body.expires_in) || body.expires_in <= 0 || (params.grant_type === 'authorization_code' && (typeof body.refresh_token !== 'string' || !body.refresh_token.trim()))) fail('Snapchat returned incomplete credentials')
     return { accessToken: body.access_token as string, refreshToken: typeof body.refresh_token === 'string' && body.refresh_token.trim() ? body.refresh_token : undefined, expiresAt: Math.floor(Date.now()/1000) + (body.expires_in as number), scopes: [SCOPE], metadata: {} }
   }

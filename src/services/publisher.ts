@@ -21,6 +21,7 @@ import { decryptToken, encryptToken, generateRandomId } from '../utils/crypto'
 import { sanitizeProviderMetadata } from '../utils/provider-metadata'
 
 const BACKOFF_SECONDS = [60, 300, 900, 1800, 3600] as const
+const BLOCKED_PUBLICATION_UNKNOWN = 'Publication outcome is unknown after status checks were blocked. Check the provider and contact Divine support for manual reconciliation; do not repost.'
 
 export type ProcessCrosspostResult = {
   status: JobStatus | 'not_found'
@@ -441,6 +442,13 @@ async function handleProviderError(
   throw new PublisherRetryError(delay)
 }
 
+async function hasAcceptedPublication(env: Env, job: JobRecord): Promise<boolean> {
+  if (job.platform === 'youtube' || job.platform === 'tiktok') return Boolean(job.externalPostId)
+  if (job.platform !== 'snapchat') return false
+  const checkpoint = latestProviderResponse('snapchat', await listAttempts(env.DB, job.id))
+  return checkpoint.stage === 'spotlight_submitted' || checkpoint.stage === 'story_submitted'
+}
+
 async function handleProcessingProviderError(
   env: Env,
   job: JobRecord,
@@ -449,6 +457,37 @@ async function handleProcessingProviderError(
   now: number,
   snapchatConnection?: ConnectionRecord,
 ): Promise<ProcessCrosspostResult> {
+  // This handler runs only after a poll failed without crossing the outward
+  // POST fence. Billing cannot undo an already accepted external publication.
+  if (error.code === 'provider_payment_required' &&
+      await hasAcceptedPublication(env, job)) {
+    const retryCount = job.retryCount + 1
+    const exhausted = retryCount > MAX_RETRY_COUNT
+    const message = exhausted
+      ? BLOCKED_PUBLICATION_UNKNOWN
+      : 'Status checks require a provider billing update; the accepted publication is still unconfirmed.'
+    const delay = backoffSeconds(job.retryCount)
+    await updateOwnedJob(env, job.id, ownership, {
+      status: exhausted ? 'failed' : 'processing',
+      updatedAt: now,
+      retryCount,
+      errorCode: exhausted ? 'ambiguous_post_result' : error.code,
+      errorMessage: message,
+      nextRetryAt: exhausted ? null : now + delay,
+    })
+    await addAttempt(env, {
+      jobId: job.id,
+      platform: job.platform,
+      status: exhausted ? 'failed' : 'processing',
+      errorCode: exhausted ? 'ambiguous_post_result' : error.code,
+      errorMessage: message,
+      providerStatus: error.providerStatus,
+      now,
+    })
+    if (exhausted) return { status: 'failed' }
+    throw new PublisherRetryError(delay)
+  }
+
   if (error.code === 'needs_reauth') {
     await updateOwnedJob(env, job.id, ownership, {
       status: 'needs_reauth',
@@ -548,6 +587,19 @@ export async function processCrosspostJob(
 
   if (existing.status === 'dispatching' || existing.errorCode === 'ambiguous_post_result') {
     return { status: existing.status }
+  }
+
+  if (existing.expiresAt <= now && existing.status === 'processing' &&
+      existing.errorCode === 'provider_payment_required' && await hasAcceptedPublication(env, existing)) {
+    const expired = await updateClaimedJobStatus(env.DB, {
+      id: existing.id,
+      status: 'failed',
+      updatedAt: now,
+      errorCode: 'ambiguous_post_result',
+      errorMessage: BLOCKED_PUBLICATION_UNKNOWN,
+      nextRetryAt: null,
+    }, { status: 'processing', updatedAt: existing.updatedAt })
+    return { status: expired?.status ?? (await getJob(env.DB, existing.id))?.status ?? 'not_found' }
   }
 
   if (existing.expiresAt <= now) {

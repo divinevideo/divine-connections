@@ -274,3 +274,44 @@ it.each([
   await processCrosspostJob(env, 'job_1', { now: 3000 })
   expect(upstream).toHaveBeenCalledOnce()
 })
+
+it('keeps a Snapchat media-ready billing rejection behind the outward POST fence', async () => {
+  const { recordAttempt } = await import('../db/attempts')
+  await createOrGetJob(db, job({ platform: 'snapchat', status: 'processing', externalAccountId: profile }))
+  await recordAttempt(db, { id: 'billing-ready', jobId: 'job_1', status: 'processing', errorCode: null, errorMessage: null, providerStatus: null, providerResponseJson: JSON.stringify({ stage: 'media_ready', profileId: profile, mediaId: media, destination: 'spotlight', caption: 'Human', sourceLink: 'https://divine.video/video/' + VIDEO_EVENT_ID, mediaCreatedAt: String(Date.now()) }), createdAt: 1500 })
+  const fetchMock = vi.fn(async (_url, init) => {
+    expect(init?.method).toBe('POST')
+    return Response.json({ request_status: 'ERROR', error_code: 'BILLING' }, { status: 402 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  expect(await processCrosspostJob(env, 'job_1', { now: 2000, fenceNow: 2000 })).toEqual({ status: 'failed' })
+  expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: 'ambiguous_post_result', nextRetryAt: null })
+  await processCrosspostJob(env, 'job_1', { now: 2100 })
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+it('keeps a prepublication Snapchat refresh billing failure terminal', async () => {
+  const { recordAttempt } = await import('../db/attempts')
+  const current = (await getConnection(db, 'conn_1', PUBKEY_A))!
+  await upsertConnection(db, { ...current, tokenExpiresAt: 1000, encryptedRefreshToken: await encryptToken('synthetic-refresh', key) })
+  await createOrGetJob(db, job({ platform: 'snapchat', status: 'processing', externalAccountId: profile }))
+  await recordAttempt(db, { id: 'prepublication-refresh', jobId: 'job_1', status: 'processing', errorCode: null, errorMessage: null, providerStatus: null, providerResponseJson: JSON.stringify({ stage: 'media_ready', profileId: profile, mediaId: media, destination: 'spotlight' }), createdAt: 1500 })
+  const fetchMock = vi.fn(async () => Response.json({ request_status: 'ERROR', error_code: 'BILLING' }, { status: 402 }))
+  vi.stubGlobal('fetch', fetchMock)
+  expect(await processCrosspostJob(env, 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+  expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: 'provider_payment_required', nextRetryAt: null })
+  await processCrosspostJob(env, 'job_1', { now: 2100 })
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+it('retains public Story acceptance without a returned ID during billing-blocked readback', async () => {
+  const { recordAttempt } = await import('../db/attempts')
+  await createOrGetJob(db, job({ platform: 'snapchat', status: 'processing', externalAccountId: profile, retryCount: 5 }))
+  await recordAttempt(db, { id: 'accepted-story', jobId: 'job_1', status: 'processing', errorCode: null, errorMessage: null, providerStatus: null, providerResponseJson: JSON.stringify({ stage: 'story_submitted', profileId: profile, mediaId: media, destination: 'story', sourceLink: 'https://divine.video/video/' + VIDEO_EVENT_ID, dispatchedAt: String(Date.now()) }), createdAt: 1500 })
+  const fetchMock = vi.fn(async () => Response.json({ request_status: 'ERROR', error_code: 'BILLING' }, { status: 402 }))
+  vi.stubGlobal('fetch', fetchMock)
+  expect(await processCrosspostJob(env, 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+  expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: 'ambiguous_post_result', nextRetryAt: null })
+  await processCrosspostJob(env, 'job_1', { now: 2100 })
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})

@@ -297,3 +297,33 @@ it.each([
   const label = new Function('job', 'platformName', 'escapeHtml', 'function jobLabel(job) {' + source + ';return jobLabel(job);')
   expect(label({ platform: 'instagram', status: 'posted', instagramDestination, externalPostUrl: 'https://www.instagram.com/reel/synthetic/' }, () => 'Instagram', (value: string) => value)).toContain('>' + expected + '</a>')
 })
+
+it('shows Off after an Instagram destination save safely downgrades a stale Automatic preference', async () => {
+  const selects = html.split('function instagramDestinationSelect(')[1].split('function platformName(')[0]
+  const refresh = html.split('async function refreshAccount() {')[1].split('const FUNNELCAKE_BASE')[0]
+  const save = html.split('async function updatePreference(')[1].split("document.addEventListener('click'")[0]
+  const change = html.split("document.addEventListener('change'")[1].split('(async function boot()')[0]
+  const list = { innerHTML: '' }
+  const body = new Function('api', '$', `
+    const platforms = [{platform:'instagram',enabled:true}];
+    let connections = [{platform:'instagram',status:'needs_reauth'}];
+    let preferences = [{platform:'instagram',mode:'automatic',instagramDestination:'reel'}];
+    let session = {}, accountLoaded = true, pubkey, profile;
+    let preferenceSaves = Promise.resolve(), listener;
+    const document = { addEventListener: (_type, fn) => listener = fn };
+    const platformName = () => 'Instagram', escapeHtml = v => v;
+    const getValidSession = async () => ({}), keycastPublicKey = async () => 'synthetic';
+    const fetchProfile = async () => null, renderAccount = () => {}, renderAuthControls = () => {}, renderConnectRows = () => {}, renderVideoRows = () => {}, loadVideos = async () => {}, setStatus = () => {};
+    function instagramDestinationSelect(` + selects + 'async function refreshAccount() {' + refresh + 'async function updatePreference(' + save + "document.addEventListener('change'" + change + `
+    return async () => { await listener({target:{dataset:{instagramDefault:'true'},value:'story'}}); return preferences; };
+  `)
+  let saved: unknown
+  const run = body(async (path: string, init?: RequestInit) => {
+    if (init) { saved = JSON.parse(String(init.body)); return { preference: saved } }
+    if (path === '/connections') return { connections: [{ platform: 'instagram', status: 'needs_reauth' }] }
+    return { preferences: [{ platform: 'instagram', ...(saved as object) }] }
+  }, () => list)
+  expect(await run()).toMatchObject([{ mode: 'disabled', instagramDestination: 'story' }])
+  expect(list.innerHTML).toContain('<option value="disabled" selected>Off</option>')
+  expect(list.innerHTML).not.toContain('<option value="automatic" selected>Automatic</option>')
+})
