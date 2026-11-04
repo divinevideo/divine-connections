@@ -123,3 +123,50 @@ it('shows reconnect requirements and provider trouble in the signed-in connectio
   expect(list.innerHTML).toContain('Reconnect')
   expect(list.innerHTML).toContain('Provider is having trouble')
 })
+
+describe('Instagram defaults before connecting', () => {
+  const preferences = [{ platform: 'instagram', mode: 'automatic', instagramDestination: 'story' }]
+
+  function renderPreferences(status: string, session: object | null = {}, accountLoaded = true): string {
+    const list = { innerHTML: '' }
+    const source = html.split('function instagramDestinationSelect(')[1].split('function platformName(')[0]
+    const render = new Function('platforms', 'connections', 'preferences', 'session', 'accountLoaded', '$', 'platformName', 'escapeHtml',
+      'function instagramDestinationSelect(' + source + ';renderPreferenceRows();')
+    render([{ platform: 'instagram', enabled: true }], status === 'missing' ? [] : [{ platform: 'instagram', status }], preferences, session, accountLoaded,
+      () => list, () => 'Instagram', (value: string) => value)
+    return list.innerHTML
+  }
+
+  it.each(['missing', 'needs_reauth', 'disconnected'])('allows choosing a destination with a %s connection while posting stays disabled', (status) => {
+    const markup = renderPreferences(status)
+    const modeSelect = markup.match(/<select data-preference="instagram"[^>]*>/)?.[0]
+    const destinationSelect = markup.match(/<select aria-label="Instagram destination"[^>]*>/)?.[0]
+    expect(modeSelect).toContain('disabled')
+    expect(destinationSelect).toBeDefined()
+    expect(destinationSelect).not.toContain(' disabled')
+    expect(markup).toContain('<option value="story" selected>Story</option>')
+  })
+
+  it('hides destination controls until the signed-in account is loaded', () => {
+    expect(renderPreferences('missing', null)).not.toContain('data-instagram-default')
+    expect(renderPreferences('missing', {}, false)).not.toContain('data-instagram-default')
+  })
+
+  it.each(['missing', 'needs_reauth', 'disconnected', 'connected'])('saves a destination with the safe mode for a %s connection', async (status) => {
+    const requests: Array<{ mode: string; instagramDestination: string }> = []
+    const save = html.split('async function updatePreference(')[1].split("document.addEventListener('click'")[0]
+    const change = html.split("document.addEventListener('change'")[1].split('(async function boot()')[0]
+    const handler = new Function('connections', 'preferences', 'api', `
+      let preferenceSaves = Promise.resolve();
+      let listener;
+      const document = { addEventListener: (type, callback) => { listener = callback; } };
+      const setStatus = () => {};
+      const platformName = () => 'Instagram';
+      const refreshAccount = async () => {};
+      async function updatePreference(` + save + "document.addEventListener('change'" + change + ';return listener;')
+    const changePreference = handler(status === 'missing' ? [] : [{ platform: 'instagram', status }], preferences,
+      async (_path: string, options: RequestInit) => { requests.push(JSON.parse(String(options.body))) })
+    await changePreference({ target: { dataset: { instagramDefault: 'true' }, value: 'story' } })
+    expect(requests).toEqual([{ mode: status === 'connected' ? 'automatic' : 'disabled', instagramDestination: 'story' }])
+  })
+})
