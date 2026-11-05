@@ -91,7 +91,9 @@ export async function normalizeProviderError(platform: Platform, response: Respo
   const providerResponse = await readProviderResponse(response)
   let code: ErrorCode = 'unknown_platform_error'
 
-  if (response.status === 401 || response.status === 403 || (platform === 'instagram' && Number(asRecord(asRecord(providerResponse).error).code) === 190)) {
+  if (response.status === 402) {
+    code = 'provider_payment_required'
+  } else if (response.status === 401 || response.status === 403 || (platform === 'instagram' && Number(asRecord(asRecord(providerResponse).error).code) === 190)) {
     code = 'needs_reauth'
   } else if (response.status === 429) {
     code = 'rate_limited'

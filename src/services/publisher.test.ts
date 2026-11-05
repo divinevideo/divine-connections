@@ -159,6 +159,21 @@ describe('publisher service', () => {
     vi.stubGlobal('fetch', fetchMock)
   })
 
+  it.each(['queued', 'processing'] as const)('stops X billing failures from %s without retrying on redelivery', async (status) => {
+    await seedConnectedJob(db, 'x', { status, externalPostId: status === 'processing' ? 'media-id' : null })
+    if (status === 'queued') fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])))
+    fetchMock.mockResolvedValueOnce(Response.json({ type: 'Payment Required', message: 'credits depleted private-billing-sentinel' }, { status: 402 }))
+
+    await expect(processCrosspostJob(platformEnv(db, 'x'), 'job_1', { now: 2000 })).resolves.toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'failed', errorCode: 'provider_payment_required', nextRetryAt: null, retryCount: 0 })
+    expect(await listAttempts(db, 'job_1')).toEqual([expect.objectContaining({ errorCode: 'provider_payment_required', providerStatus: 402, providerResponseJson: null })])
+    expect(JSON.stringify(await getJob(db, 'job_1'))).not.toContain('private-billing-sentinel')
+    const requestCount = fetchMock.mock.calls.length
+    await expect(processCrosspostJob(platformEnv(db, 'x'), 'job_1', { now: 2100 })).resolves.toEqual({ status: 'failed' })
+    expect(fetchMock.mock.calls).toHaveLength(requestCount)
+    expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
+  })
+
   it('publishes the immutable Instagram destination after its saved default changes', async () => {
     await seedConnectedJob(db, 'instagram', { instagramDestination: 'story' })
     await setPreference(db, { pubkey: PUBKEY_A, platform: 'instagram', connectionId: 'conn_1', mode: 'manual', automaticEnabledAt: null, createdAt: 1000, updatedAt: 2000, instagramDestination: 'reel_feed' })

@@ -40,3 +40,9 @@ it('recognizes Instagram invalid or expired tokens even when Meta returns HTTP 4
   const error = await normalizeProviderError('instagram', Response.json({ error: { code: 190, error_subcode: 463, message: 'Session has expired' } }, { status: 400 }))
   expect(error.code).toBe('needs_reauth')
 })
+
+it.each(['x', 'instagram', 'tiktok', 'youtube'] as const)('classifies %s HTTP 402 independently of the provider body', async (platform) => {
+  const error = await normalizeProviderError(platform, Response.json({ error: { message: 'invalid_media private-sentinel' } }, { status: 402 }))
+  expect(error).toMatchObject({ code: 'provider_payment_required', providerStatus: 402, platform })
+  expect(error.message).not.toContain('private-sentinel')
+})

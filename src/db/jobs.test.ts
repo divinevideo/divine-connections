@@ -24,6 +24,12 @@ describe('job repository', () => {
     await upsertConnection(db, connection({ id: 'conn_1' }))
   })
 
+  it('does not reclaim a billing failure even on direct duplicate delivery', async () => {
+    await createOrGetJob(db, job({ id: 'billing-failed', status: 'failed', errorCode: 'provider_payment_required', nextRetryAt: null }))
+    expect(await claimJobForPublish(db, 'billing-failed', 2000)).toBeNull()
+    expect(await getJob(db, 'billing-failed')).toMatchObject({ status: 'failed', errorCode: 'provider_payment_required' })
+  })
+
   it('returns created false for duplicate idempotency input', async () => {
     const first = await createOrGetJob(db, job({ id: 'job_original' }))
     const duplicate = await createOrGetJob(db, job({ id: 'job_duplicate', caption: 'ignored duplicate caption' }))
