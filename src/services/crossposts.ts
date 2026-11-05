@@ -248,7 +248,9 @@ async function createJobsForConnections(
       sourceMediaUrl: input.snapshot.mediaUrl,
       sourceMediaHash: input.snapshot.mediaHash,
       // TikTok text was explicitly edited/confirmed; preserve it exactly.
-      // Other providers retain their existing enqueue-time attribution.
+      // Snapchat carries the source link as a post attachment, so Spotlight
+      // gets only the first 160 characters of text. Other providers retain
+      // their existing enqueue-time attribution.
       caption: connection.platform === 'snapchat' ? [...input.snapshot.caption].slice(0, 160).join('') : connection.platform === 'tiktok' && input.tiktokPostOptions ? input.tiktokPostOptions.confirmedCaption : buildCrosspostCaption({
         caption: input.snapshot.caption,
         eventId: input.eventId,

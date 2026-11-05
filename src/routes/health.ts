@@ -581,7 +581,7 @@ export function renderHome(env: Env): string {
             <h1 id="headline">Send your loops farther.</h1>
             <p>
               Crossposter lets Divine creators choose where their original videos travel next:
-              Reels, TikTok, X, Shorts, and Snapchat. You connect the account. You choose manual or automatic.
+              Reels, TikTok, X, YouTube, and Snapchat. You connect the account. You choose manual or automatic.
             </p>
           </div>
           <div class="actions" aria-label="Service links">

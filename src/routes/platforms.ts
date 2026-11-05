@@ -37,7 +37,7 @@ function platformName(platform: string): string {
       return 'X'
     case 'snapchat': return 'Snapchat'
     case 'youtube':
-      return 'YouTube Shorts'
+      return 'YouTube'
     default:
       return platform
   }
