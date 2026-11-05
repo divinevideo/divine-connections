@@ -2,21 +2,6 @@
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 export type Platform = 'instagram' | 'tiktok' | 'x' | 'youtube'
 
-export type VerificationPlatform =
-  | 'x' | 'instagram' | 'tiktok' | 'youtube'
-  | 'bluesky' | 'github' | 'mastodon' | 'telegram' | 'discord'
-
-export interface VerificationRecord {
-  pubkey: string
-  platform: VerificationPlatform
-  identity: string
-  method: 'oauth' | 'proof-post'
-  proofUrl: string | null
-  connectionId: string | null
-  verifiedAt: number
-  revokedAt: number | null
-}
-
 export type InstagramDestination = 'story' | 'reel' | 'reel_feed'
 
 export type PreferenceMode = 'manual' | 'automatic' | 'disabled'
@@ -46,7 +31,6 @@ export type ErrorCode =
 
 export type Env = {
   DB: D1Database
-  CACHE_KV: KVNamespace
   CROSSPOST_QUEUE: Queue<{ jobId: string }>
   CROSSPOST_DLQ?: Queue<unknown>
   RELEASE_SHA?: string
@@ -77,10 +61,6 @@ export type Env = {
    */
   CROSSPOST_ATTRIBUTION_TEMPLATE?: string
   YOUTUBE_DEFAULT_PRIVACY_STATUS?: string
-  GITHUB_TOKEN?: string
-  YOUTUBE_API_KEY?: string
-  DISCORD_BOT_TOKEN?: string
-  DISCORD_VERIFY_CHANNEL_ID?: string
 }
 
 export type OAuthStateRecord = {

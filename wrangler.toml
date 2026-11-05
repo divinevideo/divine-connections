@@ -1,23 +1,22 @@
-# Deployed onto the worker previously called divine-crossposter, rather than a
+# Deployed onto the existing worker named divine-crossposter, rather than a
 # new one. Cloudflare secrets are attached to a worker name and cannot be read
-# back, and TOKEN_ENCRYPTION_KEY exists only here — it is not derivable, and it
-# decrypts every stored OAuth token in the shared D1. Deploying the merged code
-# onto this worker inherits that key, along with the Twitter and Instagram
-# credentials, instead of stranding them on a service we are retiring.
+# back. TOKEN_ENCRYPTION_KEY is not derivable, and it decrypts every stored
+# OAuth token in D1. Deploying this code onto this worker keeps that key, along
+# with the Twitter and Instagram credentials, instead of needing every value
+# installed again on a new worker.
 #
-# The name is therefore historical. This worker serves the whole merged
-# product: verification, badge reads, connections, and crossposting.
+# The worker keeps that name; it now serves crossposting only.
 name = "divine-crossposter"
 main = "src/index.ts"
 compatibility_date = "2025-09-06"
 
-# Both public hostnames. verify.divine.video is one of the two redirect URIs
-# keycast has registered for this client — it matches them as whole strings —
-# so sign-in only works from a host in this set.
-#
-# TODO(#2): verifier.divine.video still points at the legacy verifier worker.
-# It cannot move until DISCORD_BOT_TOKEN is installed here, or Discord
-# verification regresses for anyone using that hostname.
+# verify.divine.video served the verification copy this worker used to carry.
+# It stays routed here only to redirect to the live verifier
+# (verifier.divine.video) until the cutover finishes: Keycast still lists
+# https://verify.divine.video/ as a sign-in return address for the
+# 'Divine Identity Verification' client.
+# TODO(#2): once Keycast no longer lists it, drop this domain and the redirect
+# in src/index.ts.
 routes = [
   { pattern = "crossposter.divine.video", custom_domain = true },
   { pattern = "verify.divine.video", custom_domain = true }
@@ -34,23 +33,14 @@ INSTAGRAM_CLIENT_ID = "1495112838545237"
 ENABLE_TIKTOK = "false"
 ENABLE_X = "true"
 ENABLE_YOUTUBE = "false"
-# Discord channel whose messages count as verification proof posts.
-DISCORD_VERIFY_CHANNEL_ID = "1484771306179133582"
 
-# Multi-worker binding on the existing crossposter database: live connections
-# carry over, no data migration. Migrations (incl. the verifications table)
-# land on this shared database.
+# Binding to the existing crossposter database: live connections carry over,
+# no data migration. Migrations in this repo apply to this database.
 [[d1_databases]]
 binding = "DB"
 database_name = "divine-crossposter"
 database_id = "8e84ca74-0dab-40cc-a8d7-b5cf03f32287"
 migrations_dir = "migrations"
-
-# One KV namespace shared by negative verify results, NIP-05 results, and
-# rate-limit windows. D1 owns success state; KV never holds successes.
-[[kv_namespaces]]
-binding = "CACHE_KV"
-id = "df90f1ec70df4d16bfa39e26d60a9f1c"
 
 [[queues.producers]]
 binding = "CROSSPOST_QUEUE"

@@ -4,9 +4,8 @@ import { listConnections, upsertConnection } from '../db/connections'
 import { createOAuthAttempt, getOAuthAttempt } from '../db/oauth-attempts'
 import { createOAuthState } from '../db/oauth-states'
 import { getPreferences, setPreference } from '../db/preferences'
-import { findLiveVerification, upsertOauthVerificationStatement } from '../db/verifications'
 import { NIP98_TEST_PUBKEY, nip98Header, signNip98Event } from '../auth/test-helpers'
-import { applyMigrations, connection, PUBKEY_A } from '../db/test-helpers'
+import { applyMigrations, connection, PUBKEY_A, PUBKEY_B, verificationRows } from '../db/test-helpers'
 import { decryptToken } from '../utils/crypto'
 import { transitionAttempt } from '../services/connections'
 import type { Env, Platform } from '../types'
@@ -14,7 +13,7 @@ import type { Env, Platform } from '../types'
 function testEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
     DB: db,
-    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
@@ -600,60 +599,77 @@ describe('connection routes', () => {
     expect(response.headers.get('location')).toContain('connection=connected')
   })
 
-  it('writes a live oauth verification row after a successful X callback', async () => {
-    await createTrackedState(db, { attemptId: 'oauth_attempt_verify_x', stateId: 'private-state-verify-x' })
-    mockSuccessfulXCallback(fetchMock)
+  // Titled through %s, which prints the name bare; $name would add quotes.
+  it.each([
+    {
+      name: 'X',
+      platform: 'x' as const,
+      externalAccountId: 'x-account-1',
+      overrides: {},
+      mockProvider: (fetchMock: ReturnType<typeof vi.fn>) => mockSuccessfulXCallback(fetchMock),
+    },
+    {
+      name: 'YouTube',
+      platform: 'youtube' as const,
+      externalAccountId: 'UCdivinechannel123',
+      overrides: { ENABLE_YOUTUBE: 'true', GOOGLE_CLIENT_ID: 'google-client', GOOGLE_CLIENT_SECRET: 'google-secret' },
+      mockProvider: (fetchMock: ReturnType<typeof vi.fn>) =>
+        fetchMock
+          .mockResolvedValueOnce(
+            Response.json({
+              access_token: 'google-access-token',
+              refresh_token: 'google-refresh-token',
+              expires_in: 3_600,
+              scope: 'https://www.googleapis.com/auth/youtube.upload',
+            }),
+          )
+          .mockResolvedValueOnce(
+            Response.json({ items: [{ id: 'UCdivinechannel123', snippet: { title: 'Divine Channel' } }] }),
+          ),
+    },
+  ].map((testCase) => [testCase.name, testCase] as const))('a completed %s connect writes no verifications row', async (_name, testCase) => {
+    const attemptId = `oauth_attempt_no_badge_${testCase.platform}`
+    const stateId = `private-state-no-badge-${testCase.platform}`
+    await createTrackedState(db, { attemptId, stateId, platform: testCase.platform })
+    testCase.mockProvider(fetchMock)
 
     const response = await app.request(
-      '/connections/x/callback?code=private-auth-code&state=private-state-verify-x',
+      `/connections/${testCase.platform}/callback?code=private-auth-code&state=${stateId}`,
+      {},
+      testEnv(db, testCase.overrides),
+    )
+
+    expect(response.headers.get('location')).toContain('connection=connected')
+    await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([
+      { platform: testCase.platform, externalAccountId: testCase.externalAccountId, status: 'connected' },
+    ])
+    await expect(getOAuthAttempt(db, attemptId)).resolves.toMatchObject({ status: 'connected' })
+    await expect(verificationRows(db)).resolves.toEqual([])
+  })
+
+  it('reconnecting the same account succeeds and writes no verifications row', async () => {
+    await createTrackedState(db, { attemptId: 'oauth_attempt_first', stateId: 'private-state-first' })
+    await createTrackedState(db, { attemptId: 'oauth_attempt_again', stateId: 'private-state-again' })
+    mockSuccessfulXCallback(fetchMock)
+    mockSuccessfulXCallback(fetchMock)
+
+    const first = await app.request(
+      '/connections/x/callback?code=private-auth-code&state=private-state-first',
+      {},
+      testEnv(db),
+    )
+    const [original] = await listConnections(db, PUBKEY_A)
+    const again = await app.request(
+      '/connections/x/callback?code=private-auth-code&state=private-state-again',
       {},
       testEnv(db),
     )
 
-    expect(response.headers.get('location')).toContain('connection=connected')
-    const [stored] = await listConnections(db, PUBKEY_A)
-    await expect(findLiveVerification(db, PUBKEY_A, 'x', 'divine')).resolves.toMatchObject({
-      method: 'oauth',
-      connectionId: stored.id,
-      revokedAt: null,
-    })
-  })
-
-  it('verifies YouTube by channel id, not channel title', async () => {
-    await createTrackedState(db, {
-      attemptId: 'oauth_attempt_verify_youtube',
-      stateId: 'private-state-verify-youtube',
-      platform: 'youtube',
-    })
-    fetchMock
-      .mockResolvedValueOnce(
-        Response.json({
-          access_token: 'google-access-token',
-          refresh_token: 'google-refresh-token',
-          expires_in: 3_600,
-          scope: 'https://www.googleapis.com/auth/youtube.upload',
-        }),
-      )
-      .mockResolvedValueOnce(
-        Response.json({ items: [{ id: 'UCdivinechannel123', snippet: { title: 'Divine Channel' } }] }),
-      )
-
-    const response = await app.request(
-      '/connections/youtube/callback?code=private-auth-code&state=private-state-verify-youtube',
-      {},
-      testEnv(db, {
-        ENABLE_YOUTUBE: 'true',
-        GOOGLE_CLIENT_ID: 'google-client',
-        GOOGLE_CLIENT_SECRET: 'google-secret',
-      }),
-    )
-
-    expect(response.headers.get('location')).toContain('connection=connected')
-    await expect(findLiveVerification(db, PUBKEY_A, 'youtube', 'UCdivinechannel123')).resolves.toMatchObject({
-      method: 'oauth',
-      revokedAt: null,
-    })
-    await expect(findLiveVerification(db, PUBKEY_A, 'youtube', 'Divine Channel')).resolves.toBeNull()
+    expect(first.headers.get('location')).toContain('connection=connected')
+    expect(again.headers.get('location')).toContain('connection=connected')
+    await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([{ id: original.id, status: 'connected' }])
+    await expect(getOAuthAttempt(db, 'oauth_attempt_again')).resolves.toMatchObject({ status: 'connected' })
+    await expect(verificationRows(db)).resolves.toEqual([])
   })
 
   it.each([
@@ -914,40 +930,166 @@ describe('connection routes', () => {
     ])
   })
 
-  it('revokes verifications atomically on explicit disconnect', async () => {
-    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x' }))
-    await upsertConnection(db, connection({ id: 'conn_2', externalAccountId: 'external-account-2' }))
-    await setPreference(db, {
-      pubkey: PUBKEY_A,
-      platform: 'x',
-      connectionId: 'conn_1',
-      mode: 'automatic',
-      automaticEnabledAt: 1_500,
-      createdAt: 1_000,
-      updatedAt: 1_500,
-    })
-    await db.batch([
-      upsertOauthVerificationStatement(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'alice', connectionId: 'conn_1', verifiedAt: 1_000 }),
-      upsertOauthVerificationStatement(db, { pubkey: PUBKEY_A, platform: 'tiktok', identity: 'alice.t', connectionId: 'conn_2', verifiedAt: 1_000 }),
-    ])
-    fetchMock.mockResolvedValueOnce(authResponse())
+  // Badge rows the verification copy wrote on connect, and migration 0006
+  // backfilled. Disconnect marks the account's row revoked.
+  async function insertVerification(
+    db: D1Database,
+    row: {
+      pubkey: string
+      platform: string
+      identity: string
+      identityKey: string
+      connectionId: string | null
+      revokedAt?: number
+      proofUrl?: string
+    },
+  ): Promise<void> {
+    await db
+      .prepare(
+        `INSERT INTO verifications (pubkey, platform, identity, identity_key, method, proof_url, connection_id, verified_at, revoked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1000, ?)`,
+      )
+      .bind(
+        row.pubkey,
+        row.platform,
+        row.identity,
+        row.identityKey,
+        row.proofUrl ? 'proof-post' : 'oauth',
+        row.proofUrl ?? null,
+        row.connectionId,
+        row.revokedAt ?? null,
+      )
+      .run()
+  }
 
-    const response = await app.request(
-      '/connections/x/conn_1',
+  const DISCONNECTED_AT = Math.floor(Date.parse('2026-07-07T00:00:00.000Z') / 1000)
+
+  async function disconnect(db: D1Database, platform: Platform, id: string, overrides: Partial<Env> = {}): Promise<Response> {
+    fetchMock.mockResolvedValueOnce(authResponse())
+    return app.request(
+      `/connections/${platform}/${id}`,
       { method: 'DELETE', headers: { authorization: 'Bearer keycast-token' } },
-      testEnv(db),
+      testEnv(db, overrides),
     )
+  }
+
+  it('disconnect revokes the account badge row and leaves other rows live', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountName: 'Alice' }))
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'Alice', identityKey: 'alice', connectionId: 'conn_1' })
+    await insertVerification(db, { pubkey: PUBKEY_B, platform: 'x', identity: 'alice', identityKey: 'alice', connectionId: 'conn_b' })
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'tiktok', identity: 'alice', identityKey: 'alice', connectionId: 'conn_2' })
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'bob', identityKey: 'bob', connectionId: 'conn_bob' })
+
+    const response = await disconnect(db, 'x', 'conn_1')
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ disconnected: true })
+    await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([{ id: 'conn_1', status: 'disconnected' }])
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { pubkey: PUBKEY_A, platform: 'tiktok', identity_key: 'alice', revoked_at: null },
+      { pubkey: PUBKEY_A, platform: 'x', identity_key: 'alice', revoked_at: DISCONNECTED_AT },
+      { pubkey: PUBKEY_A, platform: 'x', identity_key: 'bob', revoked_at: null },
+      { pubkey: PUBKEY_B, platform: 'x', identity_key: 'alice', revoked_at: null },
+    ])
+  })
+
+  // A reconnect keeps the original connection id, but the badge row it wrote
+  // recorded a fresh id that no connection has.
+  it('disconnect revokes the badge row even when it recorded another connection id', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountName: 'alice' }))
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'alice', identityKey: 'alice', connectionId: 'conn_from_reconnect' })
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { connection_id: 'conn_from_reconnect', revoked_at: DISCONNECTED_AT },
+    ])
+  })
+
+  // YouTube badges name the channel id, whose case is significant. The row
+  // carries a reconnect's fresh id, so only the channel id can match it.
+  it('disconnect revokes a YouTube badge by channel id, matching its case exactly', async () => {
+    await upsertConnection(
+      db,
+      connection({ id: 'conn_yt', platform: 'youtube', externalAccountId: 'UCdivineChannel', externalAccountName: 'Divine Channel' }),
+    )
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'youtube', identity: 'UCdivineChannel', identityKey: 'UCdivineChannel', connectionId: 'conn_from_reconnect' })
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'youtube', identity: 'ucdivinechannel', identityKey: 'ucdivinechannel', connectionId: 'conn_other_channel' })
+
+    const response = await disconnect(db, 'youtube', 'conn_yt')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { identity_key: 'UCdivineChannel', revoked_at: DISCONNECTED_AT },
+      { identity_key: 'ucdivinechannel', revoked_at: null },
+    ])
+  })
+
+  // The connect upsert keeps the connection id but stores the new handle, so
+  // the badge row written under the old handle is found by connection id.
+  it('disconnect revokes the badge row of a handle the account had before a reconnect', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountId: 'x-account-1', externalAccountName: 'oldname' }))
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'oldname', identityKey: 'oldname', connectionId: 'conn_1' })
+    await createTrackedState(db, { attemptId: 'oauth_attempt_rename', stateId: 'private-state-rename' })
+    mockSuccessfulXCallback(fetchMock)
+    const reconnect = await app.request(
+      '/connections/x/callback?code=private-auth-code&state=private-state-rename',
+      {},
+      testEnv(db),
+    )
+    expect(reconnect.headers.get('location')).toContain('connection=connected')
     await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([
-      { id: 'conn_1', status: 'disconnected' },
-      { id: 'conn_2', status: 'connected' },
+      { id: 'conn_1', externalAccountName: 'divine', status: 'connected' },
     ])
-    await expect(getPreferences(db, PUBKEY_A)).resolves.toMatchObject([
-      { platform: 'x', connectionId: null, mode: 'disabled', automaticEnabledAt: null },
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { identity_key: 'oldname', connection_id: 'conn_1', revoked_at: DISCONNECTED_AT },
     ])
-    await expect(findLiveVerification(db, PUBKEY_A, 'x', 'alice')).resolves.toBeNull()
-    await expect(findLiveVerification(db, PUBKEY_A, 'tiktok', 'alice.t')).resolves.toMatchObject({ revokedAt: null })
+  })
+
+  // Only badges a sign-in connection wrote are tied to it. A proof post shows
+  // the account separately, even when the row also carries the connection id.
+  it('disconnect leaves a proof-post badge row for the same account live', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountName: 'alice' }))
+    await insertVerification(db, {
+      pubkey: PUBKEY_A,
+      platform: 'x',
+      identity: 'alice',
+      identityKey: 'alice',
+      connectionId: 'conn_1',
+      proofUrl: 'https://x.com/alice/status/1',
+    })
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([
+      { identity_key: 'alice', method: 'proof-post', revoked_at: null },
+    ])
+  })
+
+  it('disconnect keeps the date on a badge row that was already revoked', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x', externalAccountName: 'alice' }))
+    await insertVerification(db, { pubkey: PUBKEY_A, platform: 'x', identity: 'alice', identityKey: 'alice', connectionId: 'conn_1', revokedAt: 1_500 })
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(verificationRows(db)).resolves.toMatchObject([{ identity_key: 'alice', revoked_at: 1_500 }])
+  })
+
+  it('disconnect succeeds when the account has no badge row', async () => {
+    await upsertConnection(db, connection({ id: 'conn_1', platform: 'x' }))
+
+    const response = await disconnect(db, 'x', 'conn_1')
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ disconnected: true })
+    await expect(listConnections(db, PUBKEY_A)).resolves.toMatchObject([{ id: 'conn_1', status: 'disconnected' }])
+    await expect(verificationRows(db)).resolves.toEqual([])
   })
 })

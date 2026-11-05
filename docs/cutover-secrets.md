@@ -1,63 +1,53 @@
-# Finishing the merge: where every secret currently lives
+# Crossposter secrets: what the worker reads and where each comes from
 
-The merge moved the **code** into `divine-connections` but none of the
-**configuration**. Every credential still sits on one of the two workers the
-merge is supposed to retire, which is why the merged worker serves a crippled
-version of the product: Discord and YouTube report unsupported, Quick Connect
-renders empty and is omitted, and every user is pushed down the manual
-proof-post path.
+This repo deploys onto the Cloudflare worker named `divine-crossposter`, so it
+uses the secrets attached to that worker name (the header of `wrangler.toml`
+explains why). This file lists every secret the code reads and where its value
+comes from. It does not record which ones are installed today; run
+`npx wrangler secret list` for that.
 
-## Inventory, as of the last check
+Identity verification, and any secret it needs, is not part of this worker for
+now. It runs in the verifier service at `verifier.divine.video`
+(`divinevideo/divine-identify-verification-service`); see
+divinevideo/divine-connections#2. `verify.divine.video` still routes to this
+worker and redirects to the verifier until the cutover finishes.
 
-| secret | lives on | `divine-connections` | unlocks |
-|---|---|---|---|
-| `TOKEN_ENCRYPTION_KEY` | crossposter | missing | **all** OAuth account linking, crossposting |
-| `TWITTER_CLIENT_ID` | crossposter | missing | X Quick Connect |
-| `TWITTER_CLIENT_SECRET` | crossposter | missing | X Quick Connect |
-| `INSTAGRAM_CLIENT_SECRET` | crossposter | missing | Instagram Quick Connect |
-| `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` | crossposter | missing | Instagram webhooks |
-| `DISCORD_BOT_TOKEN` | legacy verifier | missing | Discord proof verification |
-| `TIKTOK_CLIENT_KEY` | legacy verifier | missing | TikTok Quick Connect |
-| `TIKTOK_CLIENT_SECRET` | legacy verifier | missing | TikTok Quick Connect |
-| `OAUTH_REDIRECT_BASE` | legacy verifier | set as a var | OAuth callbacks |
-| `YOUTUBE_API_KEY` | nowhere | missing | YouTube proof verification |
-| `GOOGLE_CLIENT_ID` / `_SECRET` | nowhere | missing | YouTube Quick Connect |
+## Inventory
 
-`GITHUB_TOKEN` is deliberately absent: GitHub verification reads the gist CDN
-and needs no credential.
+| secret | needed for | where the value comes from |
+|---|---|---|
+| `TOKEN_ENCRYPTION_KEY` | **all** OAuth connections and crossposting | the key already installed on the worker, if there is one; it cannot be read back. See below |
+| `TWITTER_CLIENT_ID` / `_SECRET` | connecting X | X developer portal, the OAuth 2.0 app |
+| `INSTAGRAM_CLIENT_SECRET` | connecting Instagram | Meta app dashboard (the Instagram business login product, app id `1495112838545237`, already set as a var) |
+| `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` | Meta's webhook subscription check on `/webhooks/instagram` | a value you choose and also enter in the Meta webhook settings |
+| `TIKTOK_CLIENT_KEY` / `_SECRET` | connecting TikTok | TikTok developer portal, Login Kit |
+| `GOOGLE_CLIENT_ID` / `_SECRET` | connecting YouTube | Google Cloud console, a web application OAuth client |
+| `OPS_ALERT_WEBHOOK_URL` | watchdog alerts; the CI deploy refuses to run without it | the ops alert receiver |
+| `OPS_OPERATOR_PUBKEYS` | the operator view at `/operations`; the CI deploy refuses to run without it | comma-separated 64-character hex pubkeys of the operators |
+
+`OAUTH_REDIRECT_BASE` and `INSTAGRAM_CLIENT_ID` are plain vars in
+`wrangler.toml`, not secrets. A provider shows as enabled only when its
+`ENABLE_*` var is `true` and its credentials are set.
 
 ## Cloudflare secrets cannot be copied
 
-They are write-only — there is no API that reads a secret back, so they cannot
-be moved worker-to-worker by any script. Every value has to come from its
-source or from wherever it was saved.
+They are write-only. No API reads a secret back, so no script can move one
+from worker to worker. Every value has to come from its source or from
+wherever it was saved.
 
-Where each one comes from:
+## `TOKEN_ENCRYPTION_KEY` needs care
 
-- `TWITTER_CLIENT_*` — X developer portal, the OAuth 2.0 app
-- `INSTAGRAM_CLIENT_SECRET` — Meta app dashboard (the Instagram business login
-  product, app id `1495112838545237`, already set as a var)
-- `TIKTOK_CLIENT_*` — TikTok developer portal, Login Kit
-- `DISCORD_BOT_TOKEN` — Discord developer portal. Nobody holds a copy, so this
-  one must be **reset** there and the new value installed on both workers.
-- `YOUTUBE_API_KEY`, `GOOGLE_CLIENT_*` — Google Cloud console. Never configured
-  anywhere, so YouTube is new work rather than a migration.
+It is not derivable, and once installed it cannot be read back. The
+`connections` table in D1 (`divine-crossposter`) stores
+`encrypted_access_token` and `encrypted_refresh_token`, and this key decrypts
+them.
 
-## `TOKEN_ENCRYPTION_KEY` is the one that needs a decision
+- **Keep it.** Leave it alone when installing other secrets; the install script
+  skips any value you leave blank.
+- **If it is ever replaced**, every existing connection must be re-linked,
+  because the stored tokens can no longer be decrypted.
 
-It exists **only inside the crossposter worker**. It is not derivable and not
-readable. Both workers bind the same D1 (`divine-crossposter`), and the
-`connections` table stores `encrypted_access_token` / `encrypted_refresh_token`.
-
-- **If you still have the value**, install it unchanged. Both workers keep
-  working against the shared database during the transition.
-- **If you do not**, generate a fresh one — but only in the same window as
-  retiring the crossposter worker, because two workers holding different keys
-  against one database is a split brain. The cost is that existing connections
-  must be re-linked. The live table currently holds **1 row**, so that cost is
-  one reconnection.
-
-Generating a fresh key:
+Generating a key, only when one is truly needed:
 
 ```bash
 openssl rand -base64 48
@@ -66,24 +56,14 @@ openssl rand -base64 48
 A mismatched key does **not** fail at deploy time. It fails later, at token
 refresh, and reads like the platform revoked access.
 
-## Order of operations
-
-1. Install the secrets below on `divine-connections`.
-2. Confirm with `npm run test:e2e` — the capability and Quick Connect
-   assertions name the exact missing secret and go green as each lands.
-3. Move `verifier.divine.video` onto `divine-connections`. Do **not** do this
-   before `DISCORD_BOT_TOKEN` is installed, or Discord verification regresses
-   for anyone using that hostname.
-4. Move `crossposter.divine.video`, enable the queue consumer and the cron in
-   `wrangler.toml`, and disable both on the crossposter worker. A queue allows
-   exactly one consumer, so these must happen together.
-5. Retire the two legacy workers.
-
-Steps 3–5 are issue #2. None of them are safe until step 1 is done.
-
 ## Installing
 
-`scripts/install-connections-secrets.sh` prompts for each value and installs
-it, skipping anything you leave blank, so it can be run repeatedly as values
-turn up. Run it in your own terminal — never paste a secret into an agent
-session or a shell that logs history.
+`scripts/install-connections-secrets.sh` prompts for `TOKEN_ENCRYPTION_KEY`
+and the X, Instagram and TikTok secrets and installs each one, skipping
+anything you leave blank, so it can be run repeatedly as values turn up.
+Install the others with `npx wrangler secret put <NAME>`. Run either in your
+own terminal, and never paste a secret into an agent session or a shell that
+logs history.
+
+After installing, check `https://crossposter.divine.video/platforms`: each
+provider reports whether its flag and credentials are both set.

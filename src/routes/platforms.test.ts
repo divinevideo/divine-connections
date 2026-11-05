@@ -5,7 +5,7 @@ import type { Env } from '../types'
 function env(overrides: Partial<Env> = {}): Env {
   return {
     DB: {} as D1Database,
-    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video/oauth',
@@ -14,8 +14,6 @@ function env(overrides: Partial<Env> = {}): Env {
   }
 }
 
-// The crossposter /platforms shapes live on the crossposter host; the fallback
-// host's /platforms belongs to the verifier surface (see dispatch.test.ts).
 function crossposterRequest(path: string, init: RequestInit, env: Env): Promise<Response> {
   return Promise.resolve(worker.fetch!(new Request(`https://crossposter.divine.video${path}`, init), env, {} as ExecutionContext))
 }

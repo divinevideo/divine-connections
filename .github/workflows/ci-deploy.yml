@@ -95,10 +95,8 @@ jobs:
 
       - name: Smoke test production
         env:
-          # The real hostnames. workers.dev is disabled on this worker, and the
-          # two surfaces are dispatched by host, so each is checked where it
-          # actually serves.
-          VERIFIER_BASE: https://verify.divine.video
+          # The real hostname. workers.dev is disabled on this worker, so it is
+          # checked where it actually serves.
           CROSSPOSTER_BASE: https://crossposter.divine.video
         run: |
           set -euo pipefail
@@ -144,17 +142,37 @@ jobs:
             exit 1
           }
 
-          check "$VERIFIER_BASE/health" '"status":"ok"'
-          check "$VERIFIER_BASE/verified/0000000000000000000000000000000000000000000000000000000000000000" '"verifications":[]'
-          check "$VERIFIER_BASE/platforms" '"GitHub"'
-          # The verify flow's own control surface: if the picker stops rendering
-          # every platform, the page has silently lost the way in.
-          check "$VERIFIER_BASE/" 'data-verify-platform="github"'
+          # Status and Location without following the redirect.
+          check_redirect() {
+            url="$1"
+            expected="$2"
+            for attempt in $(seq 1 12); do
+              actual="$(curl --silent --show-error --output /dev/null \
+                --connect-timeout 5 --max-time 20 \
+                --retry 2 --retry-all-errors \
+                --write-out '%{http_code} %{redirect_url}' \
+                "$url" || true)"
+              if [[ "$actual" == "$expected" ]]; then
+                return 0
+              fi
+              echo "Attempt $attempt failed for $url: got '$actual', expected '$expected'"
+              sleep 10
+            done
+
+            echo "Timed out waiting for $url to redirect as expected: last got '$actual', expected '$expected'" >&2
+            exit 1
+          }
+
           check "$CROSSPOSTER_BASE/health" '"ok":true'
           check "$CROSSPOSTER_BASE/health" '"service":"divine-connections"'
           check "$CROSSPOSTER_BASE/health" "\"release\":\"$GITHUB_SHA\""
-          check "$VERIFIER_BASE/health" "\"release\":\"$GITHUB_SHA\""
+          # The home page: if it stops rendering, the way in is gone. Checked
+          # after the release check so it reads the new deployment, not the old.
+          check "$CROSSPOSTER_BASE/" '<title>Divine Crossposter</title>'
           check "$CROSSPOSTER_BASE/readiness" '"ok":true'
+          # verify.divine.video only redirects to the live verifier until the
+          # cutover finishes (TODO(#2) in wrangler.toml).
+          check_redirect https://verify.divine.video/health '308 https://verifier.divine.video/health'
           check_platform_enabled "$CROSSPOSTER_BASE/api/providers" instagram
           check_platform_enabled "$CROSSPOSTER_BASE/api/providers" x
 

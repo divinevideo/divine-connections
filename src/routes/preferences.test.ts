@@ -11,7 +11,7 @@ import { nip98Header, signNip98Event } from '../auth/test-helpers'
 function testEnv(db: D1Database): Env {
   return {
     DB: db,
-    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',

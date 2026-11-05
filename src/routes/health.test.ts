@@ -7,7 +7,6 @@ import type { Env } from '../types'
 function testEnv(overrides: Partial<Env> = {}): Env {
   return {
     DB: {} as D1Database,
-    CACHE_KV: {} as KVNamespace,
     CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://login.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
@@ -58,10 +57,10 @@ describe('crossposter setup copy describes the product, not our rollout', () => 
     expect(html).not.toContain('Ready providers will unlock here')
   })
 
-  it('tells the reader that connecting also verifies the account', () => {
-    // These stopped being two products when the workers merged: a connection
-    // now writes a verification, so the page should say so.
-    expect(html).toContain('also verifies it on your Divine profile')
+  it('does not promise that connecting verifies the account', () => {
+    // Badges come from the separate verifier service. Connecting here no
+    // longer writes one, so the page must not say it does.
+    expect(html).not.toContain('verifies it on your Divine profile')
   })
 })
 
