@@ -22,6 +22,11 @@ import { sanitizeProviderMetadata } from '../utils/provider-metadata'
 
 const BACKOFF_SECONDS = [60, 300, 900, 1800, 3600] as const
 const BLOCKED_PUBLICATION_UNKNOWN = 'Publication outcome is unknown after status checks were blocked. Check the provider and contact Divine support for manual reconciliation; do not repost.'
+// Account-level blocks that stop status checks but cannot undo an accepted publication.
+const STATUS_CHECK_BLOCKED: Partial<Record<ErrorCode, string>> = {
+  provider_payment_required: 'Status checks require a provider billing update; the accepted publication is still unconfirmed.',
+  provider_quota_exceeded: 'Status checks are paused by provider API quota; the accepted publication is still unconfirmed.',
+}
 
 export type ProcessCrosspostResult = {
   status: JobStatus | 'not_found'
@@ -466,14 +471,12 @@ async function handleProcessingProviderError(
   requestConnection?: ConnectionRecord,
 ): Promise<ProcessCrosspostResult> {
   // This handler runs only after a poll failed without crossing the outward
-  // POST fence. Billing cannot undo an already accepted external publication.
-  if (error.code === 'provider_payment_required' &&
-      await hasAcceptedPublication(env, job)) {
+  // POST fence. Billing or quota cannot undo an already accepted external publication.
+  const blockedMessage = STATUS_CHECK_BLOCKED[error.code]
+  if (blockedMessage && await hasAcceptedPublication(env, job)) {
     const retryCount = job.retryCount + 1
     const exhausted = retryCount > MAX_RETRY_COUNT
-    const message = exhausted
-      ? BLOCKED_PUBLICATION_UNKNOWN
-      : 'Status checks require a provider billing update; the accepted publication is still unconfirmed.'
+    const message = exhausted ? BLOCKED_PUBLICATION_UNKNOWN : blockedMessage
     const delay = backoffSeconds(job.retryCount)
     await updateOwnedJob(env, job.id, ownership, {
       status: exhausted ? 'failed' : 'processing',
@@ -597,8 +600,8 @@ export async function processCrosspostJob(
     return { status: existing.status }
   }
 
-  if (existing.expiresAt <= now && existing.status === 'processing' &&
-      existing.errorCode === 'provider_payment_required' && await hasAcceptedPublication(env, existing)) {
+  if (existing.expiresAt <= now && existing.status === 'processing' && existing.errorCode &&
+      STATUS_CHECK_BLOCKED[existing.errorCode] && await hasAcceptedPublication(env, existing)) {
     const expired = await updateClaimedJobStatus(env.DB, {
       id: existing.id,
       status: 'failed',

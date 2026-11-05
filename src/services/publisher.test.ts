@@ -183,8 +183,21 @@ describe('publisher service', () => {
     expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
   })
 
-  it('ends an accepted billing-blocked upload as unknown when its polling window expires', async () => {
-    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01', errorCode: 'provider_payment_required', expiresAt: 2000 })
+  it('keeps an accepted YouTube upload processing through poll quota exhaustion and ends unknown without re-uploading', async () => {
+    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01' })
+    fetchMock.mockImplementation(async () => Response.json({ error: { code: 403, errors: [{ reason: 'quotaExceeded' }], message: 'synthetic upstream detail' } }, { status: 403 }))
+    await expect(processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000 })).rejects.toBeInstanceOf(PublisherRetryError)
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'processing', externalPostId: 'synthetic01', errorCode: 'provider_quota_exceeded', retryCount: 1, nextRetryAt: 2060 })
+    expect((await getJob(db, 'job_1'))?.errorMessage).toContain('still unconfirmed')
+    await updateJobStatus(db, { id: 'job_1', status: 'processing', retryCount: 5, nextRetryAt: 2100, updatedAt: 2000 })
+    expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2100 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'failed', externalPostId: 'synthetic01', errorCode: 'ambiguous_post_result', nextRetryAt: null })
+    expect(fetchMock.mock.calls.every(([url]) => String(url).startsWith('https://www.googleapis.com/youtube/v3/videos?'))).toBe(true)
+    expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
+  })
+
+  it.each(['provider_payment_required', 'provider_quota_exceeded'] as const)('ends an accepted %s-blocked upload as unknown when its polling window expires', async (errorCode) => {
+    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01', errorCode, expiresAt: 2000 })
     expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
     expect(await getJob(db, 'job_1')).toMatchObject({ externalPostId: 'synthetic01', errorCode: 'ambiguous_post_result', nextRetryAt: null })
     expect(fetchMock).not.toHaveBeenCalled()
