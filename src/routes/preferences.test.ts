@@ -107,7 +107,7 @@ describe('preference routes', () => {
     expect(await getPreferences(db, PUBKEY_A)).toEqual([])
   })
 
-  it.each([['instagram', 'post'], ['instagram', null], ['x', 'story']])('rejects invalid destination %s %s without saving a preference', async (platform, instagramDestination) => {
+  it.each([['instagram', 'post'], ['instagram', null], ['x', 'story'], ['tiktok', 'story']])('rejects invalid destination %s %s without saving a preference', async (platform, instagramDestination) => {
     fetchMock.mockImplementation(async () => authResponse())
     const response = await app.request('/preferences/' + platform, { method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'disabled', instagramDestination }) }, testEnv(db))
     expect(response.status).toBe(400)

@@ -14,6 +14,24 @@ export class ConnectionTokenReauthError extends PlatformAdapterError {
   }
 }
 
+// Match the publisher reconciler's five-minute stale-claim lease. The first
+// rejection CAS sets updatedAt once; pending reads never extend this deadline.
+const REFRESH_RECONCILIATION_SECONDS = 5 * 60
+
+export class ConnectionTokenRefreshPendingError extends ConnectionTokenReauthError {
+  constructor(platform: Platform, public readonly retryAt: number, providerStatus?: number) {
+    super(platform, 'Waiting for a concurrent token refresh', providerStatus)
+  }
+}
+
+function pendingRefreshReconciliation(previous: ConnectionRecord, current: ConnectionRecord | null, now: number, providerStatus?: number): ConnectionTokenRefreshPendingError | null {
+  if (!current || current.status !== 'needs_reauth' || !sameConnectionSelection(previous, current) ||
+      !previous.encryptedRefreshToken || previous.tokenExpiresAt === null || previous.tokenExpiresAt > now + 60 ||
+      previous.encryptedAccessToken !== current.encryptedAccessToken || previous.encryptedRefreshToken !== current.encryptedRefreshToken) return null
+  const retryAt = current.updatedAt + REFRESH_RECONCILIATION_SECONDS
+  return now < retryAt ? new ConnectionTokenRefreshPendingError(current.platform, retryAt, providerStatus) : null
+}
+
 /** Snapchat metadata contains the selected profile confirmation revision. */
 export function sameConnectionSelection(expected: ConnectionRecord, current: ConnectionRecord): boolean {
   return current.id === expected.id &&
@@ -50,8 +68,12 @@ export async function usableConnectionToken(env: Env, connection: ConnectionReco
 /** Return the exact persisted revision used, including a successful or winning refresh. */
 export async function usableConnectionCredentials(env: Env, connection: ConnectionRecord, now = Math.floor(Date.now() / 1000)): Promise<ConnectionCredentials> {
   const current = await getConnection(env.DB, connection.id, connection.pubkey)
-  if (!current || current.status !== 'connected' || !sameConnectionSelection(connection, current)) {
+  if (!current || !sameConnectionSelection(connection, current)) {
     throw new ConnectionTokenReauthError(connection.platform, 'Reconnect the platform account')
+  }
+  if (current.status !== 'connected') {
+    throw pendingRefreshReconciliation(connection, current, now) ??
+      new ConnectionTokenReauthError(connection.platform, 'Reconnect the platform account')
   }
   if (current.tokenExpiresAt === null || current.tokenExpiresAt > now + 60) {
     return { accessToken: await decryptToken(current.encryptedAccessToken, env.TOKEN_ENCRYPTION_KEY), connection: current }
@@ -73,10 +95,13 @@ export async function usableConnectionCredentials(env: Env, connection: Connecti
     const encryptedRefresh = tokens.refreshToken
       ? await encryptToken(tokens.refreshToken, env.TOKEN_ENCRYPTION_KEY)
       : current.encryptedRefreshToken
+    // A competing refresh may reject the rotated old grant before this success
+    // arrives. Recover only that same pair; disconnects and changed selections
+    // or credentials must still prevent the update.
     const result = await env.DB.prepare(`UPDATE connections
-      SET encrypted_access_token = ?, encrypted_refresh_token = ?, token_expires_at = ?, last_refresh_at = ?, updated_at = ?
+      SET status = 'connected', encrypted_access_token = ?, encrypted_refresh_token = ?, token_expires_at = ?, last_refresh_at = ?, updated_at = ?
       WHERE id = ? AND pubkey = ? AND platform = ? AND external_account_id = ?
-        AND status = 'connected' AND encrypted_access_token = ? AND encrypted_refresh_token = ?
+        AND status IN ('connected', 'needs_reauth') AND encrypted_access_token = ? AND encrypted_refresh_token = ?
         AND (? != 'snapchat' OR metadata_json = ?)`)
       .bind(encryptedAccess, encryptedRefresh, tokens.expiresAt ?? null, now, now,
         current.id, current.pubkey, current.platform, current.externalAccountId,
@@ -101,6 +126,11 @@ export async function usableConnectionCredentials(env: Env, connection: Connecti
       }
       const winner = await winningConnectionToken(env, current, now)
       if (winner) return winner
+      if (!(error instanceof ConnectionTokenReauthError)) {
+        const rejected = await getConnection(env.DB, current.id, current.pubkey)
+        const pending = pendingRefreshReconciliation(current, rejected, now, error.providerStatus)
+        if (pending) throw pending
+      }
       throw new ConnectionTokenReauthError(current.platform, error.message, error.providerStatus)
     }
     throw error

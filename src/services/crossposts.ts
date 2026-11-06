@@ -286,9 +286,16 @@ async function requireManualConnection(env: Env, pubkey: string, platform: Platf
   return connection
 }
 
+function assertYouTubeChannel(connection: ConnectionRecord | null | undefined, value: unknown): void {
+  const confirmed = asRecord(value)
+  if (!connection || confirmed.connectionId !== connection.id || confirmed.channelId !== connection.externalAccountId) {
+    throw new HttpError(409, 'youtube_channel_changed', 'Your YouTube channel changed. Reload and confirm the selected channel before uploading.')
+  }
+}
+
 export async function createManualCrossposts(
   env: Env,
-  input: { pubkey: string; eventId: string; platforms: string[]; snapchatProfile?: unknown; snapchatDestination?: unknown; instagramDestination?: unknown; youtubePrivacyStatus?: unknown; tiktokPostOptions?: unknown },
+  input: { pubkey: string; eventId: string; platforms: string[]; snapchatProfile?: unknown; snapchatDestination?: unknown; instagramDestination?: unknown; youtubePrivacyStatus?: unknown; youtubeChannel?: unknown; tiktokPostOptions?: unknown },
 ): Promise<CrosspostJobsResult> {
   const eventId = ensureEventId(input.eventId)
   if (!Array.isArray(input.platforms) || input.platforms.length === 0) {
@@ -299,7 +306,10 @@ export async function createManualCrossposts(
   const snapOverride = parseSnapchatDestination(input.snapchatDestination, platforms.includes('snapchat'))
   const override = parseInstagramDestination(input.instagramDestination, platforms.includes('instagram'))
   const youtubeOverride = parseYouTubePrivacyOption(input.youtubePrivacyStatus, platforms.includes('youtube'))
+  if (input.youtubeChannel !== undefined && !platforms.includes('youtube')) throw new HttpError(400, 'not_eligible', 'YouTube channel confirmation requires a YouTube destination')
   const connections = await Promise.all(platforms.map((platform) => requireManualConnection(env, input.pubkey, platform)))
+  const youtubeConnection = connections.find(connection => connection.platform === 'youtube')
+  if (youtubeConnection) assertYouTubeChannel(youtubeConnection, input.youtubeChannel)
   const snapchatConnection = connections.find(connection => connection.platform === 'snapchat')
   if (snapchatConnection) {
     const confirmed = asRecord(input.snapchatProfile)
@@ -315,6 +325,8 @@ export async function createManualCrossposts(
   const tiktokPostOptions = tiktokConnection ? await confirmTikTokOptions(env, tiktokConnection, input.tiktokPostOptions, snapshot.durationSeconds) : undefined
   const preferences = await getPreferences(env.DB, input.pubkey)
   const saved = preferences.find((preference) => preference.platform === 'instagram')
+  // Source lookup can race a disconnect or channel change; never silently retarget consent.
+  if (youtubeConnection) assertYouTubeChannel(await getActiveConnectionForPlatform(env.DB, input.pubkey, 'youtube'), input.youtubeChannel)
   return createJobsForConnections(env, { pubkey: input.pubkey, eventId, snapshot, connections, snapchatDestination: snapOverride ?? preferences.find(p => p.platform === 'snapchat')?.snapchatDestination, tiktokPostOptions, instagramDestination: override ?? saved?.instagramDestination, youtubePrivacyStatus: youtubeOverride ?? preferences.find((preference) => preference.platform === 'youtube')?.youtubePrivacyStatus })
 }
 

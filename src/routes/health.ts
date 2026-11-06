@@ -1020,11 +1020,16 @@ export function renderHome(env: Env): string {
         return true;
       }
 
+      function selectedYouTubeConnection() {
+        return connections.filter((item) => item.platform === 'youtube' && item.status === 'connected')
+          .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt)[0];
+      }
+
       function renderConnectRows() {
         const list = $('connect-list');
         if (!list) return;
         list.innerHTML = platforms.map((platform) => {
-          const connection = connections.find((item) => item.platform === platform.platform && item.status === 'connected');
+          const connection = platform.platform === 'youtube' ? selectedYouTubeConnection() : connections.find((item) => item.platform === platform.platform && item.status === 'connected');
           const disabled = !session || !platform.enabled || !!connection;
           const reconnect = connections.some((item) => item.platform === platform.platform && item.status === 'needs_reauth');
           const observation = providerObservations[platform.platform];
@@ -1092,7 +1097,7 @@ export function renderHome(env: Env): string {
         }
         list.innerHTML = platforms.map((platform) => {
           const pref = preferences.find((item) => item.platform === platform.platform);
-          const connection = connections.find((item) => item.platform === platform.platform && item.status === 'connected');
+          const connection = platform.platform === 'youtube' ? selectedYouTubeConnection() : connections.find((item) => item.platform === platform.platform && item.status === 'connected');
           const current = platform.supportsAutomatic === false && pref?.mode === 'automatic' ? 'disabled' : pref?.mode || 'disabled';
           const disabled = !connection || (platform.platform === 'snapchat' && !connection.snapchatProfileConfirmed);
           return '<div class="preference-row">' +
@@ -1218,7 +1223,8 @@ export function renderHome(env: Env): string {
           list.innerHTML = '<div class="connect-row"><span><strong>Sign in to get started</strong><small>Your recent Divine videos show up here.</small></span></div>';
           return;
         }
-        const connected = connections.filter((item) => item.status === 'connected' && (item.platform !== 'snapchat' || item.snapchatProfileConfirmed));
+        const youtubeConnection = selectedYouTubeConnection();
+        const connected = connections.filter((item) => item.status === 'connected' && (item.platform !== 'snapchat' || item.snapchatProfileConfirmed) && (item.platform !== 'youtube' || item.id === youtubeConnection?.id));
         if (accountLoaded && connected.length === 0) {
           list.innerHTML = '<div class="connect-row"><span><strong>Connect a platform first</strong><small>Once a platform is connected you can post any video from here.</small></span></div>';
           return;
@@ -1413,18 +1419,23 @@ export function renderHome(env: Env): string {
           });
           if (!tiktokPostOptions) { renderVideoRows(); return; }
         }
+        let youtubeChannel;
+        let youtubePrivacyStatus;
         if (platform === 'youtube') {
-          const account = connections.find((item) => item.platform === 'youtube' && item.status === 'connected');
-          if (!window.confirm('Upload this Divine video to ' + (account?.externalAccountName || 'your YouTube channel') + ' with ' + youtubeVideoPrivacy(videoId) + ' visibility?')) {
+          const account = selectedYouTubeConnection();
+          if (!account) throw new Error('Reload and confirm your YouTube channel before uploading.');
+          youtubeChannel = { connectionId: account.id, channelId: account.externalAccountId };
+          youtubePrivacyStatus = youtubeVideoPrivacy(videoId);
+          if (!window.confirm('Upload this Divine video to ' + (account.externalAccountName || account.externalAccountId) + ' with ' + youtubePrivacyStatus + ' visibility?')) {
             renderVideoRows();
             return;
           }
         }
         const data = await api('/videos/' + videoId + '/crossposts', {
           method: 'POST',
-          body: JSON.stringify({ platforms: [platform], ...(platform === 'snapchat' ? { snapchatProfile, snapchatDestination } : {}), ...(platform === 'tiktok' ? { tiktokPostOptions } : {}), ...(platform === 'youtube' ? { youtubePrivacyStatus: youtubeVideoPrivacy(videoId) } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
+          body: JSON.stringify({ platforms: [platform], ...(platform === 'snapchat' ? { snapchatProfile, snapchatDestination } : {}), ...(platform === 'tiktok' ? { tiktokPostOptions } : {}), ...(platform === 'youtube' ? { youtubeChannel, youtubePrivacyStatus } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
         }).catch(async (error) => {
-          if (platform === 'snapchat' || platform === 'tiktok') await refreshAccount().catch(() => undefined);
+          if (platform === 'snapchat' || platform === 'tiktok' || platform === 'youtube') await refreshAccount().catch(() => undefined);
           throw error;
         });
         videoJobs[videoId] = data.jobs || [];

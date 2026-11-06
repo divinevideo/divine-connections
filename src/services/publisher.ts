@@ -1,7 +1,7 @@
 // ABOUTME: Claims queued crosspost jobs and publishes them through provider adapters.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { videoUrlFor } from './attribution'
-import { usableConnectionCredentials, usableConnectionToken, ConnectionTokenReauthError, sameConnectionSelection, markConnectionCredentialsRejected } from './connection-token'
+import { usableConnectionCredentials, usableConnectionToken, ConnectionTokenReauthError, ConnectionTokenRefreshPendingError, sameConnectionSelection, markConnectionCredentialsRejected } from './connection-token'
 import { recordDiagnosticSafely } from './reliability'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, markConnectionNeedsReauth, upsertConnection } from '../db/connections'
@@ -136,12 +136,14 @@ async function accessTokenForJob(
   captureCredentials: (connection: ConnectionRecord) => void,
 ): Promise<string | null> {
   const connection = await getConnection(env.DB, job.connectionId, job.pubkey)
-  if (!connection || connection.status !== 'connected') {
+  const canReconcileRefresh = connection?.status === 'needs_reauth' && (job.platform === 'tiktok' || job.platform === 'snapchat')
+  if (!connection || (connection.status !== 'connected' && !canReconcileRefresh)) {
     await updateOwnedJob(env, job.id, ownership, {
       status: 'needs_reauth',
       updatedAt: now,
       errorCode: 'needs_reauth',
       errorMessage: 'connection is not active',
+      nextRetryAt: null,
     })
     return null
   }
@@ -741,6 +743,17 @@ export async function processCrosspostJob(
       }
       if (dispatchFenceRaised) {
         return await handleAmbiguousPostResult(env, job, ownership, error, now)
+      }
+      if (error instanceof ConnectionTokenRefreshPendingError) {
+        // Token acquisition is pre-dispatch. Accepted jobs retain their polling
+        // state, so reconciliation can never replay an outward publication.
+        const status = existing.status === 'processing' ? 'processing' : 'failed'
+        const delay = Math.min(60, error.retryAt - now)
+        await updateOwnedJob(env, job.id, ownership, {
+          status, updatedAt: now, errorCode: 'needs_reauth', errorMessage: error.message, nextRetryAt: now + delay,
+        })
+        await addAttempt(env, { jobId: job.id, platform: job.platform, status, errorCode: 'needs_reauth', errorMessage: error.message, now })
+        return { status, retryDelaySeconds: delay }
       }
       if (error instanceof PlatformAdapterError) {
         return existing.status === 'processing'

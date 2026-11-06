@@ -45,6 +45,7 @@ crossposts.post('/videos/:event_id/crossposts', async (c) => {
         snapchatDestination: (body as { snapchatDestination?: unknown }).snapchatDestination,
         tiktokPostOptions: (body as { tiktokPostOptions?: unknown }).tiktokPostOptions,
         youtubePrivacyStatus: (body as { youtubePrivacyStatus?: unknown }).youtubePrivacyStatus,
+        youtubeChannel: (body as { youtubeChannel?: unknown }).youtubeChannel,
         instagramDestination: (body as { instagramDestination?: unknown }).instagramDestination,
       }),
     )

@@ -510,8 +510,13 @@ Save a visibility default with authenticated `PUT /preferences/youtube`:
 Choose an audience for one manual video with authenticated `POST /videos/:event_id/crossposts`:
 
 ```json
-{"platforms":["youtube"],"youtubePrivacyStatus":"unlisted"}
+{"platforms":["youtube"],"youtubePrivacyStatus":"unlisted","youtubeChannel":{"connectionId":"<connection_id>","channelId":"<external_account_id>"}}
 ```
+
+Manual YouTube uploads require the connection ID and channel ID from authenticated
+`GET /connections` for the channel shown at confirmation. The selected channel
+is the connected YouTube account with the latest update, then creation time.
+A stale or mismatched confirmation is rejected; reload and confirm again before uploading.
 
 Accepted values are `private`, `unlisted`, and `public`. Invalid values, explicit
 null, or a YouTube audience without YouTube selected return HTTP 400 before job

@@ -1191,3 +1191,68 @@ describe('TikTok accepted publication and request credential boundaries', () => 
     } finally { vi.unstubAllGlobals() }
   })
 })
+
+
+describe('bounded refresh reconciliation through the publisher', () => {
+  it.each(['queued', 'processing'] as const)('recovers the rejected %s job after a concurrent rotation persists', async status => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok')
+    await db.prepare('UPDATE connections SET token_expires_at = 1000, encrypted_refresh_token = ?').bind(await encryptToken('old-refresh', KEY)).run()
+    await createOrGetJob(db, job({ id: 'job_2', videoEventId: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', platform: 'tiktok', status,
+      externalPostId: status === 'processing' ? 'accepted-second' : null, tiktokPostOptions: tiktokOptions() }))
+    const entered = deferred<void>()
+    const successfulRefresh = deferred<Response>()
+    let refreshCalls = 0
+    const publications: string[] = []
+    const polledIds: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('oauth/token')) {
+        if (++refreshCalls === 1) { entered.resolve(); return successfulRefresh.promise }
+        return Response.json({ error: 'invalid_grant' })
+      }
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer rotated-access')
+      if (String(url).includes('creator_info')) return Response.json({ data: TIKTOK_CREATOR, error: { code: 'ok' } })
+      if (String(url).includes('status/fetch')) {
+        polledIds.push(JSON.parse(String(init?.body)).publish_id)
+        return Response.json({ data: { status: 'PUBLISH_COMPLETE' }, error: { code: 'ok' } })
+      }
+      publications.push(String(url))
+      return Response.json({ data: { publish_id: 'accepted-' + publications.length }, error: { code: 'ok' } })
+    }))
+    try {
+      const first = processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000, fenceNow: 2000 })
+      await entered.promise
+      const second = await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_2', { now: 2000, fenceNow: 2000 })
+      successfulRefresh.resolve(Response.json({ access_token: 'rotated-access', refresh_token: 'rotated-refresh', expires_in: 3600 }))
+      expect(await first).toMatchObject({ status: 'processing' })
+      expect(second).toEqual({ status: status === 'processing' ? 'processing' : 'failed', retryDelaySeconds: 60 })
+      expect(await getJob(db, 'job_2')).toMatchObject({ nextRetryAt: 2060, retryCount: 0 })
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_2', { now: 2060, fenceNow: 2060 })).toMatchObject({ status: status === 'processing' ? 'posted' : 'processing' })
+      expect(publications).toHaveLength(status === 'processing' ? 1 : 2)
+      expect(polledIds).toEqual(status === 'processing' ? ['accepted-second'] : [])
+      expect(refreshCalls).toBe(2)
+      expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it.each(['rejected', 'disconnected'] as const)('ends reconciliation for %s credentials without extending the first rejection time', async outcome => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok')
+    await db.prepare('UPDATE connections SET token_expires_at = 1000, encrypted_refresh_token = ?').bind(await encryptToken('old-refresh', KEY)).run()
+    let refreshCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => { refreshCalls++; return Response.json({ error: 'invalid_grant' }) }))
+    try {
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000 })).toEqual({ status: 'failed', retryDelaySeconds: 60 })
+      if (outcome === 'disconnected') await db.prepare("UPDATE connections SET status = 'disconnected', updated_at = 2030").run()
+      else {
+        expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2060 })).toEqual({ status: 'failed', retryDelaySeconds: 60 })
+        expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'needs_reauth', updatedAt: 2000 })
+      }
+      const terminalAt = outcome === 'disconnected' ? 2060 : 2300
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: terminalAt })).toEqual({ status: 'needs_reauth' })
+      expect(await getJob(db, 'job_1')).toMatchObject({ status: 'needs_reauth', nextRetryAt: null })
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: terminalAt + 60 })).toEqual({ status: 'needs_reauth' })
+      expect(refreshCalls).toBe(1)
+    } finally { vi.unstubAllGlobals() }
+  })
+})

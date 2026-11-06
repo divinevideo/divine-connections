@@ -128,7 +128,7 @@ describe('YouTube visibility and truthful publication status', () => {
   it('offers saved and per-video choices and submits the chosen visibility', () => {
     expect(html).toContain('data-youtube-default')
     expect(html).toContain('data-youtube-video')
-    expect(html).toContain('youtubePrivacyStatus: youtubeVideoPrivacy(videoId)')
+    expect(html).toContain('youtubePrivacyStatus = youtubeVideoPrivacy(videoId)')
     expect(html).toContain('Uploaded privately to YouTube')
     expect(html).toContain('Published publicly to YouTube')
     expect(html).not.toContain('YouTube Shorts')
@@ -154,11 +154,67 @@ it('renders distinct YouTube outcomes and uses the saved visibility until a vide
   expect(privacy('second')).toBe('public')
 })
 
+it('shows the selected YouTube channel and only its posting control when two channels are connected', () => {
+  const selection = html.split('function selectedYouTubeConnection() {')[1].split('function renderConnectRows()')[0]
+  const connect = html.split('function renderConnectRows() {')[1].split('function instagramVideoDestination')[0]
+  const videos = html.split('function renderVideoRows() {')[1].split('async function pollJobs')[0]
+  const list = { innerHTML: '' }, connectList = { innerHTML: '' }
+  const run = new Function('$', 'connections', `
+    const platforms = [{platform:'youtube',enabled:true}], session = {}, providerObservations = {};
+    const accountLoaded = true, videos = [{id:'synthetic-video'}], videoJobs = {};
+    const platformName = () => 'YouTube', escapeHtml = value => String(value);
+    const youtubePrivacySelect = () => '', youtubeVideoPrivacy = () => 'private';
+    function selectedYouTubeConnection() {${selection}
+    function renderConnectRows() {${connect}
+    function renderVideoRows() {${videos}
+    renderConnectRows(); renderVideoRows();
+  `)
+  run((id: string) => id === 'connect-list' ? connectList : list, [
+    { id: 'conn_old', externalAccountId: 'synthetic_old', platform: 'youtube', status: 'connected', externalAccountName: 'Old channel', createdAt: 1000, updatedAt: 2000 },
+    { id: 'conn_new', externalAccountId: 'synthetic_new', platform: 'youtube', status: 'connected', externalAccountName: 'New channel', createdAt: 2000, updatedAt: 3000 },
+  ])
+  expect(connectList.innerHTML).toContain('New channel')
+  expect(connectList.innerHTML).not.toContain('Old channel')
+  expect(list.innerHTML.match(/data-crosspost-platform="youtube"/g)).toHaveLength(1)
+})
+
+it('refreshes YouTube account controls after a rejected channel confirmation', async () => {
+  const source = html.split('async function triggerCrosspost(videoId, platform) {')[1].split('async function connectPlatform')[0]
+  const selection = html.split('function selectedYouTubeConnection() {')[1].split('function renderConnectRows()')[0]
+  const refresh = vi.fn(async () => {})
+  const trigger = new Function('window', 'connections', 'youtubeVideoPrivacy', 'api', 'refreshAccount', 'function selectedYouTubeConnection() {' + selection + 'return async function triggerCrosspost(videoId, platform) {' + source)(
+    { confirm: () => true }, [{ id: 'conn_youtube', externalAccountId: 'synthetic_channel', platform: 'youtube', status: 'connected' }], () => 'private', async () => { throw Error('Your YouTube channel changed. Reload and confirm again.') }, refresh)
+  await expect(trigger('synthetic-video', 'youtube')).rejects.toThrow('Your YouTube channel changed')
+  expect(refresh).toHaveBeenCalledOnce()
+})
+
+it('confirms the newest YouTube channel and submits its captured identity even if the cache changes', async () => {
+  const source = html.split('async function triggerCrosspost(videoId, platform) {')[1].split('async function connectPlatform')[0]
+  const accounts = [
+    { id: 'conn_old', externalAccountId: 'synthetic_old', platform: 'youtube', status: 'connected', externalAccountName: 'Old channel', createdAt: 1000, updatedAt: 3000 },
+    { id: 'conn_new', externalAccountId: 'synthetic_new', platform: 'youtube', status: 'connected', externalAccountName: 'New channel', createdAt: 2000, updatedAt: 3000 },
+  ]
+  let payload: any
+  const api = async (_path: string, init: RequestInit) => { payload = JSON.parse(String(init.body)); return { jobs: [] } }
+  const confirm = (message: string) => {
+    expect(message).toContain('New channel')
+    expect(message).toContain('unlisted visibility')
+    accounts[1].id = 'conn_changed'; accounts[1].externalAccountId = 'synthetic_changed'
+    return true
+  }
+  const selection = html.split('function selectedYouTubeConnection() {')[1]?.split('function renderConnectRows()')[0]
+  const trigger = new Function('window', 'connections', 'youtubeVideoPrivacy', 'api', 'videoJobs', 'renderVideoRows', 'setStatus', 'platformName', 'videoPolls', 'clearTimeout', 'setTimeout', (selection ? 'function selectedYouTubeConnection() {' + selection : '') + 'return async function triggerCrosspost(videoId, platform) {' + source)(
+    { confirm }, accounts, () => 'unlisted', api, {}, () => {}, () => {}, () => 'YouTube', {}, () => {}, () => {})
+  await trigger('synthetic-video', 'youtube')
+  expect(payload).toMatchObject({ youtubeChannel: { connectionId: 'conn_new', channelId: 'synthetic_new' }, youtubePrivacyStatus: 'unlisted' })
+})
+
 it('restores video controls when YouTube confirmation is cancelled and sends no request', async () => {
   const source = html.split('async function triggerCrosspost(videoId, platform) {')[1]?.split('async function connectPlatform')[0]
   const render = vi.fn()
   const api = vi.fn()
-  const trigger = new Function('window', 'connections', 'youtubeVideoPrivacy', 'renderVideoRows', 'api', 'return async function triggerCrosspost(videoId, platform) {' + source)({ confirm: () => false }, [{ platform: 'youtube', status: 'connected', externalAccountName: 'Synthetic channel' }], () => 'private', render, api)
+  const selection = html.split('function selectedYouTubeConnection() {')[1].split('function renderConnectRows()')[0]
+  const trigger = new Function('window', 'connections', 'youtubeVideoPrivacy', 'renderVideoRows', 'api', 'function selectedYouTubeConnection() {' + selection + 'return async function triggerCrosspost(videoId, platform) {' + source)({ confirm: () => false }, [{ id: 'conn_youtube', externalAccountId: 'synthetic_channel', platform: 'youtube', status: 'connected', externalAccountName: 'Synthetic channel' }], () => 'private', render, api)
   await trigger('synthetic-video', 'youtube')
   expect(api).not.toHaveBeenCalled()
   expect(render).toHaveBeenCalledTimes(1)

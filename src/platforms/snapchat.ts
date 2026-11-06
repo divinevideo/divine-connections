@@ -133,7 +133,8 @@ export function createSnapchatAdapter(options: { clientId: string; clientSecret:
           const storyId = identifier(story.id, true)
           const snaps = await request(`${API}/v1/public_profiles/${profileId}/stories/${storyId}/snaps?limit=100`, input.accessToken)
           const matches = (Array.isArray(snaps.snaps) ? snaps.snaps : []).map(v => asRecord(asRecord(v).snap)).filter(v => v.story_id === storyId && v.link === link && typeof v.created_at === 'string' && Date.parse(v.created_at) >= since && Date.parse(v.created_at) <= Date.now() + 60_000)
-          if (matches.length === 1) return { status: 'posted', externalPostId: identifier(matches[0].id), providerResponse: cp }
+          // A long video can produce several matching Snaps; this ID represents one Snap, not the whole video.
+          if (matches.length > 0) return { status: 'posted', externalPostId: identifier(matches[0].id), providerResponse: cp }
         }
         return pending(cp)
       }

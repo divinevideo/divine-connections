@@ -7,7 +7,7 @@ import { recordAttempt } from '../db/attempts'
 import { upsertConnection } from '../db/connections'
 import { createOrGetJob } from '../db/jobs'
 import { NIP98_TEST_PUBKEY, nip98Header, signNip98Event } from '../auth/test-helpers'
-import { applyMigrations, connection, job, PUBKEY_A, VIDEO_EVENT_ID } from '../db/test-helpers'
+import { applyMigrations, connection, job, PUBKEY_A, PUBKEY_B, VIDEO_EVENT_ID } from '../db/test-helpers'
 import type { Env } from '../types'
 
 function event(overrides: Record<string, unknown> = {}) {
@@ -74,9 +74,38 @@ describe('crosspost routes', () => {
     vi.unstubAllGlobals()
   })
 
+  it('binds a confirmed YouTube upload to the newer of two connected channels', async () => {
+    await upsertConnection(db, connection({ id: 'conn_youtube_old', platform: 'youtube', externalAccountId: 'synthetic_channel_old', updatedAt: 1000 }))
+    await upsertConnection(db, connection({ id: 'conn_youtube_new', platform: 'youtube', externalAccountId: 'synthetic_channel_new', createdAt: 2000, updatedAt: 2000 }))
+    const res = await app.request(`/videos/${VIDEO_EVENT_ID}/crossposts`, authenticatedInit({ method: 'POST', body: JSON.stringify({ platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube_new', channelId: 'synthetic_channel_new' }, youtubePrivacyStatus: 'private' }) }), { ...testEnv(db, queueSend), ENABLE_YOUTUBE: 'true', GOOGLE_CLIENT_ID: 'synthetic-client', GOOGLE_CLIENT_SECRET: 'synthetic-secret' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ jobs: [{ connectionId: 'conn_youtube_new', externalAccountId: 'synthetic_channel_new', youtubePrivacyStatus: 'private' }] })
+    expect(queueSend).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['missing', undefined], ['null', null], ['empty', {}], ['array', []], ['malformed', { connectionId: 1, channelId: false }],
+    ['stale', { connectionId: 'conn_youtube_old', channelId: 'synthetic_channel_old' }],
+    ['wrong channel', { connectionId: 'conn_youtube_new', channelId: 'synthetic_channel_old' }],
+    ['foreign', { connectionId: 'conn_youtube_foreign', channelId: 'synthetic_channel_foreign' }],
+    ['wrong platform', { connectionId: 'conn_x', channelId: 'external-account-1' }],
+    ['disconnected', { connectionId: 'conn_youtube_disconnected', channelId: 'synthetic_channel_disconnected' }],
+  ])('refuses %s YouTube channel confirmation before jobs, lookup or queueing', async (_name, youtubeChannel) => {
+    await upsertConnection(db, connection({ id: 'conn_youtube_old', platform: 'youtube', externalAccountId: 'synthetic_channel_old', updatedAt: 1000 }))
+    await upsertConnection(db, connection({ id: 'conn_youtube_new', platform: 'youtube', externalAccountId: 'synthetic_channel_new', createdAt: 2000, updatedAt: 2000 }))
+    await upsertConnection(db, connection({ id: 'conn_youtube_foreign', pubkey: PUBKEY_B, platform: 'youtube', externalAccountId: 'synthetic_channel_foreign' }))
+    await upsertConnection(db, connection({ id: 'conn_youtube_disconnected', platform: 'youtube', externalAccountId: 'synthetic_channel_disconnected', status: 'disconnected' }))
+    const res = await app.request(`/videos/${VIDEO_EVENT_ID}/crossposts`, authenticatedInit({ method: 'POST', body: JSON.stringify({ platforms: ['youtube'], youtubeChannel }) }), { ...testEnv(db, queueSend), ENABLE_YOUTUBE: 'true', GOOGLE_CLIENT_ID: 'synthetic-client', GOOGLE_CLIENT_SECRET: 'synthetic-secret' })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ error: { code: 'youtube_channel_changed', message: expect.stringContaining('Reload') } })
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM jobs').first<{ count: number }>())?.count).toBe(0)
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://login.divine.video/api/nostr'])
+    expect(queueSend).not.toHaveBeenCalled()
+  })
+
   it('passes the manual YouTube audience into the persisted job', async () => {
     await upsertConnection(db, connection({ id: 'conn_youtube', platform: 'youtube' }))
-    const res = await app.request(`/videos/${VIDEO_EVENT_ID}/crossposts`, authenticatedInit({ method: 'POST', body: JSON.stringify({ platforms: ['youtube'], youtubePrivacyStatus: 'unlisted' }) }), { ...testEnv(db, queueSend), ENABLE_YOUTUBE: 'true', GOOGLE_CLIENT_ID: 'synthetic-client', GOOGLE_CLIENT_SECRET: 'synthetic-secret' })
+    const res = await app.request(`/videos/${VIDEO_EVENT_ID}/crossposts`, authenticatedInit({ method: 'POST', body: JSON.stringify({ platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'external-account-1' }, youtubePrivacyStatus: 'unlisted' }) }), { ...testEnv(db, queueSend), ENABLE_YOUTUBE: 'true', GOOGLE_CLIENT_ID: 'synthetic-client', GOOGLE_CLIENT_SECRET: 'synthetic-secret' })
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ jobs: [{ platform: 'youtube', youtubePrivacyStatus: 'unlisted', youtubeTitle: 'caption from event' }] })
     expect(queueSend).toHaveBeenCalledTimes(1)

@@ -75,10 +75,30 @@ describe('crosspost service', () => {
     vi.unstubAllGlobals()
   })
 
+  it.each(['new channel', 'disconnected'])('refuses a YouTube %s change during source lookup before creating jobs', async change => {
+    await addConnectedPlatform(db, 'youtube', 'conn_youtube')
+    fetchMock.mockImplementation(async () => {
+      if (change === 'new channel') await upsertConnection(db, connection({ id: 'conn_new', platform: 'youtube', externalAccountId: 'synthetic_new_channel', createdAt: 2000, updatedAt: 2000 }))
+      else await db.prepare("UPDATE connections SET status = 'disconnected' WHERE id = ?").bind('conn_youtube').run()
+      return Response.json({ event: event() })
+    })
+    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' } })).rejects.toMatchObject({ status: 409, code: 'youtube_channel_changed' })
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM jobs').first<{ count: number }>())?.count).toBe(0)
+    expect(queueSend).not.toHaveBeenCalled()
+  })
+
+  it('rejects YouTube channel confirmation when YouTube is not selected', async () => {
+    await addConnectedPlatform(db, 'x', 'conn_x')
+    fetchMock.mockImplementation(async () => Response.json({ event: event() }))
+    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['x'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' } })).rejects.toMatchObject({ status: 400, code: 'not_eligible' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(queueSend).not.toHaveBeenCalled()
+  })
+
   it('bounds YouTube descriptions in UTF-8 bytes without splitting emoji and retains attribution', async () => {
     await addConnectedPlatform(db, 'youtube', 'conn_youtube')
     fetchMock.mockImplementation(async () => Response.json({ event: event({ content: '🎉'.repeat(1300) }) }))
-    const result = await createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'] })
+    const result = await createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' } })
     expect(new TextEncoder().encode(result.jobs[0].caption).length).toBeLessThanOrEqual(5000)
     expect(result.jobs[0].caption).toContain('https://divine.video/video/' + VIDEO_EVENT_ID)
     expect(result.jobs[0].caption).not.toContain('�')
@@ -88,7 +108,7 @@ describe('crosspost service', () => {
     await addConnectedPlatform(db, 'youtube', 'conn_youtube')
     await setPreference(db, { pubkey: PUBKEY_A, platform: 'youtube', connectionId: 'conn_youtube', mode: 'manual', automaticEnabledAt: null, createdAt: 1000, updatedAt: 1000, youtubePrivacyStatus: 'public' })
     fetchMock.mockImplementation(async () => Response.json({ event: event() }))
-    const result = await createManualCrossposts({ ...testEnv(db, queueSend), YOUTUBE_DEFAULT_PRIVACY_STATUS: 'unlisted' }, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'] })
+    const result = await createManualCrossposts({ ...testEnv(db, queueSend), YOUTUBE_DEFAULT_PRIVACY_STATUS: 'unlisted' }, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' } })
     expect(result.jobs[0].youtubePrivacyStatus).toBe('public')
   })
 
@@ -99,24 +119,24 @@ describe('crosspost service', () => {
     fetchMock.mockImplementation(async () => Response.json({ event: event({ tags: [...event().tags, ['title', 'Human 🎉 title']] }) }))
     const auto = await createAutomaticCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID })
     expect(auto.jobs[0]).toMatchObject({ youtubePrivacyStatus, youtubeTitle: 'Human 🎉 title' })
-    const duplicate = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubePrivacyStatus: 'unlisted' })
+    const duplicate = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' }, youtubePrivacyStatus: 'unlisted' })
     expect(duplicate.jobs[0].youtubePrivacyStatus).toBe(youtubePrivacyStatus)
     expect(queueSend).toHaveBeenCalledTimes(1)
     fetchMock.mockImplementation(async () => Response.json({ event: event({ id: YOUTUBE_EVENT_ID }) }))
-    const manual = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: YOUTUBE_EVENT_ID, platforms: ['youtube'], youtubePrivacyStatus: 'public' })
+    const manual = await createManualCrossposts(env, { pubkey: PUBKEY_A, eventId: YOUTUBE_EVENT_ID, platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' }, youtubePrivacyStatus: 'public' })
     expect(manual.jobs[0].youtubePrivacyStatus).toBe('public')
   })
 
   it('uses configured YouTube fallback and a Unicode-safe source title without attribution', async () => {
     await addConnectedPlatform(db, 'youtube', 'conn_youtube')
     fetchMock.mockImplementation(async () => Response.json({ event: event({ content: '🎉'.repeat(101) }) }))
-    const result = await createManualCrossposts({ ...testEnv(db, queueSend), YOUTUBE_DEFAULT_PRIVACY_STATUS: 'unlisted' }, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'] })
+    const result = await createManualCrossposts({ ...testEnv(db, queueSend), YOUTUBE_DEFAULT_PRIVACY_STATUS: 'unlisted' }, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' } })
     expect(result.jobs[0]).toMatchObject({ youtubePrivacyStatus: 'unlisted', youtubeTitle: '🎉'.repeat(100) })
     expect(result.jobs[0].caption).toContain('🎉'.repeat(101))
   })
 
   it.each([null, 'friends', 1, {}, false])('rejects invalid YouTube visibility %j before lookup', async (youtubePrivacyStatus) => {
-    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubePrivacyStatus })).rejects.toMatchObject({ status: 400, code: 'invalid_youtube_privacy_status' })
+    await expect(createManualCrossposts(testEnv(db, queueSend), { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' }, youtubePrivacyStatus })).rejects.toMatchObject({ status: 400, code: 'invalid_youtube_privacy_status' })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(queueSend).not.toHaveBeenCalled()
   })
@@ -183,7 +203,7 @@ describe('crosspost service', () => {
     const result = await createManualCrossposts(testEnv(db, queueSend), {
       pubkey: PUBKEY_A,
       eventId: VIDEO_EVENT_ID,
-      platforms: ['x', 'youtube'],
+      platforms: ['x', 'youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' },
     })
 
     expect(result.jobs).toHaveLength(2)
@@ -356,14 +376,14 @@ describe('crosspost service', () => {
       createManualCrossposts(testEnv(db, queueSend), {
         pubkey: PUBKEY_A,
         eventId: VIDEO_EVENT_ID,
-        platforms: ['youtube'],
+        platforms: ['youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' },
       }),
     ).rejects.toMatchObject({ status: 400, code: 'not_eligible' })
   })
   it.each(SOURCE_METADATA_CASES)('preserves X, Instagram and YouTube enqueue compatibility for $name', async ({ tags, url, hash }) => {
     for (const platform of ['x', 'instagram', 'youtube'] as const) await addConnectedPlatform(db, platform, 'conn_' + platform)
     fetchMock.mockResolvedValueOnce(Response.json({ event: event({ tags }) }))
-    const result = await createManualCrossposts({ ...testEnv(db, queueSend), ENABLE_INSTAGRAM: 'true', INSTAGRAM_CLIENT_ID: 'synthetic-client', INSTAGRAM_CLIENT_SECRET: 'synthetic-secret' }, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['x', 'instagram', 'youtube'] })
+    const result = await createManualCrossposts({ ...testEnv(db, queueSend), ENABLE_INSTAGRAM: 'true', INSTAGRAM_CLIENT_ID: 'synthetic-client', INSTAGRAM_CLIENT_SECRET: 'synthetic-secret' }, { pubkey: PUBKEY_A, eventId: VIDEO_EVENT_ID, platforms: ['x', 'instagram', 'youtube'], youtubeChannel: { connectionId: 'conn_youtube', channelId: 'youtube-external-account' } })
     expect(result.jobs).toHaveLength(3)
     for (const job of result.jobs) expect(job).toMatchObject({ sourceMediaUrl: url, sourceMediaHash: hash, status: 'queued' })
     expect(queueSend).toHaveBeenCalledTimes(3)
