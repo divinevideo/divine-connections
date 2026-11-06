@@ -93,3 +93,26 @@ describe('TikTok publish outcomes', () => {
     },
   )
 })
+
+describe('TikTok rejects unconfirmed dispatch and malformed provider success', () => {
+  afterEach(() => vi.unstubAllGlobals())
+  const adapter = createTikTokAdapter({ clientKey: 'synthetic-client', clientSecret: 'synthetic-secret' })
+  it('never initializes a legacy job without explicit manual consent', async () => {
+    const upstream = vi.fn()
+    vi.stubGlobal('fetch', upstream)
+    await expect(adapter.publishVideo({ accessToken: 'synthetic-access', externalAccountId: 'synthetic-account', videoUrl: 'https://media.divine.video/synthetic.mp4', mediaHash: 'synthetic-hash', caption: 'legacy' })).rejects.toMatchObject({ code: 'not_eligible' })
+    expect(upstream).not.toHaveBeenCalled()
+  })
+  it('rejects an empty provider publish ID', async () => {
+    const { TIKTOK_CREATOR, tiktokOptions } = await import('./tiktok.test-helpers')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(Response.json({ data: TIKTOK_CREATOR, error: { code: 'ok' } })).mockResolvedValueOnce(Response.json({ data: { publish_id: '' }, error: { code: 'ok' } })))
+    await expect(adapter.publishVideo({ accessToken: 'synthetic-access', externalAccountId: 'synthetic-account', videoUrl: 'https://media.divine.video/synthetic.mp4', mediaHash: 'synthetic-hash', caption: '', tiktokPostOptions: tiktokOptions() })).rejects.toMatchObject({ code: 'unknown_platform_error' })
+  })
+})
+
+it('treats a revoked refresh grant in a TikTok HTTP-200 OAuth response as needs_reauth', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'invalid_grant', error_description: 'Refresh grant expired' })))
+  try {
+    await expect(createTikTokAdapter({ clientKey: 'synthetic-client', clientSecret: 'synthetic-secret' }).refreshToken({ refreshToken: 'synthetic-refresh' })).rejects.toMatchObject({ code: 'needs_reauth' })
+  } finally { vi.unstubAllGlobals() }
+})

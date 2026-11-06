@@ -1,11 +1,16 @@
 // ABOUTME: Stores crosspost jobs and controls their publishing lifecycle.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { allPrepared, changes, firstPrepared, runPrepared } from './client'
-import type { CreateJobInput, ErrorCode, InstagramDestination, JobRecord, JobStatus, Platform, UpdateJobStatusInput } from '../types'
+import type { ConnectionRecord, SnapchatDestination, CreateJobInput, ErrorCode, InstagramDestination, JobRecord, JobStatus, Platform, UpdateJobStatusInput, YouTubePrivacyStatus } from '../types'
 
 export const MAX_RETRY_COUNT = 5
 
 type JobRow = {
+  snapchat_destination?: SnapchatDestination | null
+  snapchat_source_json?: string | null
+  tiktok_options_json?: string | null
+  youtube_privacy_status?: YouTubePrivacyStatus | null
+  youtube_title?: string | null
   instagram_destination?: InstagramDestination | null
   id: string
   pubkey: string
@@ -30,7 +35,10 @@ type JobRow = {
 
 function mapJob(row: JobRow): JobRecord {
   return {
+    ...(row.platform === 'snapchat' ? { snapchatDestination: row.snapchat_destination ?? null, sourceMedia: row.snapchat_source_json ? JSON.parse(row.snapchat_source_json) : null } : {}),
     instagramDestination: row.instagram_destination ?? null,
+    ...(row.platform === 'tiktok' ? { tiktokPostOptions: row.tiktok_options_json ? JSON.parse(row.tiktok_options_json) : null } : {}),
+    ...(row.platform === 'youtube' ? { youtubePrivacyStatus: row.youtube_privacy_status ?? null, youtubeTitle: row.youtube_title ?? null } : {}),
     id: row.id,
     pubkey: row.pubkey,
     videoEventId: row.video_event_id,
@@ -56,7 +64,7 @@ function mapJob(row: JobRow): JobRecord {
 async function findByIdempotencyKey(db: D1Database, input: CreateJobInput): Promise<JobRecord | null> {
   const row = await firstPrepared<JobRow>(
     db,
-    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs
+    `SELECT *, (SELECT destination FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_destination, (SELECT source_media_json FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_source_json, (SELECT options_json FROM tiktok_job_options WHERE job_id = jobs.id) AS tiktok_options_json, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs
     WHERE pubkey = ? AND video_event_id = ? AND platform = ? AND external_account_id = ?`,
     input.pubkey,
     input.videoEventId,
@@ -109,6 +117,18 @@ export async function createOrGetJob(
       SELECT ?, ? WHERE changes() = 1`)
       .bind(input.id, input.instagramDestination))
   }
+  if (input.platform === 'youtube' && input.youtubePrivacyStatus != null) {
+    statements.push(db.prepare(`INSERT INTO youtube_job_options (job_id, privacy_status, title)
+      SELECT ?, ?, ? WHERE changes() = 1`)
+      .bind(input.id, input.youtubePrivacyStatus, input.youtubeTitle ?? null))
+  }
+  if (input.platform === 'tiktok' && input.tiktokPostOptions != null) {
+    statements.push(db.prepare(`INSERT INTO tiktok_job_options (job_id, options_json)
+      SELECT ?, ? WHERE changes() = 1`).bind(input.id, JSON.stringify(input.tiktokPostOptions)))
+  }
+  if (input.platform === 'snapchat' && input.snapchatDestination != null) {
+    statements.push(db.prepare(`INSERT INTO snapchat_job_options (job_id, destination, source_media_json) SELECT ?, ?, ? WHERE changes() = 1`).bind(input.id, input.snapchatDestination, JSON.stringify(input.sourceMedia ?? null)))
+  }
   const [result] = await db.batch(statements)
 
   const job = changes(result) > 0 ? await getJob(db, input.id) : await findByIdempotencyKey(db, input)
@@ -125,7 +145,7 @@ export async function listJobsForVideo(
 ): Promise<JobRecord[]> {
   const rows = await allPrepared<JobRow>(
     db,
-    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs
+    `SELECT *, (SELECT destination FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_destination, (SELECT source_media_json FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_source_json, (SELECT options_json FROM tiktok_job_options WHERE job_id = jobs.id) AS tiktok_options_json, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs
     WHERE pubkey = ? AND video_event_id = ?
     ORDER BY created_at ASC, id ASC`,
     pubkey,
@@ -136,8 +156,8 @@ export async function listJobsForVideo(
 
 export async function getJob(db: D1Database, id: string, pubkey?: string): Promise<JobRecord | null> {
   const row = pubkey
-    ? await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs WHERE id = ? AND pubkey = ?', id, pubkey)
-    : await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs WHERE id = ?', id)
+    ? await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_destination, (SELECT source_media_json FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_source_json, (SELECT options_json FROM tiktok_job_options WHERE job_id = jobs.id) AS tiktok_options_json, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs WHERE id = ? AND pubkey = ?', id, pubkey)
+    : await firstPrepared<JobRow>(db, 'SELECT *, (SELECT destination FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_destination, (SELECT source_media_json FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_source_json, (SELECT options_json FROM tiktok_job_options WHERE job_id = jobs.id) AS tiktok_options_json, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs WHERE id = ?', id)
   return row ? mapJob(row) : null
 }
 
@@ -185,7 +205,7 @@ export async function updateClaimedJobStatus(
     `UPDATE jobs
     SET ${assignments.join(', ')}
     WHERE id = ? AND status = ? AND updated_at = ?
-    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,
+    RETURNING *, (SELECT destination FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_destination, (SELECT source_media_json FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_source_json, (SELECT options_json FROM tiktok_job_options WHERE job_id = jobs.id) AS tiktok_options_json, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title`,
     ...bindings,
     input.id,
     expected.status,
@@ -201,10 +221,11 @@ export async function claimJobForPublish(db: D1Database, id: string, now: number
     SET status = 'uploading', updated_at = ?, error_code = NULL, error_message = NULL
     WHERE id = ?
       AND status IN ('queued', 'failed')
-      AND (error_code IS NULL OR error_code != 'provider_payment_required')
+      AND NOT (platform = 'tiktok' AND external_post_id IS NOT NULL)
+      AND (error_code IS NULL OR error_code NOT IN ('provider_payment_required', 'provider_quota_exceeded', 'provider_upload_limit'))
       AND expires_at > ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)
-    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,
+    RETURNING *, (SELECT destination FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_destination, (SELECT source_media_json FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_source_json, (SELECT options_json FROM tiktok_job_options WHERE job_id = jobs.id) AS tiktok_options_json, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title`,
     now,
     id,
     now,
@@ -222,7 +243,7 @@ export async function claimJobForStatusPoll(db: D1Database, id: string, now: num
       AND status = 'processing'
       AND expires_at > ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)
-    RETURNING *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination`,
+    RETURNING *, (SELECT destination FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_destination, (SELECT source_media_json FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_source_json, (SELECT options_json FROM tiktok_job_options WHERE job_id = jobs.id) AS tiktok_options_json, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title`,
     now,
     id,
     now,
@@ -236,7 +257,26 @@ export async function transitionClaimToDispatching(
   id: string,
   claimUpdatedAt: number,
   now: number,
+  snapchatConnection?: ConnectionRecord,
 ): Promise<boolean> {
+  if (snapchatConnection) {
+    // Consent, credentials and job ownership must still match in the same
+    // statement that records dispatch. A separate read leaves a reselection gap.
+    const result = await runPrepared(db, `UPDATE jobs
+      SET status = 'dispatching', updated_at = ?, error_code = NULL,
+          error_message = NULL, next_retry_at = NULL
+      WHERE id = ? AND status = 'uploading' AND updated_at = ?
+        AND platform = 'snapchat' AND connection_id = ? AND pubkey = ? AND external_account_id = ?
+        AND EXISTS (SELECT 1 FROM connections
+          WHERE id = jobs.connection_id AND pubkey = jobs.pubkey AND platform = 'snapchat'
+            AND external_account_id = jobs.external_account_id AND status = 'connected'
+            AND metadata_json = ? AND encrypted_access_token = ?
+            AND json_extract(metadata_json, '$.account.profileConfirmed') = 1)`,
+      now, id, claimUpdatedAt, snapchatConnection.id, snapchatConnection.pubkey,
+      snapchatConnection.externalAccountId, snapchatConnection.metadataJson,
+      snapchatConnection.encryptedAccessToken)
+    return changes(result) === 1
+  }
   const job = await updateClaimedJobStatus(
     db,
     {
@@ -255,7 +295,7 @@ export async function transitionClaimToDispatching(
 export async function listRunnableJobs(db: D1Database, now: number, limit: number): Promise<JobRecord[]> {
   const rows = await allPrepared<JobRow>(
     db,
-    `SELECT *, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination FROM jobs
+    `SELECT *, (SELECT destination FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_destination, (SELECT source_media_json FROM snapchat_job_options WHERE job_id = jobs.id) AS snapchat_source_json, (SELECT options_json FROM tiktok_job_options WHERE job_id = jobs.id) AS tiktok_options_json, (SELECT destination FROM instagram_job_options WHERE job_id = jobs.id) AS instagram_destination, (SELECT privacy_status FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_privacy_status, (SELECT title FROM youtube_job_options WHERE job_id = jobs.id) AS youtube_title FROM jobs
     WHERE (
         (status IN ('queued', 'processing') AND (next_retry_at IS NULL OR next_retry_at <= ?))
         OR (
@@ -367,10 +407,11 @@ export async function recoverStaleXClaims(
     `UPDATE jobs
     SET status = 'failed',
         error_code = 'ambiguous_post_result',
-        error_message = 'stale X dispatch requires manual reconciliation',
+        error_message = CASE WHEN platform = 'x' THEN 'stale X dispatch requires manual reconciliation'
+          WHEN platform = 'youtube' THEN 'stale YouTube dispatch requires manual reconciliation' WHEN platform = 'snapchat' THEN 'stale Snapchat dispatch requires manual reconciliation' ELSE 'stale TikTok dispatch requires manual reconciliation' END,
         next_retry_at = NULL,
         updated_at = ?
-    WHERE platform = 'x' AND status = 'dispatching' AND updated_at <= ?`,
+    WHERE platform IN ('x', 'youtube', 'tiktok', 'snapchat') AND status = 'dispatching' AND updated_at <= ?`,
     now,
     staleBefore,
   )

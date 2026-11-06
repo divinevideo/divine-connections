@@ -29,6 +29,37 @@ function tokenSetFromResponse(response: Record<string, unknown>): TokenSet {
   }
 }
 
+// Count code points while retaining whole graphemes, including joined emoji.
+export function youtubeTitle(source: string): string {
+  const normalized = source.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim()
+  let title = ''
+  let length = 0
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(normalized)) {
+    const size = Array.from(segment).length
+    if (length + size > 100) break
+    title += segment
+    length += size
+  }
+  return title.trim() || 'Divine video'
+}
+
+function videoId(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : null
+}
+
+function uploadSession(value: string | null): string {
+  try {
+    const url = new URL(value ?? '')
+    if (url.protocol === 'https:' && url.hostname === 'www.googleapis.com' && !url.port && !url.username && !url.password &&
+        url.pathname === '/upload/youtube/v3/videos' && !url.hash) return url.toString()
+  } catch { /* Invalid sessions are rejected before forwarding credentials. */ }
+  throw new PlatformAdapterError('youtube', 'unknown_platform_error', 'invalid YouTube upload session')
+}
+
+function videoResult(id: string, status: 'processing' | 'posted'): PublishResult {
+  return { status, externalPostId: id, externalPostUrl: `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`, providerResponse: { id } }
+}
+
 export function createYouTubeAdapter(config: YouTubeConfig): PlatformAdapter {
   const defaultPrivacyStatus = config.defaultPrivacyStatus ?? 'private'
 
@@ -83,7 +114,10 @@ export function createYouTubeAdapter(config: YouTubeConfig): PlatformAdapter {
       const snippet = asRecord(channel.snippet)
       return { id: String(channel.id ?? ''), name: String(snippet.title ?? 'YouTube channel'), metadata: body }
     },
-    async publishVideo({ accessToken, videoUrl, caption }): Promise<PublishResult> {
+    async publishVideo({ accessToken, videoUrl, caption, youtubePrivacyStatus, youtubeTitle: title, beforeExternalPost }): Promise<PublishResult> {
+      if (new TextEncoder().encode(caption).byteLength > 5000 || /[<>]/.test(caption)) {
+        throw new PlatformAdapterError('youtube', 'media_rejected', 'YouTube description must be at most 5000 UTF-8 bytes and cannot contain < or >')
+      }
       const video = await fetchVideoBytes('youtube', videoUrl)
       const metadataResponse = await fetch(
         'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
@@ -96,19 +130,18 @@ export function createYouTubeAdapter(config: YouTubeConfig): PlatformAdapter {
             'x-upload-content-length': String(video.bytes.byteLength),
           },
           body: JSON.stringify({
-            snippet: { title: caption.slice(0, 100) || 'Divine video', description: caption },
-            status: { privacyStatus: defaultPrivacyStatus, selfDeclaredMadeForKids: false },
+            snippet: { title: youtubeTitle(title ?? ''), description: caption },
+            status: { privacyStatus: youtubePrivacyStatus ?? defaultPrivacyStatus, selfDeclaredMadeForKids: false },
           }),
         },
       )
       await expectProviderOk('youtube', metadataResponse)
-      const uploadUrl = metadataResponse.headers.get('location')
-      if (!uploadUrl) {
-        throw new PlatformAdapterError('youtube', 'unknown_platform_error', 'missing YouTube upload session')
-      }
+      const uploadUrl = uploadSession(metadataResponse.headers.get('location'))
 
+      await beforeExternalPost?.()
       const uploadResponse = await fetch(uploadUrl, {
         method: 'PUT',
+        redirect: 'error',
         headers: {
           authorization: `Bearer ${accessToken}`,
           'content-type': video.contentType,
@@ -117,7 +150,34 @@ export function createYouTubeAdapter(config: YouTubeConfig): PlatformAdapter {
         body: video.bytes,
       })
       const body = asRecord(await expectProviderOk('youtube', uploadResponse))
-      return { status: 'posted', externalPostId: String(body.id ?? ''), providerResponse: body }
+      const id = videoId(body.id)
+      if (!id) throw new PlatformAdapterError('youtube', 'ambiguous_post_result', 'YouTube accepted upload without a usable video ID')
+      // No more HTTP after upload acceptance: the publisher stores this ID first.
+      return videoResult(id, 'processing')
+    },
+    async pollPublishStatus({ accessToken, providerResponse, youtubePrivacyStatus }): Promise<PublishResult> {
+      const id = videoId(providerResponse.id)
+      if (!id) throw new PlatformAdapterError('youtube', 'ambiguous_post_result', 'YouTube upload ID is missing; manual reconciliation required')
+      const url = new URL('https://www.googleapis.com/youtube/v3/videos')
+      url.searchParams.set('part', 'status,processingDetails')
+      url.searchParams.set('id', id)
+      const response = await fetch(url.toString(), { headers: { authorization: `Bearer ${accessToken}` } })
+      const body = asRecord(await expectProviderOk('youtube', response))
+      const items = Array.isArray(body.items) ? body.items : []
+      const resource = items.map(asRecord).find((item) => item.id === id)
+      if (!resource) throw new PlatformAdapterError('youtube', 'processing_timeout', 'YouTube video is not available for status verification')
+      const status = asRecord(resource.status)
+      const processing = asRecord(resource.processingDetails)
+      if (['failed', 'rejected', 'deleted'].includes(String(status.uploadStatus)) || ['failed', 'terminated'].includes(String(processing.processingStatus))) {
+        throw new PlatformAdapterError('youtube', 'media_rejected', 'YouTube rejected the video or could not complete processing')
+      }
+      if (processing.processingStatus !== 'succeeded' || status.uploadStatus !== 'processed') return videoResult(id, 'processing')
+      const expectedPrivacy = youtubePrivacyStatus ?? defaultPrivacyStatus
+      if (!['private', 'unlisted', 'public'].includes(String(status.privacyStatus))) return videoResult(id, 'processing')
+      if (status.privacyStatus !== expectedPrivacy) {
+        throw new PlatformAdapterError('youtube', 'platform_review_required', 'YouTube visibility differs from the selected audience; check the video in YouTube Studio')
+      }
+      return videoResult(id, 'posted')
     },
   }
 }

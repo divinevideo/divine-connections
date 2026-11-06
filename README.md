@@ -1,6 +1,6 @@
 # Divine Connections
 
-Cloudflare Worker uniting Divine identity verification and opt-in video crossposting over one connections core. One set of OAuth accounts powers both: connecting an external account proves ownership (a durable, queryable `verifications` table backs public badges) and enables publishing. Host-based dispatch serves `verifier.divine.video` (public verification API + self-service landing page) and `crossposter.divine.video` (publishing API). Design: `docs/plans/2026-07-28-divine-connections-design.md`; implementation plan: `docs/plans/2026-07-29-divine-connections-implementation.md`.
+Cloudflare Worker uniting Divine identity verification and opt-in video crossposting over one connections core. One set of OAuth accounts powers both: connecting an external account proves ownership (a durable, queryable `verifications` table backs public badges) and makes opt-in publishing available where supported. Host-based dispatch serves `verify.divine.video` (public verification API + self-service landing page) and `crossposter.divine.video` (publishing API). Design: `docs/plans/2026-07-28-divine-connections-design.md`; implementation plan: `docs/plans/2026-07-29-divine-connections-implementation.md`.
 
 The publishing core below was scaffolded from divine-crossposter and remains accurate: a creator connects a platform account, chooses manual or automatic posting, and the worker publishes their Divine videos there on their behalf. Nothing posts until the creator opts in.
 
@@ -11,8 +11,8 @@ The codebase is a TypeScript Worker built on [Hono](https://hono.dev), using D1 
 ## Features
 
 - **Opt-in only.** No video leaves Divine until a creator connects an account and picks a posting mode. Automatic mode applies only to Divine videos created after the creator turned it on.
-- **Supported platforms.** Instagram Stories/Reels, TikTok, X, and YouTube Shorts, each behind its own adapter. A platform reports as enabled only when its `ENABLE_*` flag is `true` and matching OAuth credentials are configured, so an operator can stage a provider before exposing it.
-- **Manual and automatic posting.** Manual jobs are created when the creator asks. Automatic jobs are created after a Divine publish, either from a client push or from the scheduled reconciler.
+- **Supported platforms.** Instagram Stories/Reels, TikTok, X, YouTube videos, and Snapchat Spotlight/public Stories, each behind its own adapter. A platform reports as enabled only when its `ENABLE_*` flag is `true` and matching OAuth credentials are configured, so an operator can stage a provider before exposing it.
+- **Manual and automatic posting.** Manual jobs are created when the creator asks. Automatic jobs are created after a Divine publish, either from a client push or from the scheduled reconciler, for providers that support it. TikTok requires manual confirmation for every post.
 - **Idempotent jobs.** Jobs are keyed by `(pubkey, video_event_id, platform, external_account_id)`, so duplicate requests return the existing job instead of double-posting.
 - **Built-in setup UI.** `GET /` serves a self-contained web app where a creator signs in with their Divine/Nostr account, connects platforms, and sets posting switches. `GET /platforms` shows provider readiness (HTML, or JSON with `?format=json`).
 
@@ -21,7 +21,7 @@ The codebase is a TypeScript Worker built on [Hono](https://hono.dev), using D1 
 Crossposter is a single Worker with four entry points wired together in `src/index.ts`:
 
 - **HTTP API and UI** — Hono routes for the setup UI, health, provider readiness, OAuth connections, preferences, crosspost creation, and job reads.
-- **Platform adapters** — one adapter per platform (`src/platforms/instagram.ts`, `tiktok.ts`, `x.ts`, `youtube.ts`) behind a shared adapter interface and a registry that reports which providers are configured.
+- **Platform adapters** — one adapter per platform (`src/platforms/instagram.ts`, `tiktok.ts`, `x.ts`, `youtube.ts`, `snapchat.ts`) behind a shared adapter interface and a registry that reports which providers are configured.
 - **Queue consumer** — consumes `{ "jobId": "..." }` messages from `CROSSPOST_QUEUE`, refreshes tokens when needed, calls the platform adapter, records an attempt, and updates job state. Controlled application retries are fresh delayed messages; the current delivery is acknowledged only after that send succeeds.
 - **Scheduled reconciler and watchdog** — a Cron Trigger backs up automatic mode, recovers stale claims, re-enqueues due D1 jobs, and checks both the primary queue and dead-letter queue (DLQ). Divine web/mobile should still push a newly published event after a successful publish.
 
@@ -60,7 +60,7 @@ npm run typecheck
 npm run test:once
 ```
 
-Create the backing infrastructure once per environment:
+For a new isolated development environment only, create its backing infrastructure. Production already has these resources; preserve them:
 
 ```bash
 npx wrangler d1 create divine-crossposter
@@ -79,7 +79,7 @@ The initial schema (`migrations/0001_initial.sql`) creates `oauth_states`, `conn
 
 ## Configuration
 
-The Worker is deployed as `divine-connections`. Until the cutover tracked in #2 it serves only its `*.workers.dev` hostname (the fallback union of both surfaces); at cutover the custom domains `verifier.divine.video` (public verification API + landing page) and `crossposter.divine.video` (publishing API) move to it from the legacy workers, and the queue consumer + reconciler cron re-enable here. The `TODO(#2)` markers in `wrangler.toml` cover all three.
+The merged source deploys onto the historical Worker `divine-crossposter`, preserving its existing encryption key, shared D1 and queue/cron ownership. The configured domains are `crossposter.divine.video` and `verify.divine.video`; publishing stays isolated from verifier hosts. The legacy `verifier.divine.video` cutover remains separate and needs fresh operator verification. Do not replace this Worker or rotate its key during provider setup. See [provider setup and rollout](docs/provider-rollout.md) for disabled-provider credentials, approval gates, native-client limits and acceptance isolation.
 
 Bluesky OAuth is deliberately deferred to #1: Bluesky verifies via AT Protocol identity-link records and public proof posts, and gains OAuth when Bluesky crossposting exists.
 
@@ -87,12 +87,12 @@ Bluesky OAuth is deliberately deferred to #1: Bluesky verifies via AT Protocol i
 
 | Binding | Type | Purpose |
 | --- | --- | --- |
-| `DB` | D1 database | Service-owned state, shared with the legacy crossposter worker (`divine-crossposter`). |
+| `DB` | D1 database | Service-owned state on the preserved historical Worker (`divine-crossposter`); shared legacy tables remain intact. |
 | `CACHE_KV` | KV namespace | Negative verify results, NIP-05 results, and rate-limit windows. D1 owns success state. |
 | `CROSSPOST_QUEUE` | Queue producer | Enqueues publish jobs onto `divine-crossposter-jobs`. |
 | `CROSSPOST_DLQ` | Queue producer/metrics binding | Reads aggregate backlog metrics for `divine-crossposter-jobs-dlq`. |
 
-The queue consumer (`max_batch_size = 10`, `max_batch_timeout = 30`, five native retries, `divine-crossposter-jobs-dlq` as dead-letter queue) and the reconciler/watchdog cron are configured in `wrangler.toml` but commented out behind `TODO(#2)` until cutover — a second consumer would steal jobs from the live crossposter worker, and double cron double-fires ops alerts against the shared D1.
+The queue consumer (`max_batch_size = 10`, `max_batch_timeout = 30`, five native retries, `divine-crossposter-jobs-dlq` as dead-letter queue) and reconciler/watchdog cron are active in the checked-in configuration. Preserve single consumer/cron ownership; do not create a competing Worker against the shared database.
 
 ### Variables
 
@@ -146,7 +146,7 @@ ${OAUTH_REDIRECT_BASE}/connections/youtube/callback
 Provider notes:
 
 - Instagram uses Meta content publishing: create a Story or Reel container from a public video URL, wait for processing, then publish.
-- TikTok Direct Post requires publish consent and may require app review before public posting.
+- TikTok Direct Post is manual-only: each post requires current creator settings, a preview, edited caption, explicit privacy, interaction/disclosure choices and music/policy consent. Content Posting review and verified source-domain access are required before rollout.
 - X uses OAuth 2.0 plus chunked media upload before post creation. In the X Developer Portal, configure the production application as an **OAuth 2.0 confidential web application** with **Read and write** permission, callback `https://crossposter.divine.video/connections/x/callback`, and scopes `tweet.read tweet.write users.read media.write offline.access`. The portal client ID and client secret must be the pair installed as the `TWITTER_CLIENT_ID` and `TWITTER_CLIENT_SECRET` Worker secrets.
 - YouTube Shorts uses the YouTube Data API upload flow; Shorts classification depends on video format, duration, and metadata conventions.
 
@@ -226,11 +226,11 @@ Clients see connection summaries, preferences, job summaries, normalized statuse
 
 Job statuses: `queued`, `uploading`, `dispatching`, `processing`, `posted`, `failed`, `needs_reauth`, `skipped`.
 
-Normalized error codes: `rate_limited`, `provider_payment_required`, `needs_reauth`, `media_rejected`, `platform_review_required`, `processing_timeout`, `expired`, `not_connected`, `not_owner`, `not_eligible`, `unknown_platform_error`, `ambiguous_post_result`.
+Normalized error codes: `rate_limited`, `provider_payment_required`, `provider_quota_exceeded`, `provider_upload_limit`, `needs_reauth`, `media_rejected`, `platform_review_required`, `processing_timeout`, `expired`, `not_connected`, `not_owner`, `not_eligible`, `unknown_platform_error`, `ambiguous_post_result`.
 
 - Transient provider failures and processing polls use bounded application backoff: Crossposter sends a fresh delayed queue message, then acknowledges the current delivery. `message.retry()` is not used. Only unexpected infrastructure failures or a failed fresh-message send remain unacknowledged; Cloudflare retries those deliveries at most five times before moving them to the DLQ.
 - Scheduled reconciliation recovers a stale X `uploading` claim only while the job is unexpired and the incremented retry count remains within the retry budget. An expired claim becomes `skipped`; a claim that exhausts the retry budget remains terminal `failed` with no `nextRetryAt`. A stale X `dispatching` claim has an unknown external outcome, so it becomes terminal `ambiguous_post_result` and requires manual reconciliation; it is never automatically reposted.
-- A provider HTTP 402 is `provider_payment_required`: the job fails with no retry, and a duplicate delivery does not reclaim it. Recovering it after the provider account is funded is a deliberate operator action. A 402 from X after the dispatch fence is still `ambiguous_post_result`.
+- Before publication dispatch, a provider HTTP 402 is `provider_payment_required`: the job fails with no retry, and a duplicate delivery does not reclaim it. Recovering it after the provider account is funded is a deliberate operator action. A 402 from X after the dispatch fence is still `ambiguous_post_result`. Pure status polls of accepted YouTube/TikTok/Snapchat publications retain their checkpoint and bounded polling on 402, as do YouTube status polls that hit `quotaExceeded`. Exhausted or expired billing- or quota-blocked polls become unknown/manual-reconciliation outcomes (`ambiguous_post_result`), never a reason to repost. Snapchat media-ready continuations cross an outward POST fence and retain that ambiguity protection.
 - If token refresh or publishing returns an auth failure, the connection and job are marked `needs_reauth`; automatic jobs for that platform stop until the user reconnects. Manual retry after reconnect reuses the existing job where possible and preserves attempt history.
 - Disconnecting relies on local D1 state to stop future Divine-initiated crossposts. Provider revocation, where supported, is called best-effort; a failed revocation does not keep local crossposting enabled.
 
@@ -494,6 +494,221 @@ Instagram Login requires a professional Creator or Business account. Stories mus
 
 - **X:** Use the OAuth 2.0 client ID/secret, not the OAuth 1.0 consumer key/secret. Video uploads use `/2/media/upload/initialize`, `/{id}/append`, and `/{id}/finalize`; status polling uses `/2/media/upload`. Confirm app access and available API credits separately.
 - **YouTube:** The OAuth grant needs both `youtube.upload` and `youtube.readonly`: upload permission alone cannot read the connected channel via `channels.list`. Existing grants must reconnect to add the channel-read scope. The OAuth client must be a web application with the exact YouTube callback above; enabling the Data API or installing an API key is insufficient.
-- **TikTok:** Terminal `FAILED` upload status stops polling; `auth_removed` requests reconnection. Keep rollout disabled until Direct Post approval, credentials, verified source domain, and the required creator controls are ready. The existing posting flow still uses `SELF_ONLY`; it needs fresh creator info, explicit per-post privacy selection, preview/caption and interaction controls, and required consent before public rollout. Failure-handling fixes alone do not make that flow ready.
+- **TikTok:** Terminal `FAILED` upload status stops polling; `auth_removed` requests reconnection. Keep rollout disabled until Direct Post approval, credentials, verified source domain, and the required creator controls are ready. The implemented manual flow fetches fresh creator info, offers explicit per-post privacy/interaction/disclosure choices, and snapshots exact confirmed text (including empty text) without adding attribution. Duration comes from the eligible source event metadata; missing or excessive duration blocks posting. TikTok advertises `supportsAutomatic=false`; automatic preference updates are rejected and legacy automatic preferences are excluded. Unconfirmed legacy jobs fail before upload. Implementation and mocked tests do not establish production approval or successful live publishing.
 
 Official contracts: [X media upload](https://docs.x.com/x-api/media/initialize-media-upload), [YouTube channel lookup](https://developers.google.com/youtube/v3/docs/channels/list), [TikTok publishing status](https://developers.tiktok.com/doc/content-posting-api-reference-get-video-status), [TikTok creator controls](https://developers.tiktok.com/doc/content-sharing-guidelines).
+
+
+### YouTube visibility and processing
+
+Save a visibility default with authenticated `PUT /preferences/youtube`:
+
+```json
+{"mode":"automatic","youtubePrivacyStatus":"private"}
+```
+
+Choose an audience for one manual video with authenticated `POST /videos/:event_id/crossposts`:
+
+```json
+{"platforms":["youtube"],"youtubePrivacyStatus":"unlisted","youtubeChannel":{"connectionId":"<connection_id>","channelId":"<external_account_id>"}}
+```
+
+Manual YouTube uploads require the connection ID and channel ID from authenticated
+`GET /connections` for the channel shown at confirmation. The selected channel
+is the connected YouTube account with the latest update, then creation time.
+A stale or mismatched confirmation is rejected; reload and confirm again before uploading.
+
+Accepted values are `private`, `unlisted`, and `public`. Invalid values, explicit
+null, or a YouTube audience without YouTube selected return HTTP 400 before job
+creation. Mode-only preference updates preserve the saved audience. Manual
+uploads use the override, then the saved preference, then
+`YOUTUBE_DEFAULT_PRIVACY_STATUS` (private when unset). Automatic uploads use the
+saved preference or configured default. Connecting an account alone never
+publishes a video.
+
+Migration `0009_youtube_options.sql` adds side tables only; apply it before the
+Worker update. New jobs expose immutable `youtubePrivacyStatus` and
+`youtubeTitle` snapshots. Duplicate requests return the original choice. Existing
+jobs without options keep configured privacy behavior. The title comes from the
+source title or original description, without attribution, and retains whole
+Unicode graphemes within YouTube's 100-character limit. Descriptions preserve
+source text and attribution within 5000 UTF-8 bytes; longer text is shortened
+without splitting graphemes. YouTube forbids `<` and `>` in descriptions; those
+uploads fail with an actionable message rather than silently rewriting the text.
+
+An accepted upload remains `processing` until `videos.list` confirms successful
+processing, a processed upload, and the selected effective privacy. Private
+success reads “Uploaded privately,” unlisted success reads “Uploaded unlisted,”
+and public success reads “Published publicly.” Destination links use the
+canonical YouTube watch URL; private links still require authorized access.
+YouTube decides Shorts classification. Missing or unknown status never counts
+as success, and provider processing rejection or audience mismatch is a failure.
+
+The dispatch fence is persisted before the final upload request. An interruption
+or missing returned video ID requires manual reconciliation; the service will
+not blindly create another upload. Once accepted, the ID is stored before any
+poll. Poll errors and processing timeouts never cause re-upload of that video.
+Resumable session URLs must use Google's documented HTTPS upload endpoint, and
+upload redirects are rejected before credentials can be forwarded elsewhere.
+
+YouTube remains disabled in checked-in configuration. OAuth credentials,
+provider review/access restrictions, and an explicitly authorized real upload
+are still rollout dependencies. A Google project or verifier API key does not
+establish OAuth publishing readiness. No live upload was performed for this
+implementation.
+
+Contracts: [YouTube video resource](https://developers.google.com/youtube/data/reference/rest/v3/videos),
+[video status lookup](https://developers.google.com/youtube/data/reference/rest/v3/videos/list),
+and [resumable upload protocol](https://developers.google.com/youtube/data/guides/using_resumable_upload_protocol).
+
+
+### TikTok manual Direct Post setup and API
+
+Keep `ENABLE_TIKTOK=false` until a maintainer verifies the production app owner,
+`video.publish` approval, callback registration and ownership of the actual media
+URL domain/prefix. Login Kit/profile approval alone is insufficient. An unaudited
+app is restricted to private accounts and Only me posts; verify the approved app's
+visibility permissions before enabling it. No live upload has been performed for
+this implementation.
+
+Apply additive migration `0010_tiktok_options.sql` before deploying this code.
+`GET /connections/tiktok/creator-info` requires authentication, refreshes an
+expired connection token, and returns `{ connectionId, creatorInfo }` with safe
+current account/settings fields. `GET /videos/:event_id/tiktok-preview` returns
+owner-validated source caption, media URL and duration without enqueueing or
+uploading. Both routes exist only on the publishing surface, never on either
+verifier hostname. Missing source duration is an eligibility error, even if a
+client supplies its own duration.
+
+The hosted page fetches both resources when opening its Post to TikTok dialog.
+It shows the account nickname, playable preview, editable original Divine text,
+provider privacy options with no default, and unchecked interaction controls.
+Forbidden interactions are disabled. Commercial disclosure starts off; enabling
+it requires Your brand and/or Branded content. Branded content needs public or
+friends visibility and the branded-content declaration. The declaration links to
+TikTok's music confirmation and, when applicable, branded-content policy. Nothing
+is uploaded before explicit submission.
+
+Send `tiktokPostOptions` alongside `platforms: ["tiktok"]` to
+`POST /videos/:event_id/crossposts`:
+
+```json
+{
+  "platforms": ["tiktok"],
+  "tiktokPostOptions": {
+    "connectionId": "connection-id-returned-by-creator-info",
+    "creatorInfo": {
+      "creator_username": "synthetic.creator",
+      "creator_nickname": "Synthetic Creator",
+      "privacy_level_options": ["SELF_ONLY"],
+      "comment_disabled": false,
+      "duet_disabled": true,
+      "stitch_disabled": true,
+      "max_video_post_duration_sec": 60
+    },
+    "privacyLevel": "SELF_ONLY",
+    "allowComment": false,
+    "allowDuet": false,
+    "allowStitch": false,
+    "commercialContent": false,
+    "brandOrganic": false,
+    "brandContent": false,
+    "confirmedCaption": "Creator-edited text, or an empty string",
+    "musicUsageConfirmed": true,
+    "brandedContentConfirmed": false
+  }
+}
+```
+
+Replace the synthetic `connectionId` and `creatorInfo` example with the values returned by GET.
+The API re-fetches current TikTok settings and validates the source duration.
+The first usable URL and its hash come from one selected media descriptor;
+multiple URLs inside that descriptor may represent streaming/fallback aliases of
+the same clip. A unique measured event-level duration is accepted for one
+unambiguous source group, as emitted by Divine mobile. Conflicting duration
+metadata or duration borrowed from a distinct rendition is rejected. Legacy
+top-level metadata must likewise identify an unambiguous source and duration. A
+changed connection/account or settings requires a new preview/confirmation; a
+settings change returns `409 tiktok_confirmation_changed`. Confirmed captions
+longer than 2200 UTF-16 characters are rejected, never silently truncated. Jobs
+freeze the confirmed options and server-derived duration in `tiktok_job_options`;
+duplicates keep the original snapshot. The publisher rechecks provider settings,
+uses the confirmed choices, polls processing, rejects provider errors in HTTP 200
+responses, and fences ambiguous dispatches against blind retry.
+
+Provider references: [creator info](https://developers.tiktok.com/docs/en/content-posting-api-reference-query-creator-info),
+[Direct Post](https://developers.tiktok.com/docs/en/content-posting-api-reference-direct-post),
+[required controls and consent](https://developers.tiktok.com/docs/en/content-sharing-guidelines).
+
+### Snapchat Public Profile publishing (disabled)
+
+Snapchat supports public Spotlight and public Story destinations. It does not
+support private/friends Stories or Login Kit publishing. Both
+`ENABLE_SNAPCHAT` and `SNAPCHAT_PUBLIC_PROFILE_APPROVED` remain `false`.
+Configuration also requires `SNAPCHAT_CLIENT_ID` and `SNAPCHAT_CLIENT_SECRET`
+from a team-owned Business Manager OAuth app. Public Profile API allowlisting
+and actual publishing permission must be independently confirmed before the
+approval flag is set. Credential presence and the `snapchat-profile-api` scope
+alone are not proof of publishing approval.
+
+Register the exact callback:
+https://crossposter.divine.video/connections/snapchat/callback
+
+OAuth creates a connection with posting off and an unconfirmed public profile.
+On the authenticated publishing host:
+
+- `GET /connections/snapchat/:connection_id/profiles` returns the token's own
+  profile and authorized profiles in its associated organization when accessible.
+  It returns only profile ID/name/display name, never credentials. Organization-only
+  users without an own public profile are not supported by this discovery flow.
+- `POST /connections/snapchat/:connection_id/profile` with
+  `{"profileId":"<authorized-profile-uuid>","confirmed":true}` rechecks current
+  authorization and explicitly confirms the destination. Changing it sets mode
+  to manual; automatic posting requires a new opt-in. Existing jobs keep their
+  original profile and cannot post through a newly selected profile.
+- `PUT /preferences/snapchat` accepts
+  `{"mode":"automatic","snapchatDestination":"story"}`. Modes remain
+  `disabled`, `manual`, `automatic`. Destination defaults to `spotlight`.
+- `POST /videos/:event_id/crossposts` accepts
+  `{"platforms":["snapchat"],"snapchatProfile":{"connectionId":"<confirmed-connection-id>","profileId":"<confirmed-profile-uuid>"},"snapchatDestination":"story"}`.
+  The confirmed identity must match the current selection; missing or stale consent
+  returns HTTP 409 and requires fresh confirmation. The profile, override and
+  authoritative duration/dimensions are frozen in additive job-options storage.
+  Duplicate requests retain the original destination. Invalid/foreign options
+  return HTTP 400. Profile selection routes are absent from verifier hosts.
+- Public `/verified` and `/verify` lookups accept Snapchat OAuth projections by
+  stable profile ID. Snapchat does not support proof-post verification. Discovery
+  permission loss marks only the matching connection for reconnection.
+
+Spotlight uses the first 160 Unicode code points of original Divine text, without
+adding attribution text; the separate supported `link` field always carries the
+full Divine source URL. Locale is currently `en_US`. Public Stories use the source
+link and no textual caption/overlay. Nothing transcodes or changes destination.
+
+Eligibility requires authoritative metadata bound to the selected source group:
+portrait MP4 of at least 540×960 pixels, 6–60 seconds for Spotlight or 5–60 for
+Story. The service conservatively caps plaintext at 16 MiB to fit Worker memory;
+Snap's documented multipart API supports larger files. Missing/conflicting
+metadata is rejected. Automatic ineligibility is recorded as a failed job while
+other opted-in providers continue.
+
+Media is encrypted using fresh AES-256-CBC key/IV and uploaded in at most 8 MiB
+parts, then finalized. Returned upload paths must name the exact profile/media
+on the Snapchat API host; authenticated redirects are rejected. Encryption
+material and upload paths never enter job checkpoints or diagnostics. Interrupted
+partial uploads restart unpublished media; finalized media is durable and reused.
+There is no persistent partial-chunk resume. Finalized media older than 23 hours
+is rejected before dispatch rather than risking the provider's 24-hour expiry.
+
+Publication is fenced durably before the outward POST. Unknown dispatch outcomes
+require manual reconciliation and never replay. An explicit permission denial
+requires reconnection. Accepted Spotlight remains processing until readback says
+`LIVE`; rejection is terminal. A Story POST supplies no post ID, so processing
+continues until a fresh snap is read back with the exact immutable Divine link.
+Readback examines at most ten public stories and one hundred snaps per story;
+absence of a match remains processing and eventually times out. This can miss
+very high-volume profiles. The API does not return a public permalink, so neither destination generates one.
+A stable provider post ID is retained; the creator can check it in Snapchat.
+
+Before enabling, follow [the Snapchat rollout checklist](docs/snapchat-rollout.md).
+These implementation tests are not production approval or evidence of a live post.

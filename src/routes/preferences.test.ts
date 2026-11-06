@@ -16,9 +16,9 @@ function testEnv(db: D1Database): Env {
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
     TOKEN_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef',
-    ENABLE_TIKTOK: 'true',
-    TIKTOK_CLIENT_KEY: 'tiktok-client',
-    TIKTOK_CLIENT_SECRET: 'tiktok-secret',
+    ENABLE_X: 'true',
+    TWITTER_CLIENT_ID: 'x-client',
+    TWITTER_CLIENT_SECRET: 'x-secret',
   }
 }
 
@@ -41,6 +41,21 @@ describe('preference routes', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it.each(['private', 'unlisted', 'public'])('saves YouTube %s and preserves visibility on mode-only updates', async (youtubePrivacyStatus) => {
+    await upsertConnection(db, connection({ id: 'conn_youtube', platform: 'youtube' }))
+    fetchMock.mockImplementation(async () => authResponse())
+    const put = (body: unknown) => app.request('/preferences/youtube', { method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' }, body: JSON.stringify(body) }, testEnv(db))
+    expect(await (await put({ mode: 'manual', youtubePrivacyStatus })).json()).toMatchObject({ preference: { youtubePrivacyStatus } })
+    expect(await (await put({ mode: 'automatic' })).json()).toMatchObject({ preference: { youtubePrivacyStatus } })
+  })
+
+  it.each([['youtube', null], ['youtube', 'friends'], ['x', 'public']])('rejects invalid YouTube preference %s %s', async (platform, youtubePrivacyStatus) => {
+    fetchMock.mockImplementation(async () => authResponse())
+    const response = await app.request('/preferences/' + platform, { method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'disabled', youtubePrivacyStatus }) }, testEnv(db))
+    expect(response.status).toBe(400)
+    expect(await getPreferences(db, PUBKEY_A)).toEqual([])
   })
 
   it('saves and returns an Instagram destination and preserves it on a mode-only update', async () => {
@@ -92,7 +107,7 @@ describe('preference routes', () => {
     expect(await getPreferences(db, PUBKEY_A)).toEqual([])
   })
 
-  it.each([['instagram', 'post'], ['instagram', null], ['tiktok', 'story']])('rejects invalid destination %s %s without saving a preference', async (platform, instagramDestination) => {
+  it.each([['instagram', 'post'], ['instagram', null], ['x', 'story'], ['tiktok', 'story']])('rejects invalid destination %s %s without saving a preference', async (platform, instagramDestination) => {
     fetchMock.mockImplementation(async () => authResponse())
     const response = await app.request('/preferences/' + platform, { method: 'PUT', headers: { authorization: 'Bearer token', 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'disabled', instagramDestination }) }, testEnv(db))
     expect(response.status).toBe(400)
@@ -100,11 +115,11 @@ describe('preference routes', () => {
   })
 
   it('lists authenticated preferences', async () => {
-    await upsertConnection(db, connection({ id: 'conn_tiktok' }))
+    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x' }))
     await setPreference(db, {
       pubkey: PUBKEY_A,
-      platform: 'tiktok',
-      connectionId: 'conn_tiktok',
+      platform: 'x',
+      connectionId: 'conn_x',
       mode: 'manual',
       automaticEnabledAt: null,
       createdAt: 1_000,
@@ -118,8 +133,8 @@ describe('preference routes', () => {
     await expect(response.json()).resolves.toEqual({
       preferences: [
         {
-          platform: 'tiktok',
-          connectionId: 'conn_tiktok',
+          platform: 'x',
+          connectionId: 'conn_x',
           mode: 'manual',
           automaticEnabledAt: null,
           createdAt: 1_000,
@@ -133,7 +148,7 @@ describe('preference routes', () => {
     fetchMock.mockResolvedValueOnce(authResponse())
 
     const missingConnection = await app.request(
-      '/preferences/tiktok',
+      '/preferences/x',
       {
         method: 'PUT',
         headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
@@ -147,11 +162,11 @@ describe('preference routes', () => {
       error: { code: 'not_connected' },
     })
 
-    await upsertConnection(db, connection({ id: 'conn_tiktok' }))
+    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x' }))
     fetchMock.mockResolvedValueOnce(authResponse())
 
     const connected = await app.request(
-      '/preferences/tiktok',
+      '/preferences/x',
       {
         method: 'PUT',
         headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
@@ -163,8 +178,8 @@ describe('preference routes', () => {
     expect(connected.status).toBe(200)
     await expect(connected.json()).resolves.toEqual({
       preference: {
-        platform: 'tiktok',
-        connectionId: 'conn_tiktok',
+        platform: 'x',
+        connectionId: 'conn_x',
         mode: 'automatic',
         automaticEnabledAt: 1_783_382_400,
         createdAt: 1_783_382_400,
@@ -174,11 +189,11 @@ describe('preference routes', () => {
   })
 
   it('clears automatic_enabled_at when switching to manual or disabled', async () => {
-    await upsertConnection(db, connection({ id: 'conn_tiktok' }))
+    await upsertConnection(db, connection({ id: 'conn_x', platform: 'x' }))
     await setPreference(db, {
       pubkey: PUBKEY_A,
-      platform: 'tiktok',
-      connectionId: 'conn_tiktok',
+      platform: 'x',
+      connectionId: 'conn_x',
       mode: 'automatic',
       automaticEnabledAt: 1_500,
       createdAt: 1_000,
@@ -187,7 +202,7 @@ describe('preference routes', () => {
     fetchMock.mockResolvedValueOnce(authResponse()).mockResolvedValueOnce(authResponse())
 
     const manual = await app.request(
-      '/preferences/tiktok',
+      '/preferences/x',
       {
         method: 'PUT',
         headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
@@ -196,7 +211,7 @@ describe('preference routes', () => {
       testEnv(db),
     )
     const disabled = await app.request(
-      '/preferences/tiktok',
+      '/preferences/x',
       {
         method: 'PUT',
         headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
@@ -207,28 +222,28 @@ describe('preference routes', () => {
 
     expect(manual.status).toBe(200)
     await expect(manual.json()).resolves.toMatchObject({
-      preference: { mode: 'manual', connectionId: 'conn_tiktok', automaticEnabledAt: null },
+      preference: { mode: 'manual', connectionId: 'conn_x', automaticEnabledAt: null },
     })
     expect(disabled.status).toBe(200)
     await expect(disabled.json()).resolves.toMatchObject({
       preference: { mode: 'disabled', connectionId: null, automaticEnabledAt: null },
     })
     await expect(getPreferences(db, PUBKEY_A)).resolves.toMatchObject([
-      { platform: 'tiktok', mode: 'disabled', connectionId: null, automaticEnabledAt: null },
+      { platform: 'x', mode: 'disabled', connectionId: null, automaticEnabledAt: null },
     ])
   })
 
   it('authenticates a NIP-98 signed PUT and still reads its JSON body', async () => {
     const body = JSON.stringify({ mode: 'automatic' })
     const event = await signNip98Event({
-      url: 'http://localhost/preferences/tiktok',
+      url: 'http://localhost/preferences/x',
       method: 'PUT',
       createdAt: Math.floor(Date.now() / 1000),
       body,
     })
 
     const response = await app.request(
-      '/preferences/tiktok',
+      '/preferences/x',
       {
         method: 'PUT',
         headers: { authorization: nip98Header(event), 'content-type': 'application/json' },
@@ -244,14 +259,14 @@ describe('preference routes', () => {
 
   it('rejects a NIP-98 signed PUT whose body was changed after signing', async () => {
     const event = await signNip98Event({
-      url: 'http://localhost/preferences/tiktok',
+      url: 'http://localhost/preferences/x',
       method: 'PUT',
       createdAt: Math.floor(Date.now() / 1000),
       body: JSON.stringify({ mode: 'off' }),
     })
 
     const response = await app.request(
-      '/preferences/tiktok',
+      '/preferences/x',
       {
         method: 'PUT',
         headers: { authorization: nip98Header(event), 'content-type': 'application/json' },

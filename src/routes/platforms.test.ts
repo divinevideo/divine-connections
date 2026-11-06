@@ -41,6 +41,8 @@ describe('platforms route', () => {
     expect(html).toContain('di<span>V</span>ine Crossposter')
     expect(html).toContain('Provider status')
     expect(html).toContain('TikTok')
+    expect(html).toContain('<strong>YouTube</strong>')
+    expect(html).not.toContain('YouTube Shorts')
     expect(html).toContain('Configured')
     expect(html).toContain('Waiting on keys')
     expect(html).toContain('Back to setup')
@@ -64,9 +66,10 @@ describe('platforms route', () => {
     await expect(res.json()).resolves.toEqual({
       platforms: [
         { platform: 'instagram', enabled: false, supportsAutomatic: true },
-        { platform: 'tiktok', enabled: true, supportsAutomatic: true },
+        { platform: 'tiktok', enabled: true, supportsAutomatic: false },
         { platform: 'x', enabled: false, supportsAutomatic: true },
         { platform: 'youtube', enabled: false, supportsAutomatic: true },
+        { platform: 'snapchat', enabled: false, supportsAutomatic: true, readinessReason: 'credentials_missing' },
       ],
     })
   })

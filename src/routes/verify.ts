@@ -14,7 +14,7 @@ const HEX_PUBKEY_RE = /^[0-9a-f]{64}$/i
 
 // The merged platform set: legacy proof-post platforms plus the OAuth-backed
 // providers and the canonical 'x' spelling (legacy 'twitter' stays accepted).
-const VALID_PLATFORM_LIST = 'github, twitter, x, instagram, mastodon, telegram, bluesky, discord, youtube, tiktok'
+const VALID_PLATFORM_LIST = 'github, twitter, x, instagram, mastodon, telegram, bluesky, discord, youtube, tiktok, snapchat'
 
 function validateClaim(claim: VerifyClaim, index: number): { index: number; error: string } | null {
   if (!claim.pubkey || !HEX_PUBKEY_RE.test(claim.pubkey)) {
@@ -26,8 +26,8 @@ function validateClaim(claim: VerifyClaim, index: number): { index: number; erro
   if (!claim.identity || !isValidIdentity(claim.identity)) {
     return { index, error: 'Invalid identity' }
   }
-  // Bluesky can verify via identity-link records without a proof post ID.
-  if (claim.platform === 'bluesky' && (!claim.proof || claim.proof.trim() === '')) {
+  // Bluesky identity links and Snapchat OAuth projections need no proof post ID.
+  if (['bluesky', 'snapchat'].includes(normalizeVerifyPlatform(claim.platform) ?? '') && (!claim.proof || claim.proof.trim() === '')) {
     return null
   }
   if (!claim.proof || !isValidProof(claim.proof)) {
@@ -99,7 +99,7 @@ verify.post('/single', async (c) => {
     return c.json({ error: 'Invalid or missing identity' }, 400)
   }
   const proof = body.proof || ''
-  if (body.platform !== 'bluesky') {
+  if (!['bluesky', 'snapchat'].includes(normalizeVerifyPlatform(body.platform) ?? '')) {
     if (!proof || !isValidProof(proof)) {
       return c.json({ error: 'Invalid or missing proof' }, 400)
     }

@@ -449,7 +449,7 @@ describe('landing page verify picker covers every platform', () => {
   const picker = (page: string) =>
     page.match(/<div class="platform-picker" role="radiogroup" aria-labelledby="verify-platform-label">[\s\S]*?<\/div>/)?.[0] ?? ''
 
-  it('lists all nine platforms, including ones not yet available', () => {
+  it('lists all ten platforms, including ones not yet available', () => {
     const markup = picker(html)
     for (const label of ['GitHub', 'Twitter / X', 'Bluesky', 'Mastodon', 'Telegram', 'TikTok', 'Instagram', 'YouTube', 'Discord']) {
       expect(markup).toContain(label)
@@ -461,7 +461,7 @@ describe('landing page verify picker covers every platform', () => {
     const buttons = markup.match(/<button[^>]*class="platform-choice/g) ?? []
     const svgs = markup.match(/<svg viewBox="0 0 24 24"/g) ?? []
 
-    expect(buttons.length).toBe(9)
+    expect(buttons.length).toBe(10)
     expect(svgs.length).toBe(buttons.length)
   })
 
@@ -500,7 +500,7 @@ describe('landing page verify picker covers every platform', () => {
   it('keeps a real radio group rather than unlabelled buttons', () => {
     const markup = picker(html)
     expect(markup).toContain('role="radiogroup"')
-    expect((markup.match(/role="radio"/g) ?? []).length).toBe(9)
+    expect((markup.match(/role="radio"/g) ?? []).length).toBe(10)
   })
 
   it('keeps the selects the rest of the page already reads', () => {

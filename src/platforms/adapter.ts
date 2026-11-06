@@ -1,6 +1,6 @@
 // ABOUTME: Defines provider publishing contracts and normalized errors.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
-import type { ErrorCode, InstagramDestination, Platform } from '../types'
+import type { ErrorCode, SnapchatDestination, SourceMedia, InstagramDestination, Platform, YouTubePrivacyStatus, TikTokPostOptions } from '../types'
 
 export type PlatformAccount = {
   id: string
@@ -17,6 +17,12 @@ export type TokenSet = {
 }
 
 export type PublishInput = {
+  snapchatDestination?: SnapchatDestination | null
+  sourceMedia?: SourceMedia | null
+  canonicalSourceUrl?: string
+  tiktokPostOptions?: TikTokPostOptions | null
+  youtubePrivacyStatus?: YouTubePrivacyStatus | null
+  youtubeTitle?: string | null
   instagramDestination?: InstagramDestination | null
   accessToken: string
   videoUrl: string
@@ -27,6 +33,7 @@ export type PublishInput = {
 }
 
 export type PollPublishInput = {
+  youtubePrivacyStatus?: YouTubePrivacyStatus | null
   accessToken: string
   providerResponse: Record<string, unknown>
   beforeExternalPost?: () => Promise<void>
@@ -91,6 +98,16 @@ export async function normalizeProviderError(platform: Platform, response: Respo
   const providerResponse = await readProviderResponse(response)
   let code: ErrorCode = 'unknown_platform_error'
 
+  // YouTube uses 403 for quota as well as authorization. Match only its
+  // documented reasons, never arbitrary error text or another provider's body.
+  const youtubeErrors = asRecord(asRecord(providerResponse).error).errors
+  const reasons = Array.isArray(youtubeErrors) ? youtubeErrors.map((item) => asRecord(item).reason) : []
+  if (platform === 'youtube' && response.status === 403 && reasons.includes('quotaExceeded')) {
+    return new PlatformAdapterError(platform, 'provider_quota_exceeded', 'YouTube API quota exceeded. Contact Divine support; no reset time is confirmed.', response.status, providerResponse, endpoint)
+  }
+  if (platform === 'youtube' && response.status === 400 && reasons.includes('uploadLimitExceeded')) {
+    return new PlatformAdapterError(platform, 'provider_upload_limit', 'YouTube channel upload limit reached. Check the channel before trying again; no reset time is confirmed.', response.status, providerResponse, endpoint)
+  }
   if (response.status === 402) {
     code = 'provider_payment_required'
   } else if (response.status === 401 || response.status === 403 || (platform === 'instagram' && Number(asRecord(asRecord(providerResponse).error).code) === 190)) {

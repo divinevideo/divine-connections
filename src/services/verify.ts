@@ -32,7 +32,7 @@ const PUBKEY_RE = /^[0-9a-f]{64}$/
 export function normalizeVerifyPlatform(platform: string): VerificationPlatform | null {
   const p = platform.toLowerCase() === 'twitter' ? 'x' : platform.toLowerCase()
   switch (p) {
-    case 'x': case 'instagram': case 'tiktok': case 'youtube':
+    case 'x': case 'instagram': case 'tiktok': case 'youtube': case 'snapchat':
     case 'bluesky': case 'github': case 'mastodon': case 'telegram': case 'discord':
       return p
     default:
@@ -56,6 +56,15 @@ export async function verifySingleClaim(
 
   if (!PUBKEY_RE.test(pubkey)) return result({ verified: false, error: 'Invalid pubkey' })
   if (!isValidIdentity(claim.identity)) return result({ verified: false, error: 'Invalid identity' })
+  // Snapchat is OAuth-only. Read the durable projection without accepting a
+  // proof post or making an upstream proof request, including when proof is empty.
+  if (platform === 'snapchat') {
+    const live = await findLiveVerification(env.DB, pubkey, platform, claim.identity)
+    return live?.method === 'oauth'
+      ? result({ verified: true, method: 'oauth', checked_at: live.verifiedAt, cached: true })
+      : result({ verified: false, error: 'Snapchat verification requires an account connection; proof posts are not supported' })
+  }
+
   const proofOptional = platform === 'bluesky'
   if (!proofOptional && !isValidProof(claim.proof)) return result({ verified: false, error: 'Invalid proof' })
   if (proofOptional && claim.proof && !isValidProof(claim.proof)) return result({ verified: false, error: 'Invalid proof' })

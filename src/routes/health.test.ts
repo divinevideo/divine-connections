@@ -1,6 +1,6 @@
 // ABOUTME: Tests for the crossposter setup page, focused on the manual
 // ABOUTME: crosspost button giving feedback before its request returns.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { renderHome } from './health'
 import type { Env } from '../types'
 
@@ -124,6 +124,169 @@ it('shows reconnect requirements and provider trouble in the signed-in connectio
   expect(list.innerHTML).toContain('Provider is having trouble')
 })
 
+describe('YouTube visibility and truthful publication status', () => {
+  it('offers saved and per-video choices and submits the chosen visibility', () => {
+    expect(html).toContain('data-youtube-default')
+    expect(html).toContain('data-youtube-video')
+    expect(html).toContain('youtubePrivacyStatus = youtubeVideoPrivacy(videoId)')
+    expect(html).toContain('Uploaded privately to YouTube')
+    expect(html).toContain('Published publicly to YouTube')
+    expect(html).not.toContain('YouTube Shorts')
+  })
+})
+
+it('emits parseable inline JavaScript', () => {
+  const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+  expect(scripts.length).toBeGreaterThan(0)
+  for (const script of scripts) expect(() => new Function(script[1])).not.toThrow()
+})
+
+it('renders distinct YouTube outcomes and uses the saved visibility until a video override exists', () => {
+  const labelSource = html.split('function jobLabel(job) {')[1]?.split('function renderVideoRows()')[0]
+  const label = new Function('platformName', 'escapeHtml', 'return function jobLabel(job) {' + labelSource)((value: string) => value, (value: string) => value)
+  expect(label({ platform: 'youtube', status: 'posted', youtubePrivacyStatus: 'private' })).toContain('Uploaded privately to YouTube')
+  expect(label({ platform: 'youtube', status: 'posted', youtubePrivacyStatus: 'unlisted' })).toContain('Uploaded unlisted to YouTube')
+  expect(label({ platform: 'youtube', status: 'posted', youtubePrivacyStatus: 'public' })).toContain('Published publicly to YouTube')
+  expect(label({ platform: 'youtube', status: 'processing', youtubePrivacyStatus: 'public' })).toContain('YouTube is processing')
+  const privacySource = html.split('function youtubeVideoPrivacy(videoId) {')[1]?.split('function youtubePrivacySelect')[0]
+  const privacy = new Function('preferences', 'youtubeVideoPrivacies', 'return function youtubeVideoPrivacy(videoId) {' + privacySource)([{ platform: 'youtube', youtubePrivacyStatus: 'unlisted' }], { second: 'public' })
+  expect(privacy('first')).toBe('unlisted')
+  expect(privacy('second')).toBe('public')
+})
+
+it('shows the selected YouTube channel and only its posting control when two channels are connected', () => {
+  const selection = html.split('function selectedYouTubeConnection() {')[1].split('function renderConnectRows()')[0]
+  const connect = html.split('function renderConnectRows() {')[1].split('function instagramVideoDestination')[0]
+  const videos = html.split('function renderVideoRows() {')[1].split('async function pollJobs')[0]
+  const list = { innerHTML: '' }, connectList = { innerHTML: '' }
+  const run = new Function('$', 'connections', `
+    const platforms = [{platform:'youtube',enabled:true}], session = {}, providerObservations = {};
+    const accountLoaded = true, videos = [{id:'synthetic-video'}], videoJobs = {};
+    const platformName = () => 'YouTube', escapeHtml = value => String(value);
+    const youtubePrivacySelect = () => '', youtubeVideoPrivacy = () => 'private';
+    function selectedYouTubeConnection() {${selection}
+    function renderConnectRows() {${connect}
+    function renderVideoRows() {${videos}
+    renderConnectRows(); renderVideoRows();
+  `)
+  run((id: string) => id === 'connect-list' ? connectList : list, [
+    { id: 'conn_old', externalAccountId: 'synthetic_old', platform: 'youtube', status: 'connected', externalAccountName: 'Old channel', createdAt: 1000, updatedAt: 2000 },
+    { id: 'conn_new', externalAccountId: 'synthetic_new', platform: 'youtube', status: 'connected', externalAccountName: 'New channel', createdAt: 2000, updatedAt: 3000 },
+  ])
+  expect(connectList.innerHTML).toContain('New channel')
+  expect(connectList.innerHTML).not.toContain('Old channel')
+  expect(list.innerHTML.match(/data-crosspost-platform="youtube"/g)).toHaveLength(1)
+})
+
+it('refreshes YouTube account controls after a rejected channel confirmation', async () => {
+  const source = html.split('async function triggerCrosspost(videoId, platform) {')[1].split('async function connectPlatform')[0]
+  const selection = html.split('function selectedYouTubeConnection() {')[1].split('function renderConnectRows()')[0]
+  const refresh = vi.fn(async () => {})
+  const trigger = new Function('window', 'connections', 'youtubeVideoPrivacy', 'api', 'refreshAccount', 'function selectedYouTubeConnection() {' + selection + 'return async function triggerCrosspost(videoId, platform) {' + source)(
+    { confirm: () => true }, [{ id: 'conn_youtube', externalAccountId: 'synthetic_channel', platform: 'youtube', status: 'connected' }], () => 'private', async () => { throw Error('Your YouTube channel changed. Reload and confirm again.') }, refresh)
+  await expect(trigger('synthetic-video', 'youtube')).rejects.toThrow('Your YouTube channel changed')
+  expect(refresh).toHaveBeenCalledOnce()
+})
+
+it('confirms the newest YouTube channel and submits its captured identity even if the cache changes', async () => {
+  const source = html.split('async function triggerCrosspost(videoId, platform) {')[1].split('async function connectPlatform')[0]
+  const accounts = [
+    { id: 'conn_old', externalAccountId: 'synthetic_old', platform: 'youtube', status: 'connected', externalAccountName: 'Old channel', createdAt: 1000, updatedAt: 3000 },
+    { id: 'conn_new', externalAccountId: 'synthetic_new', platform: 'youtube', status: 'connected', externalAccountName: 'New channel', createdAt: 2000, updatedAt: 3000 },
+  ]
+  let payload: any
+  const api = async (_path: string, init: RequestInit) => { payload = JSON.parse(String(init.body)); return { jobs: [] } }
+  const confirm = (message: string) => {
+    expect(message).toContain('New channel')
+    expect(message).toContain('unlisted visibility')
+    accounts[1].id = 'conn_changed'; accounts[1].externalAccountId = 'synthetic_changed'
+    return true
+  }
+  const selection = html.split('function selectedYouTubeConnection() {')[1]?.split('function renderConnectRows()')[0]
+  const trigger = new Function('window', 'connections', 'youtubeVideoPrivacy', 'api', 'videoJobs', 'renderVideoRows', 'setStatus', 'platformName', 'videoPolls', 'clearTimeout', 'setTimeout', (selection ? 'function selectedYouTubeConnection() {' + selection : '') + 'return async function triggerCrosspost(videoId, platform) {' + source)(
+    { confirm }, accounts, () => 'unlisted', api, {}, () => {}, () => {}, () => 'YouTube', {}, () => {}, () => {})
+  await trigger('synthetic-video', 'youtube')
+  expect(payload).toMatchObject({ youtubeChannel: { connectionId: 'conn_new', channelId: 'synthetic_new' }, youtubePrivacyStatus: 'unlisted' })
+})
+
+it('restores video controls when YouTube confirmation is cancelled and sends no request', async () => {
+  const source = html.split('async function triggerCrosspost(videoId, platform) {')[1]?.split('async function connectPlatform')[0]
+  const render = vi.fn()
+  const api = vi.fn()
+  const selection = html.split('function selectedYouTubeConnection() {')[1].split('function renderConnectRows()')[0]
+  const trigger = new Function('window', 'connections', 'youtubeVideoPrivacy', 'renderVideoRows', 'api', 'function selectedYouTubeConnection() {' + selection + 'return async function triggerCrosspost(videoId, platform) {' + source)({ confirm: () => false }, [{ id: 'conn_youtube', externalAccountId: 'synthetic_channel', platform: 'youtube', status: 'connected', externalAccountName: 'Synthetic channel' }], () => 'private', render, api)
+  await trigger('synthetic-video', 'youtube')
+  expect(api).not.toHaveBeenCalled()
+  expect(render).toHaveBeenCalledTimes(1)
+})
+
+
+describe('TikTok confirmation UI behavior', () => {
+  const creatorInfo = { creator_nickname: '<script>synthetic</script>', creator_username: 'synthetic.creator', privacy_level_options: ['SELF_ONLY', 'PUBLIC_TO_EVERYONE'], comment_disabled: false, duet_disabled: true, stitch_disabled: false, max_video_post_duration_sec: 60 }
+  function controls() {
+    const values: Record<string, any> = {}
+    for (const name of ['privacyLevel', 'confirmedCaption', 'allowComment', 'allowDuet', 'allowStitch', 'commercialContent', 'brandOrganic', 'brandContent', 'musicUsageConfirmed']) values[name] = { value: '', checked: false, disabled: false }
+    return { values, querySelector: (selector: string) => values[selector.match(/name="(.*?)"/)![1]] }
+  }
+  function draftFunction() {
+    const source = html.split('function tiktokFormOptions(form, data) {')[1]?.split('function tiktokConfirmationMarkup')[0]
+    return new Function('return function tiktokFormOptions(form, data) {' + source)()
+  }
+  it('blocks incomplete consent and preserves a deliberately empty edited caption', () => {
+    const draft = draftFunction()
+    const form = controls()
+    const data = { creatorInfo, connectionId: 'synthetic-connection' }
+    expect(draft(form, data)).toBeNull()
+    form.values.privacyLevel.value = 'SELF_ONLY'
+    expect(draft(form, data)).toBeNull()
+    form.values.musicUsageConfirmed.checked = true
+    expect(draft(form, data)).toMatchObject({ confirmedCaption: '', privacyLevel: 'SELF_ONLY', allowComment: false, allowDuet: false, allowStitch: false })
+    form.values.allowDuet.checked = true
+    expect(draft(form, data)).toBeNull()
+  })
+  it('requires disclosure selections and prevents private branded content', () => {
+    const draft = draftFunction()
+    const form = controls()
+    form.values.privacyLevel.value = 'SELF_ONLY'
+    form.values.musicUsageConfirmed.checked = true
+    form.values.commercialContent.checked = true
+    expect(draft(form, { creatorInfo })).toBeNull()
+    form.values.brandContent.checked = true
+    expect(draft(form, { creatorInfo })).toBeNull()
+    form.values.privacyLevel.value = 'PUBLIC_TO_EVERYONE'
+    expect(draft(form, { creatorInfo })).toMatchObject({ brandContent: true, brandedContentConfirmed: true })
+  })
+  it('renders escaped preview/caption and account with blank privacy and forbidden interaction disabled', () => {
+    const source = html.split('function tiktokConfirmationMarkup(data, preview) {')[1]?.split('async function confirmTikTok')[0]
+    const markup = new Function('escapeHtml', 'return function tiktokConfirmationMarkup(data, preview) {' + source)((value: unknown) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'))
+    const output = markup({ creatorInfo }, { caption: '</textarea><script>unsafe</script>', mediaUrl: 'https://media.divine.video/synthetic.mp4', durationSeconds: 6 })
+    expect(output).not.toContain('<script>')
+    expect(output).toContain('&lt;/textarea>')
+    expect(output).toMatch(/<option value="">Choose privacy/)
+    expect(output).toMatch(/name="allowDuet"[^>]*disabled/)
+    expect(output).toContain('<video')
+    expect(output).not.toMatch(/<input[^>]*checked/)
+  })
+})
+
+it('cancels TikTok confirmation without creating a job', async () => {
+  const source = html.split('async function triggerCrosspost(videoId, platform) {')[1]?.split('async function connectPlatform')[0]
+  const render = vi.fn()
+  const api = vi.fn()
+  const trigger = new Function('confirmTikTok', 'renderVideoRows', 'api', 'return async function triggerCrosspost(videoId, platform) {' + source)(async () => null, render, api)
+  await trigger('synthetic-video', 'tiktok')
+  expect(api).not.toHaveBeenCalled()
+  expect(render).toHaveBeenCalledOnce()
+})
+
+it('keeps the Divine login when TikTok asks the user to reconnect the provider', async () => {
+  const source = html.split('async function api(path, init = {}) {')[1]?.split('async function keycastPublicKey')[0]
+  const clear = vi.fn()
+  const api = new Function('getValidSession', 'fetch', 'clearRejectedSession', 'return async function api(path, init = {}) {' + source)(async () => ({ accessToken: 'synthetic-login-token' }), async () => Response.json({ error: { code: 'needs_reauth', message: 'Reconnect your TikTok account' } }, { status: 401 }), clear)
+  await expect(api('/connections/tiktok/creator-info')).rejects.toThrow('Reconnect your TikTok account')
+  expect(clear).not.toHaveBeenCalled()
+})
+
 describe('Instagram defaults before connecting', () => {
   const preferences = [{ platform: 'instagram', mode: 'automatic', instagramDestination: 'story' }]
 
@@ -189,4 +352,70 @@ it.each([
   const source = html.split('function jobLabel(job) {')[1].split('function renderVideoRows()')[0]
   const label = new Function('job', 'platformName', 'escapeHtml', 'function jobLabel(job) {' + source + ';return jobLabel(job);')
   expect(label({ platform: 'instagram', status: 'posted', instagramDestination, externalPostUrl: 'https://www.instagram.com/reel/synthetic/' }, () => 'Instagram', (value: string) => value)).toContain('>' + expected + '</a>')
+})
+
+it('shows Off after an Instagram destination save safely downgrades a stale Automatic preference', async () => {
+  const selects = html.split('function instagramDestinationSelect(')[1].split('function platformName(')[0]
+  const refresh = html.split('async function refreshAccount() {')[1].split('const FUNNELCAKE_BASE')[0]
+  const save = html.split('async function updatePreference(')[1].split("document.addEventListener('click'")[0]
+  const change = html.split("document.addEventListener('change'")[1].split('(async function boot()')[0]
+  const list = { innerHTML: '' }
+  const body = new Function('api', '$', `
+    const platforms = [{platform:'instagram',enabled:true}];
+    let connections = [{platform:'instagram',status:'needs_reauth'}];
+    let preferences = [{platform:'instagram',mode:'automatic',instagramDestination:'reel'}];
+    let session = {}, accountLoaded = true, pubkey, profile;
+    let preferenceSaves = Promise.resolve(), listener;
+    const document = { addEventListener: (_type, fn) => listener = fn };
+    const platformName = () => 'Instagram', escapeHtml = v => v;
+    const getValidSession = async () => ({}), keycastPublicKey = async () => 'synthetic';
+    const fetchProfile = async () => null, renderAccount = () => {}, renderAuthControls = () => {}, renderConnectRows = () => {}, renderVideoRows = () => {}, loadVideos = async () => {}, setStatus = () => {};
+    function instagramDestinationSelect(` + selects + 'async function refreshAccount() {' + refresh + 'async function updatePreference(' + save + "document.addEventListener('change'" + change + `
+    return async () => { await listener({target:{dataset:{instagramDefault:'true'},value:'story'}}); return preferences; };
+  `)
+  let saved: unknown
+  const run = body(async (path: string, init?: RequestInit) => {
+    if (init) { saved = JSON.parse(String(init.body)); return { preference: saved } }
+    if (path === '/connections') return { connections: [{ platform: 'instagram', status: 'needs_reauth' }] }
+    return { preferences: [{ platform: 'instagram', ...(saved as object) }] }
+  }, () => list)
+  expect(await run()).toMatchObject([{ mode: 'disabled', instagramDestination: 'story' }])
+  expect(list.innerHTML).toContain('<option value="disabled" selected>Off</option>')
+  expect(list.innerHTML).not.toContain('<option value="automatic" selected>Automatic</option>')
+})
+
+
+it.each(['preview', 'submit'])('refreshes actual connection controls after TikTok %s denial without losing Divine login', async (stage) => {
+  const triggerSource = html.split('async function triggerCrosspost(videoId, platform) {')[1].split('async function connectPlatform')[0]
+  const refreshSource = html.split('async function refreshAccount() {')[1].split("const FUNNELCAKE_BASE")[0]
+  const renderSource = html.split('function renderConnectRows() {')[1].split('function instagramDestinationSelect')[0]
+  const apiSource = html.split('async function api(path, init = {}) {')[1].split('async function keycastPublicKey')[0]
+  const list = { innerHTML: '' }
+  const clear = vi.fn()
+  const clearSource = html.split('function clearRejectedSession(response) {')[1].split('function isExpired')[0]
+  const calls: string[] = []
+  const run = new Function('$', 'fetch', 'clearSession', 'stage', `
+    let session = { accessToken: 'synthetic-login' };
+    let connections = [{ platform: 'tiktok', status: 'connected' }], preferences = [], pubkey, profile, accountLoaded;
+    const platforms = [{ platform: 'tiktok', enabled: true }], providerObservations = {};
+    const getValidSession = async () => session, keycastPublicKey = async () => 'synthetic';
+    const renderAuthControls = () => {}, renderAccount = () => {}, renderPreferenceRows = () => {}, renderVideoRows = () => {};
+    const fetchProfile = async () => null, loadVideos = async () => {}, platformName = value => value, escapeHtml = value => value;
+    function clearRejectedSession(response) {${clearSource}
+    async function api(path, init = {}) {${apiSource}
+    function renderConnectRows() {${renderSource}
+    async function refreshAccount() {${refreshSource}
+    const confirmTikTok = async () => stage === 'preview' ? api('/connections/tiktok/creator-info') : {};
+    async function triggerCrosspost(videoId, platform) {${triggerSource}
+    return triggerCrosspost;
+  `)(() => list, async (path: string) => {
+    calls.push(path)
+    if (path === '/connections') return Response.json({ connections: [{ platform: 'tiktok', status: 'needs_reauth' }] })
+    if (path === '/preferences') return Response.json({ preferences: [] })
+    return Response.json({ error: { code: 'needs_reauth', message: 'Reconnect TikTok' } }, { status: 401 })
+  }, clear, stage)
+  await expect(run('synthetic-video', 'tiktok')).rejects.toThrow('Reconnect TikTok')
+  expect(list.innerHTML).toMatch(/data-connect="tiktok" >Reconnect/)
+  expect(calls).toContain('/connections')
+  expect(clear).not.toHaveBeenCalled()
 })

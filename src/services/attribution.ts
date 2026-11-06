@@ -48,11 +48,26 @@ function renderAttribution(template: string, handle: string | null, url: string)
 
 export function buildCrosspostCaption(input: CaptionInput): string {
   const caption = (input.caption ?? '').trim()
+  const byteLimited = input.platform === 'youtube'
+  const length = (value: string) => byteLimited ? new TextEncoder().encode(value).byteLength : value.length
+  const truncate = (value: string, budget: number) => {
+    if (!byteLimited) return value.slice(0, budget)
+    let result = ''
+    let used = 0
+    for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)) {
+      const size = length(segment)
+      if (used + size > budget) break
+      result += segment
+      used += size
+    }
+    return result
+  }
+  const limit = CAPTION_LIMITS[input.platform] ?? DEFAULT_LIMIT
   const url = videoUrlFor(input.eventId)
 
   // An explicit empty template is the off switch, distinct from an absent one.
   if (input.template === '') {
-    return caption
+    return byteLimited ? truncate(caption, limit) : caption
   }
 
   // A template that cannot produce a link is a configuration mistake, and
@@ -63,25 +78,28 @@ export function buildCrosspostCaption(input: CaptionInput): string {
   // caption can arrive here more than once. A creator who linked their own
   // video counts too — one link is enough.
   if (caption.includes(url)) {
-    return caption
+    if (!byteLimited || length(caption) <= limit) return caption
+    // Remove existing copies before shortening so the full return link survives,
+    // even when the source placed it beyond or across the byte cutoff.
+    const suffix = `…\n\n${url}`
+    return `${truncate(caption.replaceAll(url, '').trim(), limit - length(suffix))}${suffix}`
   }
 
   const attribution = renderAttribution(template, input.authorName, url)
-  const limit = CAPTION_LIMITS[input.platform] ?? DEFAULT_LIMIT
   const separator = caption ? '\n\n' : ''
-  const budget = limit - attribution.length - separator.length
+  const budget = limit - length(attribution) - length(separator)
 
   if (!caption) {
     return attribution
   }
-  if (caption.length <= budget) {
+  if (length(caption) <= budget) {
     return `${caption}${separator}${attribution}`
   }
   // The creator's words give way, never the link. One character is reserved
   // for the ellipsis so the cut is visible rather than looking like a bug.
-  const room = Math.max(0, budget - 1)
+  const room = Math.max(0, budget - length('…'))
   if (room === 0) {
     return attribution
   }
-  return `${caption.slice(0, room)}…${separator}${attribution}`
+  return `${truncate(caption, room)}…${separator}${attribution}`
 }

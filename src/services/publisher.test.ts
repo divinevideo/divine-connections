@@ -1,9 +1,10 @@
 // ABOUTME: Exercises publishing claims, provider outcomes, and retry handling.
 // ABOUTME: Uses real adapters with upstream requests stubbed at the fetch boundary.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TIKTOK_CREATOR, tiktokOptions } from '../platforms/tiktok.test-helpers'
 import { listAttempts, recordAttempt } from '../db/attempts'
 import { getConnection, upsertConnection } from '../db/connections'
-import { createOrGetJob, getJob, updateJobStatus } from '../db/jobs'
+import { createOrGetJob, getJob, updateJobStatus, recoverStaleXClaims, claimJobForPublish } from '../db/jobs'
 import { setPreference } from '../db/preferences'
 import { applyMigrations, connection, job, PUBKEY_A } from '../db/test-helpers'
 import type { Env, Platform } from '../types'
@@ -35,6 +36,7 @@ function env(db: D1Database, overrides: Partial<Env> = {}): Env {
 function platformEnv(db: D1Database, platform: Platform): Env {
   const base = env(db)
   switch (platform) {
+    case 'snapchat': return { ...base, ENABLE_SNAPCHAT: 'true', SNAPCHAT_PUBLIC_PROFILE_APPROVED: 'true', SNAPCHAT_CLIENT_ID: 'client', SNAPCHAT_CLIENT_SECRET: 'secret' }
     case 'instagram':
       return {
         ...base,
@@ -76,10 +78,10 @@ async function seedConnectedJob(db: D1Database, platform: Platform, overrides: P
       encryptedAccessToken,
       encryptedRefreshToken: null,
       tokenExpiresAt: null,
-      externalAccountId: 'external-account-1',
+      externalAccountId: overrides.externalAccountId ?? 'external-account-1',
     }),
   )
-  const created = await createOrGetJob(db, job({ id: 'job_1', platform, ...overrides }))
+  const created = await createOrGetJob(db, job({ id: 'job_1', platform, ...(platform === 'tiktok' ? { tiktokPostOptions: tiktokOptions() } : {}), ...overrides }))
   return created.job
 }
 
@@ -159,6 +161,159 @@ describe('publisher service', () => {
     vi.stubGlobal('fetch', fetchMock)
   })
 
+  it.each(['tiktok', 'youtube', 'snapchat'] as const)('keeps accepted %s posts processing through billing outages and ends unknown without republishing', async (platform) => {
+    await seedConnectedJob(db, platform, { status: 'processing', externalPostId: '33333333-3333-4333-8333-333333333333', externalAccountId: '11111111-1111-4111-8111-111111111111' })
+    if (platform === 'snapchat') {
+      const current = (await getConnection(db, 'conn_1', PUBKEY_A))!
+      await updateJobStatus(db, { id: 'job_1', status: 'processing', externalPostId: '33333333-3333-4333-8333-333333333333', updatedAt: 1000 })
+      await upsertConnection(db, { ...current, externalAccountId: '11111111-1111-4111-8111-111111111111', metadataJson: JSON.stringify({ account: { profileConfirmed: true } }) })
+      await recordAttempt(db, { id: 'snap_checkpoint', jobId: 'job_1', status: 'processing', errorCode: null, errorMessage: null, providerStatus: null, providerResponseJson: JSON.stringify({ stage: 'spotlight_submitted', spotlightId: '33333333-3333-4333-8333-333333333333', profileId: '11111111-1111-4111-8111-111111111111', destination: 'spotlight' }), createdAt: 1500 })
+    }
+    fetchMock.mockImplementation(async () => Response.json({ error: { message: 'synthetic-private-billing' } }, { status: 402 }))
+    await expect(processCrosspostJob(platformEnv(db, platform), 'job_1', { now: 2000 })).rejects.toBeInstanceOf(PublisherRetryError)
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'processing', externalPostId: '33333333-3333-4333-8333-333333333333', retryCount: 1, nextRetryAt: 2060 })
+    await updateJobStatus(db, { id: 'job_1', status: 'processing', retryCount: 5, nextRetryAt: 2100, updatedAt: 2000 })
+    expect(await processCrosspostJob(platformEnv(db, platform), 'job_1', { now: 2100 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'failed', externalPostId: '33333333-3333-4333-8333-333333333333', errorCode: 'ambiguous_post_result', nextRetryAt: null })
+    expect((await getJob(db, 'job_1'))?.errorMessage).toContain('Check the provider')
+    const count = fetchMock.mock.calls.length
+    await processCrosspostJob(platformEnv(db, platform), 'job_1', { now: 2200 })
+    expect(fetchMock).toHaveBeenCalledTimes(count)
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes('init'))).toBe(true)
+    expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
+  })
+
+  it('keeps an accepted YouTube upload processing through poll quota exhaustion and ends unknown without re-uploading', async () => {
+    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01' })
+    fetchMock.mockImplementation(async () => Response.json({ error: { code: 403, errors: [{ reason: 'quotaExceeded' }], message: 'synthetic upstream detail' } }, { status: 403 }))
+    await expect(processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000 })).rejects.toBeInstanceOf(PublisherRetryError)
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'processing', externalPostId: 'synthetic01', errorCode: 'provider_quota_exceeded', retryCount: 1, nextRetryAt: 2060 })
+    expect((await getJob(db, 'job_1'))?.errorMessage).toContain('still unconfirmed')
+    await updateJobStatus(db, { id: 'job_1', status: 'processing', retryCount: 5, nextRetryAt: 2100, updatedAt: 2000 })
+    expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2100 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'failed', externalPostId: 'synthetic01', errorCode: 'ambiguous_post_result', nextRetryAt: null })
+    expect(fetchMock.mock.calls.every(([url]) => String(url).startsWith('https://www.googleapis.com/youtube/v3/videos?'))).toBe(true)
+    expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
+  })
+
+  it.each(['provider_payment_required', 'provider_quota_exceeded'] as const)('ends an accepted %s-blocked upload as unknown when its polling window expires', async (errorCode) => {
+    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01', errorCode, expiresAt: 2000 })
+    expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ externalPostId: 'synthetic01', errorCode: 'ambiguous_post_result', nextRetryAt: null })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not overwrite a winning readback when a billing-blocked upload expires', async () => {
+    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01', errorCode: 'provider_payment_required', expiresAt: 2000 })
+    let raced = false
+    const concurrentDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== 'prepare') return Reflect.get(target, property, receiver)
+        return (query: string) => {
+          if (!raced && query.trim().startsWith('UPDATE jobs')) {
+            raced = true
+            // Queue a real concurrent winner before the expiry UPDATE runs.
+            return new Proxy(target.prepare(query), {
+              get(statement, key, statementReceiver) {
+                if (key !== 'bind') return Reflect.get(statement, key, statementReceiver)
+                return (...bindings: unknown[]) => {
+                  const bound = statement.bind(...bindings)
+                  return new Proxy(bound, {
+                    get(result, method, resultReceiver) {
+                      if (method !== 'first' && method !== 'run') return Reflect.get(result, method, resultReceiver)
+                      return async () => {
+                        await updateJobStatus(db, { id: 'job_1', status: 'posted', updatedAt: 1999, errorCode: null, externalPostUrl: 'https://www.youtube.com/watch?v=synthetic01' })
+                        return method === 'first' ? result.first() : result.run()
+                      }
+                    },
+                  })
+                }
+              },
+            })
+          }
+          return target.prepare(query)
+        }
+      },
+    }) as D1Database
+    expect(await processCrosspostJob(platformEnv(concurrentDb, 'youtube'), 'job_1', { now: 2000 })).toEqual({ status: 'posted' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'posted', errorCode: null })
+  })
+
+  it.each([
+    [403, 'quotaExceeded', 'provider_quota_exceeded', 'quota'],
+    [400, 'uploadLimitExceeded', 'provider_upload_limit', 'upload limit'],
+    [403, 'forbidden', 'needs_reauth', 'provider request failed'],
+  ])('handles YouTube %s %s without confusing quota with authorization', async (status, reason, code, message) => {
+    await seedConnectedJob(db, 'youtube')
+    fetchMock.mockImplementation(async (url) => String(url).includes('cdn.divine.video') ? new Response('video') : Response.json({ error: { code: status, errors: [{ reason }], message: 'synthetic upstream detail' } }, { status: Number(status) }))
+    await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000 })
+    expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: code, nextRetryAt: null })
+    expect((await getJob(db, 'job_1'))?.errorMessage).toContain(message)
+    expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: code === 'needs_reauth' ? 'needs_reauth' : 'connected' })
+    if (code === 'provider_quota_exceeded' || code === 'provider_upload_limit') {
+      const failed = await getJob(db, 'job_1')
+      const requestCount = fetchMock.mock.calls.length
+      expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2100 })).toEqual({ status: 'failed' })
+      expect(fetchMock).toHaveBeenCalledTimes(requestCount)
+      expect(await getJob(db, 'job_1')).toEqual(failed)
+      expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
+    }
+  })
+
+  it('does not upload a known YouTube video again after terminal processing rejection', async () => {
+    await seedConnectedJob(db, 'youtube', { status: 'processing', externalPostId: 'synthetic01', youtubePrivacyStatus: 'private' })
+    const fetchMock = vi.fn(async () => Response.json({ items: [{ id: 'synthetic01', status: { uploadStatus: 'rejected', privacyStatus: 'private' }, processingDetails: { processingStatus: 'failed' } }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ externalPostId: 'synthetic01', errorCode: 'media_rejected', nextRetryAt: null })
+    await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2200 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers stale YouTube dispatch as ambiguous without queueing another upload', async () => {
+    await seedConnectedJob(db, 'youtube', { status: 'dispatching', updatedAt: 1000 })
+    await recoverStaleXClaims(db, 2000, 300)
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'failed', errorCode: 'ambiguous_post_result', nextRetryAt: null })
+  })
+
+  it('persists accepted YouTube ID before polling and never uploads it twice', async () => {
+    await seedConnectedJob(db, 'youtube', { youtubePrivacyStatus: 'unlisted', youtubeTitle: 'Source title' })
+    const fetchMock = vi.fn(async (url, init) => {
+      if (String(url).includes('cdn.divine.video')) return new Response('video')
+      if (String(url).includes('uploadType=resumable')) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({ snippet: { title: 'Source title' }, status: { privacyStatus: 'unlisted' } })
+        return new Response('{}', { headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic' } })
+      }
+      if (String(url).includes('upload_id=synthetic')) {
+        expect(await getJob(db, 'job_1')).toMatchObject({ status: 'dispatching' })
+        return Response.json({ id: 'synthetic01', access_token: 'discard-me' })
+      }
+      expect(await getJob(db, 'job_1')).toMatchObject({ externalPostId: 'synthetic01' })
+      return Response.json({ items: [{ id: 'synthetic01', status: { uploadStatus: 'processed', privacyStatus: 'unlisted' }, processingDetails: { processingStatus: 'succeeded' } }] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const youtubeEnv = platformEnv(db, 'youtube')
+    expect(await processCrosspostJob(youtubeEnv, 'job_1', { now: 2000, fenceNow: 2000 })).toMatchObject({ status: 'processing' })
+    expect((await listAttempts(db, 'job_1'))[0].providerResponseJson).toBe('{"id":"synthetic01"}')
+    expect(await processCrosspostJob(youtubeEnv, 'job_1', { now: 2060 })).toEqual({ status: 'posted' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'posted', externalPostUrl: 'https://www.youtube.com/watch?v=synthetic01' })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('never retries an interrupted YouTube upload after dispatch', async () => {
+    await seedConnectedJob(db, 'youtube')
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes('cdn.divine.video')) return new Response('video')
+      if (String(url).includes('uploadType=resumable')) return new Response('{}', { headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic' } })
+      throw new Error('connection interrupted after accepting upload')
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2000, fenceNow: 2000 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: 'ambiguous_post_result', nextRetryAt: null })
+    await processCrosspostJob(platformEnv(db, 'youtube'), 'job_1', { now: 2200 })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
   it.each(['queued', 'processing'] as const)('stops X billing failures from %s without retrying on redelivery', async (status) => {
     await seedConnectedJob(db, 'x', { status, externalPostId: status === 'processing' ? 'media-id' : null })
     if (status === 'queued') fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])))
@@ -230,7 +385,7 @@ describe('publisher service', () => {
   it('records processing state and schedules a retry', async () => {
     await seedConnectedJob(db, 'tiktok')
     fetchMock
-      .mockResolvedValueOnce(Response.json({ data: { privacy_level_options: ['SELF_ONLY'] } }))
+      .mockResolvedValueOnce(Response.json({ data: TIKTOK_CREATOR }))
       .mockResolvedValueOnce(
         Response.json({
           data: { publish_id: 'publish-id', nested_secret: 'tiktok-processing-sentinel' },
@@ -587,7 +742,10 @@ describe('publisher service', () => {
     }))
     await expect(processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2_000 }))
       .resolves.toEqual({ status })
-    expect(await getJob(db, 'job_1')).toMatchObject({ status, errorCode, nextRetryAt: null })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status, errorCode, externalPostId: 'publish-id', nextRetryAt: null })
+    await expect(processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2060 })).resolves.toEqual({ status })
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(await getJob(db, 'job_1')).toMatchObject({ status, externalPostId: 'publish-id' })
   })
 
   it('sanitizes a legacy raw provider attempt before TikTok polling', async () => {
@@ -729,7 +887,7 @@ describe('publisher service', () => {
     await expect(getJob(db, 'job_1', PUBKEY_A)).resolves.toMatchObject({ status: 'posted' })
   })
 
-  it('caps repeated processing polls with processing_timeout', async () => {
+  it('ends exhausted accepted TikTok polling with an unresolved publication', async () => {
     await seedConnectedJob(db, 'tiktok', {
       status: 'processing',
       externalPostId: 'publish-id',
@@ -747,12 +905,12 @@ describe('publisher service', () => {
     await expect(getJob(db, 'job_1', PUBKEY_A)).resolves.toMatchObject({
       status: 'failed',
       retryCount: 6,
-      errorCode: 'processing_timeout',
+      errorCode: 'ambiguous_post_result',
       nextRetryAt: null,
     })
     const { recentDiagnostics } = await import('./reliability')
     expect(await recentDiagnostics(db, 'job_1')).toEqual([
-      expect.objectContaining({ stage: 'processing_timeout', outcome: 'failed', operation: 'publish' }),
+      expect.objectContaining({ stage: 'ambiguous_post_result', outcome: 'failed', operation: 'publish' }),
     ])
   })
 
@@ -833,7 +991,7 @@ describe('publisher service', () => {
         metadataJson: '{}',
       }),
     )
-    await createOrGetJob(db, job({ id: 'job_1', platform: 'tiktok' }))
+    await createOrGetJob(db, job({ id: 'job_1', platform: 'tiktok', tiktokPostOptions: tiktokOptions() }))
     fetchMock
       .mockResolvedValueOnce(
         Response.json({
@@ -843,7 +1001,7 @@ describe('publisher service', () => {
           scope: 'video.publish',
         }),
       )
-      .mockResolvedValueOnce(Response.json({ data: { privacy_level_options: ['SELF_ONLY'] } }))
+      .mockResolvedValueOnce(Response.json({ data: TIKTOK_CREATOR }))
       .mockResolvedValueOnce(Response.json({ data: { publish_id: 'publish-id' }, error: { code: 'ok' } }))
 
     await expect(processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2_000 })).resolves.toMatchObject({
@@ -853,7 +1011,7 @@ describe('publisher service', () => {
     const updated = await getConnection(db, 'conn_1', PUBKEY_A)
     expect(updated?.metadataJson).not.toContain('new-access-token')
     expect(updated?.metadataJson).not.toContain('new-refresh-token')
-    expect(updated?.metadataJson).toContain('expires_in')
+    expect(updated?.lastRefreshAt).toBe(2000)
   })
 
   it('marks revoked tokens as needs_reauth on the job and connection', async () => {
@@ -924,5 +1082,177 @@ describe('publisher service', () => {
     await expect(listAttempts(db, 'job_1')).resolves.toEqual([
       expect.objectContaining({ errorCode: 'media_rejected', providerResponseJson: null }),
     ])
+  })
+})
+
+it('rejects a legacy queued TikTok job with no manual options before dispatch', async () => {
+  const db = await applyMigrations()
+  await seedConnectedJob(db, 'tiktok', { tiktokPostOptions: null })
+  const upstream = vi.fn()
+  vi.stubGlobal('fetch', upstream)
+  try {
+    expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+    expect(await getJob(db, 'job_1')).toMatchObject({ status: 'failed', errorCode: 'not_eligible', externalPostId: null, nextRetryAt: null })
+    expect(upstream).not.toHaveBeenCalled()
+  } finally { vi.unstubAllGlobals() }
+})
+
+describe('TikTok refresh ownership through the publisher', () => {
+  it.each(['refresh', 'reconnect', 'disconnect'] as const)('preserves a winning concurrent %s after a losing refresh response', async (winner) => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok')
+    await db.prepare('UPDATE connections SET token_expires_at = 1000, encrypted_refresh_token = ?').bind(await encryptToken('old-refresh', KEY)).run()
+    const winningAccess = await encryptToken('winning-access', KEY)
+    const winningRefresh = await encryptToken('winning-refresh', KEY)
+    const providerCalls: { url: string; token: string | null }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('oauth/token')) {
+        if (winner === 'disconnect') await db.prepare("UPDATE connections SET status = 'disconnected'").run()
+        else await db.prepare("UPDATE connections SET encrypted_access_token = ?, encrypted_refresh_token = ?, token_expires_at = 9999999999, updated_at = 2001, status = 'connected'").bind(winningAccess, winningRefresh).run()
+        return winner === 'reconnect'
+          ? Response.json({ error: { code: 'access_token_invalid' } }, { status: 401 })
+          : Response.json({ access_token: 'losing-access', refresh_token: 'losing-refresh', expires_in: 3600 })
+      }
+      providerCalls.push({ url: String(url), token: new Headers(init?.headers).get('authorization') })
+      if (String(url).includes('creator_info')) return Response.json({ data: TIKTOK_CREATOR, error: { code: 'ok' } })
+      return Response.json({ data: { publish_id: 'synthetic-publish-id' }, error: { code: 'ok' } })
+    }))
+    try {
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000 })).toMatchObject({ status: winner === 'disconnect' ? 'needs_reauth' : 'processing' })
+      expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject(winner === 'disconnect' ? { status: 'disconnected' } : { status: 'connected', encryptedAccessToken: winningAccess, encryptedRefreshToken: winningRefresh })
+      if (winner === 'disconnect') expect(providerCalls).toEqual([])
+      else expect(providerCalls.every(call => call.token === 'Bearer winning-access')).toBe(true)
+    } finally { vi.unstubAllGlobals() }
+  })
+  it('identifies TikTok in an ambiguous dispatch and never retries the init', async () => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok')
+    const upstream = vi.fn().mockResolvedValueOnce(Response.json({ data: TIKTOK_CREATOR, error: { code: 'ok' } })).mockRejectedValueOnce(new Error('interrupted init'))
+    vi.stubGlobal('fetch', upstream)
+    try {
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000 })).toEqual({ status: 'failed' })
+      expect(await getJob(db, 'job_1')).toMatchObject({ errorCode: 'ambiguous_post_result', errorMessage: 'TikTok upload result is ambiguous after dispatch', nextRetryAt: null })
+      await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2060 })
+      expect(upstream).toHaveBeenCalledTimes(2)
+    } finally { vi.unstubAllGlobals() }
+  })
+})
+
+
+describe('TikTok accepted publication and request credential boundaries', () => {
+  it.each(['unfinished', 'failed read'] as const)('never initializes again after %s exhausts accepted status polling', async (outcome) => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok', { expiresAt: 100000 })
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      requests.push(String(url))
+      if (String(url).includes('creator_info')) return Response.json({ data: TIKTOK_CREATOR, error: { code: 'ok' } })
+      if (String(url).includes('video/init')) return Response.json({ data: { publish_id: requests.filter(url => url.includes('video/init')).length === 1 ? 'accepted-original' : 'accepted-duplicate' }, error: { code: 'ok' } })
+      expect(JSON.parse(String(init?.body))).toEqual({ publish_id: 'accepted-original' })
+      return outcome === 'unfinished'
+        ? Response.json({ data: { status: 'PROCESSING_UPLOAD' }, error: { code: 'ok' } })
+        : Response.json({ error: { code: 'internal_error' } }, { status: 503 })
+    }))
+    try {
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000, fenceNow: 2000 })).toMatchObject({ status: 'processing' })
+      await db.prepare('UPDATE jobs SET retry_count = 5, next_retry_at = 2060').run()
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2060 })).toEqual({ status: 'failed' })
+      await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2120 })
+      expect(await getJob(db, 'job_1')).toMatchObject({ externalPostId: 'accepted-original', status: 'failed', errorCode: 'ambiguous_post_result', nextRetryAt: null })
+      expect(requests.filter(url => url.includes('video/init'))).toHaveLength(1)
+      expect(requests.filter(url => url.includes('status/fetch'))).toHaveLength(1)
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it.each(['queued', 'failed'] as const)('refuses an initial-publish claim for an accepted TikTok job marked %s', async (status) => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok', { status, externalPostId: 'accepted-original', errorCode: 'processing_timeout' })
+    expect(await claimJobForPublish(db, 'job_1', 2000)).toBeNull()
+    expect(await getJob(db, 'job_1')).toMatchObject({ status, externalPostId: 'accepted-original' })
+  })
+
+  it.each(['creator', 'status'].flatMap(stage => [false, true].flatMap(refreshed => ['none', 'refresh', 'reconnect', 'disconnect'].map(winner => ({ stage, refreshed, winner })))))('guards late $stage auth denial with refreshed=$refreshed and winner=$winner', async ({ stage, refreshed, winner }) => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok', stage === 'status' ? { status: 'processing', externalPostId: 'accepted-original' } : {})
+    if (refreshed) await db.prepare('UPDATE connections SET token_expires_at = 1000, encrypted_refresh_token = ?').bind(await encryptToken('refresh-token', KEY)).run()
+    const winningAccess = await encryptToken('winning-access', KEY)
+    const winningRefresh = await encryptToken('winning-refresh', KEY)
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('oauth/token')) return Response.json({ access_token: 'refreshed-access', refresh_token: 'refreshed-refresh', expires_in: 3600 })
+      expect(new Headers(init?.headers).get('authorization')).toBe(refreshed ? 'Bearer refreshed-access' : 'Bearer access-token')
+      if (winner === 'disconnect') await db.prepare("UPDATE connections SET status = 'disconnected'").run()
+      if (winner === 'refresh' || winner === 'reconnect') await db.prepare("UPDATE connections SET encrypted_access_token = ?, encrypted_refresh_token = ?, status = 'connected', token_expires_at = 9999999999").bind(winningAccess, winningRefresh).run()
+      return Response.json({ error: { code: 'access_token_invalid' } }, { status: 401 })
+    }))
+    try {
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000 })).toEqual({ status: 'needs_reauth' })
+      expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: winner === 'none' ? 'needs_reauth' : winner === 'disconnect' ? 'disconnected' : 'connected', ...(winner === 'refresh' || winner === 'reconnect' ? { encryptedAccessToken: winningAccess, encryptedRefreshToken: winningRefresh } : {}) })
+      if (stage === 'status') expect(await getJob(db, 'job_1')).toMatchObject({ externalPostId: 'accepted-original' })
+    } finally { vi.unstubAllGlobals() }
+  })
+})
+
+
+describe('bounded refresh reconciliation through the publisher', () => {
+  it.each(['queued', 'processing'] as const)('recovers the rejected %s job after a concurrent rotation persists', async status => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok')
+    await db.prepare('UPDATE connections SET token_expires_at = 1000, encrypted_refresh_token = ?').bind(await encryptToken('old-refresh', KEY)).run()
+    await createOrGetJob(db, job({ id: 'job_2', videoEventId: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', platform: 'tiktok', status,
+      externalPostId: status === 'processing' ? 'accepted-second' : null, tiktokPostOptions: tiktokOptions() }))
+    const entered = deferred<void>()
+    const successfulRefresh = deferred<Response>()
+    let refreshCalls = 0
+    const publications: string[] = []
+    const polledIds: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('oauth/token')) {
+        if (++refreshCalls === 1) { entered.resolve(); return successfulRefresh.promise }
+        return Response.json({ error: 'invalid_grant' })
+      }
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer rotated-access')
+      if (String(url).includes('creator_info')) return Response.json({ data: TIKTOK_CREATOR, error: { code: 'ok' } })
+      if (String(url).includes('status/fetch')) {
+        polledIds.push(JSON.parse(String(init?.body)).publish_id)
+        return Response.json({ data: { status: 'PUBLISH_COMPLETE' }, error: { code: 'ok' } })
+      }
+      publications.push(String(url))
+      return Response.json({ data: { publish_id: 'accepted-' + publications.length }, error: { code: 'ok' } })
+    }))
+    try {
+      const first = processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000, fenceNow: 2000 })
+      await entered.promise
+      const second = await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_2', { now: 2000, fenceNow: 2000 })
+      successfulRefresh.resolve(Response.json({ access_token: 'rotated-access', refresh_token: 'rotated-refresh', expires_in: 3600 }))
+      expect(await first).toMatchObject({ status: 'processing' })
+      expect(second).toEqual({ status: status === 'processing' ? 'processing' : 'failed', retryDelaySeconds: 60 })
+      expect(await getJob(db, 'job_2')).toMatchObject({ nextRetryAt: 2060, retryCount: 0 })
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_2', { now: 2060, fenceNow: 2060 })).toMatchObject({ status: status === 'processing' ? 'posted' : 'processing' })
+      expect(publications).toHaveLength(status === 'processing' ? 1 : 2)
+      expect(polledIds).toEqual(status === 'processing' ? ['accepted-second'] : [])
+      expect(refreshCalls).toBe(2)
+      expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'connected' })
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it.each(['rejected', 'disconnected'] as const)('ends reconciliation for %s credentials without extending the first rejection time', async outcome => {
+    const db = await applyMigrations()
+    await seedConnectedJob(db, 'tiktok')
+    await db.prepare('UPDATE connections SET token_expires_at = 1000, encrypted_refresh_token = ?').bind(await encryptToken('old-refresh', KEY)).run()
+    let refreshCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => { refreshCalls++; return Response.json({ error: 'invalid_grant' }) }))
+    try {
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2000 })).toEqual({ status: 'failed', retryDelaySeconds: 60 })
+      if (outcome === 'disconnected') await db.prepare("UPDATE connections SET status = 'disconnected', updated_at = 2030").run()
+      else {
+        expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: 2060 })).toEqual({ status: 'failed', retryDelaySeconds: 60 })
+        expect(await getConnection(db, 'conn_1', PUBKEY_A)).toMatchObject({ status: 'needs_reauth', updatedAt: 2000 })
+      }
+      const terminalAt = outcome === 'disconnected' ? 2060 : 2300
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: terminalAt })).toEqual({ status: 'needs_reauth' })
+      expect(await getJob(db, 'job_1')).toMatchObject({ status: 'needs_reauth', nextRetryAt: null })
+      expect(await processCrosspostJob(platformEnv(db, 'tiktok'), 'job_1', { now: terminalAt + 60 })).toEqual({ status: 'needs_reauth' })
+      expect(refreshCalls).toBe(1)
+    } finally { vi.unstubAllGlobals() }
   })
 })

@@ -40,6 +40,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Test provider setup and production probe
+        run: npm run test:provider-setup
+
       - name: Test
         run: npm run test:once
 

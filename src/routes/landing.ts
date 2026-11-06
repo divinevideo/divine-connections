@@ -40,7 +40,7 @@ export function renderLandingPage(env: Env, origin: string): string {
       : p.proofRequiresSecret
         ? `${p.proofFormat} (needs <code>${p.proofRequiresSecret}</code>)`
         : p.proofFormat
-    const connectCell = p.connect ? 'Yes' : (p.connectDeferred ?? 'No')
+    const connectCell = p.key === 'snapchat' ? (getProviderSummaries(env).some(provider => provider.platform === 'snapchat' && provider.enabled) ? 'Yes' : 'Requires approved Public Profile API access') : p.connect ? 'Yes' : (p.connectDeferred ?? 'No')
     return `        <tr><td><code>${p.key}</code></td><td>${p.identity}</td><td>${proofCell}</td><td>${connectCell}</td></tr>`
   }).join('\n')
 
