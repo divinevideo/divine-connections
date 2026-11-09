@@ -24,6 +24,31 @@ describe('job repository', () => {
     await upsertConnection(db, connection({ id: 'conn_1' }))
   })
 
+  it('keeps one immutable YouTube option snapshot when duplicate inserts race', async () => {
+    const results = await Promise.all([
+      createOrGetJob(db, job({ id: 'job_youtube_first', platform: 'youtube', youtubePrivacyStatus: 'private', youtubeTitle: 'First title' })),
+      createOrGetJob(db, job({ id: 'job_youtube_second', platform: 'youtube', youtubePrivacyStatus: 'public', youtubeTitle: 'Second title' })),
+    ])
+    const winner = results.find((result) => result.created)!.job
+    expect(results.filter((result) => result.created)).toHaveLength(1)
+    expect(results[0].job).toEqual(results[1].job)
+    expect(await getJob(db, winner.id)).toEqual(winner)
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM youtube_job_options').first<{ count: number }>())?.count).toBe(1)
+  })
+
+  it('rolls back the YouTube job if its option snapshot cannot be persisted', async () => {
+    await db.exec("CREATE TRIGGER reject_youtube_options BEFORE INSERT ON youtube_job_options BEGIN SELECT RAISE(ABORT, 'synthetic option storage failure'); END;")
+    await expect(createOrGetJob(db, job({ platform: 'youtube', youtubePrivacyStatus: 'unlisted', youtubeTitle: 'Source title' }))).rejects.toThrow()
+    expect(await getJob(db, 'job_1')).toBeNull()
+  })
+
+  it.each(['provider_payment_required', 'provider_quota_exceeded', 'provider_upload_limit'] as const)('does not reclaim terminal %s even on direct duplicate delivery', async (errorCode) => {
+    await createOrGetJob(db, job({ id: 'terminal-failed', status: 'failed', errorCode, nextRetryAt: null }))
+    const failed = await getJob(db, 'terminal-failed')
+    expect(await claimJobForPublish(db, 'terminal-failed', 2000)).toBeNull()
+    expect(await getJob(db, 'terminal-failed')).toEqual(failed)
+  })
+
   it('returns created false for duplicate idempotency input', async () => {
     const first = await createOrGetJob(db, job({ id: 'job_original' }))
     const duplicate = await createOrGetJob(db, job({ id: 'job_duplicate', caption: 'ignored duplicate caption' }))
@@ -123,7 +148,7 @@ describe('job repository', () => {
     await expect(getJob(db, 'x_stale')).resolves.toMatchObject({ status: 'uploading' })
   })
 
-  it('recovers only stale X upload and dispatch claims with terminal-safe outcomes', async () => {
+  it('recovers stale X uploads and fenced X/TikTok dispatches with terminal-safe outcomes', async () => {
     const now = 10_000
     const leaseSeconds = 300
     const candidates = [
@@ -171,7 +196,7 @@ describe('job repository', () => {
 
     await expect(recoverStaleXClaims(db, now, leaseSeconds)).resolves.toEqual({
       uploadingRecovered: 4,
-      dispatchingFailed: 1,
+      dispatchingFailed: 2,
     })
     await expect(getJob(db, 'stale_upload')).resolves.toMatchObject({
       status: 'failed',
@@ -217,7 +242,7 @@ describe('job repository', () => {
     await expect(getJob(db, 'fresh_upload')).resolves.toMatchObject({ status: 'uploading', retryCount: 4 })
     await expect(getJob(db, 'fresh_dispatch')).resolves.toMatchObject({ status: 'dispatching', retryCount: 4 })
     await expect(getJob(db, 'other_upload')).resolves.toMatchObject({ status: 'uploading', retryCount: 5 })
-    await expect(getJob(db, 'other_dispatch')).resolves.toMatchObject({ status: 'dispatching', retryCount: 5 })
+    await expect(getJob(db, 'other_dispatch')).resolves.toMatchObject({ status: 'failed', errorCode: 'ambiguous_post_result', nextRetryAt: null, retryCount: 5 })
   })
 
   it('prevents a recovered stale worker claim token from mutating a reclaimed job', async () => {

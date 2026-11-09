@@ -1,6 +1,38 @@
 // ABOUTME: Defines shared Worker API, storage and publishing types.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
-export type Platform = 'instagram' | 'tiktok' | 'x' | 'youtube'
+export type Platform = 'instagram' | 'tiktok' | 'x' | 'youtube' | 'snapchat'
+
+export type YouTubePrivacyStatus = 'private' | 'unlisted' | 'public'
+
+export type TikTokCreatorInfo = {
+  creator_username: string
+  creator_nickname: string
+  privacy_level_options: string[]
+  comment_disabled: boolean
+  duet_disabled: boolean
+  stitch_disabled: boolean
+  max_video_post_duration_sec: number
+}
+
+export type TikTokPostOptions = {
+  connectionId: string
+  creatorInfo: TikTokCreatorInfo
+  privacyLevel: string
+  allowComment: boolean
+  allowDuet: boolean
+  allowStitch: boolean
+  commercialContent: boolean
+  brandOrganic: boolean
+  brandContent: boolean
+  confirmedCaption: string
+  musicUsageConfirmed: true
+  brandedContentConfirmed: boolean
+  /** Derived from the eligible source event, never accepted from client input. */
+  durationSeconds: number
+}
+
+export type SnapchatDestination = 'spotlight' | 'story'
+export type SourceMedia = { durationSeconds: number; width: number; height: number }
 
 export type InstagramDestination = 'story' | 'reel' | 'reel_feed'
 
@@ -17,6 +49,9 @@ export type JobStatus =
 
 export type ErrorCode =
   | 'rate_limited'
+  | 'provider_payment_required'
+  | 'provider_quota_exceeded'
+  | 'provider_upload_limit'
   | 'needs_reauth'
   | 'media_rejected'
   | 'platform_review_required'
@@ -52,6 +87,10 @@ export type Env = {
   ENABLE_TIKTOK?: string
   ENABLE_X?: string
   ENABLE_YOUTUBE?: string
+  ENABLE_SNAPCHAT?: string
+  SNAPCHAT_CLIENT_ID?: string
+  SNAPCHAT_CLIENT_SECRET?: string
+  SNAPCHAT_PUBLIC_PROFILE_APPROVED?: string
   /**
    * Overrides the crosspost attribution appended to every caption.
    * Supports {handle} and {url}; an empty string switches attribution off.
@@ -125,6 +164,8 @@ export type ConnectionRecord = {
 }
 
 export type PreferenceRecord = {
+  snapchatDestination?: SnapchatDestination | null
+  youtubePrivacyStatus?: YouTubePrivacyStatus | null
   instagramDestination?: InstagramDestination | null
   pubkey: string
   platform: Platform
@@ -143,6 +184,11 @@ export type AutoCursorRecord = {
 }
 
 export type JobRecord = {
+  snapchatDestination?: SnapchatDestination | null
+  sourceMedia?: SourceMedia | null
+  tiktokPostOptions?: TikTokPostOptions | null
+  youtubePrivacyStatus?: YouTubePrivacyStatus | null
+  youtubeTitle?: string | null
   instagramDestination?: InstagramDestination | null
   id: string
   pubkey: string

@@ -122,3 +122,17 @@ it.each(['x', 'instagram'] as const)('alerts when expired %s credentials cannot 
  expect(fetchMock).toHaveBeenCalledOnce()
  expect(String(fetchMock.mock.calls[0][1]?.body)).toContain('expired_credentials')
 })
+
+it('includes Snapchat failures in aggregate health and alert delivery, redacting its app secret', async () => {
+  const db = await applyMigrations()
+  const env = { DB: db, SNAPCHAT_CLIENT_SECRET: 'short-snap-secret', OPS_ALERT_WEBHOOK_URL: 'https://alerts.example/synthetic' } as Env
+  for (let i=0; i<3; i++) await recordDiagnostic(env, { reference: 'snap-failure-' + i, platform: 'snapchat', operation: 'publish', stage: 'profile_permission', outcome: 'failed', now: 1000,
+    error: new PlatformAdapterError('snapchat', 'needs_reauth', 'failed', 403, { error: { message: 'Denied short-snap-secret access_token=synthetic-token', type: 'permission_denied' } }) })
+  expect(JSON.stringify(await recentDiagnostics(db))).not.toContain('short-snap-secret')
+  expect((await providerHealth(db, 1001)).snapchat.publishing).toBe('degraded')
+  let alert: any
+  vi.stubGlobal('fetch', vi.fn(async (_url, init) => { alert = JSON.parse(String(init?.body)); return new Response() }))
+  await checkProviderReliability(env, 1001)
+  expect(alert).toMatchObject({ platform: 'snapchat', count: 3 })
+  expect(JSON.stringify(alert)).not.toContain('snap-failure-')
+})

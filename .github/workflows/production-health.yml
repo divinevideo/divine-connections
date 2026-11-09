@@ -11,17 +11,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Check deployed release and operational readiness
         env:
           EXPECTED_RELEASE: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 'https://crossposter.divine.video/health' > "$RUNNER_TEMP/health.json"
-          jq -e --arg release "$EXPECTED_RELEASE" '.service == "divine-connections" and .release == $release' "$RUNNER_TEMP/health.json" > /dev/null
-          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 'https://crossposter.divine.video/readiness' > "$RUNNER_TEMP/readiness.json"
-          jq -e '.ok == true' "$RUNNER_TEMP/readiness.json" > /dev/null
-          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 'https://crossposter.divine.video/provider-health' > "$RUNNER_TEMP/providers.json"
-          jq -e 'all(.platforms[]; .enabled == false or (.connection != "degraded" and .publishing != "degraded"))' "$RUNNER_TEMP/providers.json" > /dev/null
+        run: node scripts/check-production-health.mjs
       - name: Notify failed production probe
         if: failure()
         env:

@@ -35,8 +35,9 @@ function platformName(platform: string): string {
       return 'TikTok'
     case 'x':
       return 'X'
+    case 'snapchat': return 'Snapchat'
     case 'youtube':
-      return 'YouTube Shorts'
+      return 'YouTube'
     default:
       return platform
   }
@@ -52,7 +53,7 @@ function renderPlatforms(env: Env): string {
           <span class="mark" aria-hidden="true"></span>
           <span>
             <strong>${platformName(platform.platform)}</strong>
-            <small>${platform.enabled ? 'Configured for opt-in publishing' : 'Waiting on keys'}</small>
+            <small>${platform.enabled ? 'Configured for opt-in publishing' : platform.platform === 'snapchat' ? 'Public Profile publishing requires approved app access' : 'Waiting on keys'}</small>
           </span>
           <span class="status ${platform.enabled ? 'ready' : 'waiting'}">${platform.enabled ? 'Configured' : 'Waiting'}</span>
         </li>

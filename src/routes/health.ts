@@ -1,6 +1,7 @@
 // ABOUTME: Renders the hosted crossposter setup and manual publishing controls.
 // ABOUTME: Preserves existing opt-in and provider isolation guarantees.
 import { Hono } from 'hono'
+import { parseYouTubePrivacyStatus } from '../config'
 import { getProviderSummaries } from '../platforms/registry'
 import type { Env } from '../types'
 
@@ -24,7 +25,9 @@ function platformName(platform: string): string {
     case 'x':
       return 'X'
     case 'youtube':
-      return 'YouTube Shorts'
+      return 'YouTube'
+    case 'snapchat':
+      return 'Snapchat'
     default:
       return platform
   }
@@ -41,7 +44,7 @@ export function renderHome(env: Env): string {
           <span class="platform-mark" aria-hidden="true"></span>
           <span>
             <strong>${platformName(platform.platform)}</strong>
-            <small>${platform.enabled ? 'Configured for opt-in publishing' : 'Waiting on provider keys'}</small>
+            <small>${platform.enabled ? 'Configured for opt-in publishing' : platform.platform === 'snapchat' ? 'Public Profile publishing requires approved app access' : 'Waiting on provider keys'}</small>
           </span>
           <span class="status ${platform.enabled ? 'ready' : 'waiting'}">${platform.enabled ? 'Configured' : 'Soon'}</span>
         </li>
@@ -578,7 +581,7 @@ export function renderHome(env: Env): string {
             <h1 id="headline">Send your loops farther.</h1>
             <p>
               Crossposter lets Divine creators choose where their original videos travel next:
-              Reels, TikTok, X, and Shorts. You connect the account. You choose manual or automatic.
+              Reels, TikTok, X, YouTube, and Snapchat. You connect the account. You choose manual or automatic.
             </p>
           </div>
           <div class="actions" aria-label="Service links">
@@ -675,6 +678,8 @@ export function renderHome(env: Env): string {
       let providerObservations = {};
       let preferences = [];
       let instagramVideoDestinations = {};
+      let youtubeVideoPrivacies = {};
+      let snapchatVideoDestinations = {};
       let preferenceSaves = Promise.resolve();
       let accountLoaded = false;
 
@@ -889,6 +894,8 @@ export function renderHome(env: Env): string {
         connections = [];
         preferences = [];
         instagramVideoDestinations = {};
+        youtubeVideoPrivacies = {};
+        snapchatVideoDestinations = {};
         accountLoaded = false;
         localStorage.removeItem(SESSION_KEY);
         renderAuthControls();
@@ -935,8 +942,8 @@ export function renderHome(env: Env): string {
         headers.set('Authorization', 'Bearer ' + active.accessToken);
         if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
         const resp = await fetch(path, { ...init, headers });
-        clearRejectedSession(resp);
         const data = await resp.json().catch(() => ({}));
+        if (data.error?.code !== 'needs_reauth') clearRejectedSession(resp);
         if (!resp.ok) throw new Error(data.error?.message || data.error?.code || 'Request failed.');
         return data;
       }
@@ -1013,11 +1020,16 @@ export function renderHome(env: Env): string {
         return true;
       }
 
+      function selectedYouTubeConnection() {
+        return connections.filter((item) => item.platform === 'youtube' && item.status === 'connected')
+          .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt)[0];
+      }
+
       function renderConnectRows() {
         const list = $('connect-list');
         if (!list) return;
         list.innerHTML = platforms.map((platform) => {
-          const connection = connections.find((item) => item.platform === platform.platform && item.status === 'connected');
+          const connection = platform.platform === 'youtube' ? selectedYouTubeConnection() : connections.find((item) => item.platform === platform.platform && item.status === 'connected');
           const disabled = !session || !platform.enabled || !!connection;
           const reconnect = connections.some((item) => item.platform === platform.platform && item.status === 'needs_reauth');
           const observation = providerObservations[platform.platform];
@@ -1027,12 +1039,13 @@ export function renderHome(env: Env): string {
             ? (connection.externalAccountName || 'Connected account')
             : platform.enabled
               ? (reconnect ? 'Sign in again to resume publishing.' : 'Ready when you are.')
-              : 'Provider keys are not configured yet.';
+              : platform.platform === 'snapchat' ? 'Public Profile publishing requires approved app access.' : 'Provider keys are not configured yet.';
           return '<div class="connect-row">' +
             '<span><strong>' + escapeHtml(platformName(platform.platform)) + '</strong><small>' +
             escapeHtml(accountLabel + (trouble ? ' Provider is having trouble; connecting or publishing may fail.' : '')) +
             '</small></span>' +
             '<button class="mini-button" data-connect="' + escapeHtml(platform.platform) + '" ' + (disabled ? 'disabled' : '') + '>' + escapeHtml(label) + '</button>' +
+            (connection && platform.platform === 'snapchat' ? '<button class="mini-button" data-snapchat-profile="' + escapeHtml(connection.id) + '">' + (connection.snapchatProfileConfirmed ? 'Change public profile' : 'Confirm public profile') + '</button>' : '') +
           '</div>';
         }).join('');
       }
@@ -1052,6 +1065,25 @@ export function renderHome(env: Env): string {
           choices.map(([key, label]) => '<option value="' + key + '" ' + (value === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select>';
       }
 
+      function snapchatVideoDestination(videoId) {
+        return snapchatVideoDestinations[videoId] || preferences.find((item) => item.platform === 'snapchat')?.snapchatDestination || 'spotlight';
+      }
+
+      function snapchatDestinationSelect(value, attributes, disabled) {
+        return '<select aria-label="Snapchat destination" ' + attributes + (disabled ? ' disabled' : '') + '>' +
+          [['spotlight', 'Spotlight'], ['story', 'Public Story']].map(([key, label]) => '<option value="' + key + '" ' + (value === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select>';
+      }
+
+      function youtubeVideoPrivacy(videoId) {
+        return youtubeVideoPrivacies[videoId] || preferences.find((item) => item.platform === 'youtube')?.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}';
+      }
+
+      function youtubePrivacySelect(value, attributes, disabled) {
+        const choices = [['private', 'Private'], ['unlisted', 'Unlisted'], ['public', 'Public']];
+        return '<select aria-label="YouTube visibility" ' + attributes + (disabled ? ' disabled' : '') + '>' +
+          choices.map(([key, label]) => '<option value="' + key + '" ' + (value === key ? 'selected' : '') + '>' + label + '</option>').join('') + '</select>';
+      }
+
       function renderPreferenceRows() {
         const list = $('preference-list');
         if (!list) return;
@@ -1065,20 +1097,24 @@ export function renderHome(env: Env): string {
         }
         list.innerHTML = platforms.map((platform) => {
           const pref = preferences.find((item) => item.platform === platform.platform);
-          const connection = connections.find((item) => item.platform === platform.platform && item.status === 'connected');
-          const current = pref?.mode || 'disabled';
-          const disabled = !connection;
+          const connection = platform.platform === 'youtube' ? selectedYouTubeConnection() : connections.find((item) => item.platform === platform.platform && item.status === 'connected');
+          const current = platform.supportsAutomatic === false && pref?.mode === 'automatic' ? 'disabled' : pref?.mode || 'disabled';
+          const disabled = !connection || (platform.platform === 'snapchat' && !connection.snapchatProfileConfirmed);
           return '<div class="preference-row">' +
             '<span><strong>' + escapeHtml(platformName(platform.platform)) + '</strong><small>' +
-            (connection ? 'How should new Divine videos reach this platform?' : 'Connect this platform first to turn on crossposting.') +
+            (connection ? (platform.supportsAutomatic === false ? 'Confirm each video before posting to TikTok.' : 'How should new Divine videos reach this platform?') : 'Connect this platform first to turn on crossposting.') +
             '</small></span>' +
             '<select data-preference="' + escapeHtml(platform.platform) + '" ' + (disabled ? 'disabled' : '') + '>' +
               '<option value="disabled" ' + (current === 'disabled' ? 'selected' : '') + '>Off</option>' +
               '<option value="manual" ' + (current === 'manual' ? 'selected' : '') + '>Manual</option>' +
-              '<option value="automatic" ' + (current === 'automatic' ? 'selected' : '') + '>Automatic</option>' +
+              (platform.supportsAutomatic === false ? '' : '<option value="automatic" ' + (current === 'automatic' ? 'selected' : '') + '>Automatic</option>') +
             '</select>' +
+            (platform.platform === 'snapchat' ? '<span style="grid-column: 1 / -1"><label>Default destination ' + snapchatDestinationSelect(pref?.snapchatDestination || 'spotlight', 'data-snapchat-default="true"', disabled) + '</label><small>Public profiles only. Spotlight uses the first 160 characters of your Divine text and a source link; Snapchat decides profile placement. Public Stories last 24 hours and carry a source link, without text overlays. Portrait MP4 required, at least 540×960, 6–60 seconds for Spotlight or 5–60 seconds for Story, up to 16 MiB.</small></span>' : '') +
+            (platform.platform === 'youtube' ? '<span style="grid-column: 1 / -1"><label>Default visibility ' +
+              youtubePrivacySelect(pref?.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}', 'data-youtube-default="true"', disabled) + '</label>' +
+              '<small>Private is visible only to you. Unlisted can be viewed with a link. Public is visible to everyone. YouTube decides whether a video is a Short.</small></span>' : '') +
             (platform.platform === 'instagram' ? '<span style="grid-column: 1 / -1"><label>Default destination ' +
-              instagramDestinationSelect(pref?.instagramDestination, 'data-instagram-default="true"', disabled) + '</label>' +
+              instagramDestinationSelect(pref?.instagramDestination, 'data-instagram-default="true"', false) + '</label>' +
               '<small>Professional Instagram account required (Creator or Business). Stories expire after 24 hours, without the caption or a link sticker. Story videos must be 3–60 seconds and at most 100 MB. Reel + feed also shares your Reel to the feed.</small></span>' : '') +
           '</div>';
         }).join('');
@@ -1088,7 +1124,8 @@ export function renderHome(env: Env): string {
         if (platform === 'instagram') return 'Instagram';
         if (platform === 'tiktok') return 'TikTok';
         if (platform === 'x') return 'X';
-        if (platform === 'youtube') return 'YouTube Shorts';
+        if (platform === 'youtube') return 'YouTube';
+        if (platform === 'snapchat') return 'Snapchat';
         return platform;
       }
 
@@ -1145,12 +1182,29 @@ export function renderHome(env: Env): string {
 
       function jobLabel(job) {
         if (job.status === 'posted') {
+          const linkLabel = job.platform === 'instagram' && job.instagramDestination
+            ? (job.instagramDestination === 'story' ? 'View Story' : 'View Reel')
+            : 'View post';
           const link = job.externalPostUrl
-            ? ' <a href="' + escapeHtml(job.externalPostUrl) + '" target="_blank" rel="noopener">View post</a>'
+            ? ' <a href="' + escapeHtml(job.externalPostUrl) + '" target="_blank" rel="noopener">' + linkLabel + '</a>'
             : '';
+          if (job.platform === 'youtube') {
+            const privacy = job.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}';
+            const description = privacy === 'public' ? 'Published publicly to YouTube' : privacy === 'unlisted' ? 'Uploaded unlisted to YouTube' : 'Uploaded privately to YouTube';
+            return description + '.' + link;
+          }
+          if (job.platform === 'snapchat') return 'Posted to Snapchat ' + (job.snapchatDestination === 'story' ? 'public Story' : 'Spotlight') + '.' + link;
           return 'Posted to ' + escapeHtml(platformName(job.platform)) + '.' + link;
         }
+        if (job.platform === 'snapchat' && job.status === 'processing') return 'Snapchat is processing the ' + (job.snapchatDestination === 'story' ? 'public Story; waiting for readback.' : 'Spotlight; waiting for LIVE approval.');
+        if (job.platform === 'tiktok' && job.status === 'processing') return 'TikTok is processing the video. This may take a few minutes…';
+        if (job.platform === 'youtube' && job.status === 'processing') return 'YouTube is processing the upload…';
         if (job.status === 'failed') {
+          if (job.errorCode === 'provider_payment_required') {
+            return job.platform === 'x'
+              ? 'The X developer app is out of API credits. Contact Divine support to resolve this.'
+              : escapeHtml(platformName(job.platform)) + ' requires a billing update. Contact Divine support to resolve this.';
+          }
           return escapeHtml(platformName(job.platform)) + ' failed: ' + escapeHtml(job.errorMessage || job.errorCode || 'unknown error');
         }
         if (job.status === 'needs_reauth') {
@@ -1169,7 +1223,8 @@ export function renderHome(env: Env): string {
           list.innerHTML = '<div class="connect-row"><span><strong>Sign in to get started</strong><small>Your recent Divine videos show up here.</small></span></div>';
           return;
         }
-        const connected = connections.filter((item) => item.status === 'connected');
+        const youtubeConnection = selectedYouTubeConnection();
+        const connected = connections.filter((item) => item.status === 'connected' && (item.platform !== 'snapchat' || item.snapchatProfileConfirmed) && (item.platform !== 'youtube' || item.id === youtubeConnection?.id));
         if (accountLoaded && connected.length === 0) {
           list.innerHTML = '<div class="connect-row"><span><strong>Connect a platform first</strong><small>Once a platform is connected you can post any video from here.</small></span></div>';
           return;
@@ -1193,6 +1248,13 @@ export function renderHome(env: Env): string {
             if (connection.platform === 'instagram') {
               selector = instagramDestinationSelect(existing ? existing.instagramDestination : instagramVideoDestination(video.id),
                 'data-instagram-video="' + escapeHtml(video.id) + '"', !!existing) + ' ';
+            }
+            if (connection.platform === 'snapchat') {
+              selector = snapchatDestinationSelect(existing ? existing.snapchatDestination : snapchatVideoDestination(video.id), 'data-snapchat-video="' + escapeHtml(video.id) + '"', !!existing) + ' ';
+            }
+            if (connection.platform === 'youtube') {
+              selector = youtubePrivacySelect(existing ? (existing.youtubePrivacyStatus || '${parseYouTubePrivacyStatus(env.YOUTUBE_DEFAULT_PRIVACY_STATUS)}') : youtubeVideoPrivacy(video.id),
+                'data-youtube-video="' + escapeHtml(video.id) + '"', !!existing) + ' ';
             }
             return selector + '<button class="mini-button" data-crosspost-video="' + escapeHtml(video.id) + '" data-crosspost-platform="' + escapeHtml(connection.platform) + '" ' + (busy || posted ? 'disabled' : '') + '>' +
               (busy ? 'Sending…' : posted ? 'Posted to ' + escapeHtml(platformName(connection.platform)) : 'Post to ' + escapeHtml(platformName(connection.platform))) + '</button>';
@@ -1218,17 +1280,163 @@ export function renderHome(env: Env): string {
         }
         if (options.once) return;
         const active = (videoJobs[videoId] || []).some((job) =>
-          job.status === 'queued' || job.status === 'uploading' || job.status === 'processing');
+          job.status === 'queued' || job.status === 'uploading' || job.status === 'processing' || job.status === 'dispatching');
         clearTimeout(videoPolls[videoId]);
         if (active) {
           videoPolls[videoId] = setTimeout(() => pollJobs(videoId), 5000);
         }
       }
 
+      function tiktokFormOptions(form, data) {
+        const value = (name) => form.querySelector('[name="' + name + '"]');
+        const info = data.creatorInfo;
+        const privacyLevel = value('privacyLevel').value;
+        const allowComment = value('allowComment').checked;
+        const allowDuet = value('allowDuet').checked;
+        const allowStitch = value('allowStitch').checked;
+        const commercialContent = value('commercialContent').checked;
+        const brandOrganic = commercialContent && value('brandOrganic').checked;
+        const brandContent = commercialContent && value('brandContent').checked;
+        const caption = value('confirmedCaption').value;
+        if (!info.privacy_level_options.includes(privacyLevel) || !value('musicUsageConfirmed').checked || caption.length > 2200 ||
+          (allowComment && info.comment_disabled) || (allowDuet && info.duet_disabled) || (allowStitch && info.stitch_disabled) ||
+          (commercialContent && !brandOrganic && !brandContent) || (brandContent && !['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS'].includes(privacyLevel))) return null;
+        return { connectionId: data.connectionId, creatorInfo: info, privacyLevel, allowComment, allowDuet, allowStitch,
+          commercialContent, brandOrganic, brandContent, confirmedCaption: caption, musicUsageConfirmed: true, brandedContentConfirmed: !!brandContent };
+      }
+
+      function tiktokConfirmationMarkup(data, preview) {
+        const info = data.creatorInfo;
+        const privacyNames = { SELF_ONLY: 'Only me', PUBLIC_TO_EVERYONE: 'Everyone', MUTUAL_FOLLOW_FRIENDS: 'Friends', FOLLOWER_OF_CREATOR: 'Followers' };
+        return '<form style="display:grid;gap:14px;max-width:560px;color:inherit">' +
+          '<h2>Post to TikTok</h2><p>Posting to ' + escapeHtml(info.creator_nickname) + ' (@' + escapeHtml(info.creator_username) + ')</p>' +
+          '<video controls playsinline preload="metadata" style="width:100%;max-height:280px" src="' + escapeHtml(preview.mediaUrl) + '"></video>' +
+          '<p>' + escapeHtml(preview.durationSeconds) + ' seconds. This account allows up to ' + escapeHtml(info.max_video_post_duration_sec) + ' seconds.</p>' +
+          '<label>Caption <textarea name="confirmedCaption" rows="5" style="display:block;width:100%">' + escapeHtml(preview.caption) + '</textarea></label>' +
+          '<small>You can edit or remove all text. Maximum 2200 characters.</small>' +
+          '<label>Who can view this video? <select name="privacyLevel"><option value="">Choose privacy</option>' +
+          info.privacy_level_options.map((privacy) => '<option value="' + escapeHtml(privacy) + '">' + escapeHtml(privacyNames[privacy] || privacy) + '</option>').join('') + '</select></label>' +
+          ['Comment', 'Duet', 'Stitch'].map((interaction) => {
+            const forbidden = info[interaction.toLowerCase() + '_disabled'];
+            return '<label style="opacity:' + (forbidden ? '0.5' : '1') + '"><input type="checkbox" name="allow' + interaction + '" ' + (forbidden ? 'disabled' : '') + '> Allow ' + interaction + (forbidden ? ' (disabled in TikTok settings)' : '') + '</label>';
+          }).join('') +
+          '<label><input type="checkbox" name="commercialContent"> Disclose commercial content</label>' +
+          '<fieldset data-disclosures hidden><legend>This content promotes</legend>' +
+          '<label><input type="checkbox" name="brandOrganic"> Your brand</label> ' +
+          '<label><input type="checkbox" name="brandContent"> Branded content</label>' +
+          '<p data-disclosure-label></p><small>Branded content visibility cannot be set to private. Choose Everyone or Friends.</small></fieldset>' +
+          '<label><input type="checkbox" name="musicUsageConfirmed"> <span data-consent></span></label>' +
+          '<p>After posting, processing may take a few minutes before your video is visible on your profile.</p>' +
+          '<small data-confirmation-help>Choose privacy and agree to the declaration to continue.</small>' +
+          '<div><button type="button" data-cancel>Cancel</button> <button type="submit" disabled>Post to TikTok</button></div></form>';
+      }
+
+      async function confirmTikTok(videoId) {
+        const [data, preview] = await Promise.all([api('/connections/tiktok/creator-info'), api('/videos/' + videoId + '/tiktok-preview')]);
+        if (!Number.isFinite(preview.durationSeconds) || preview.durationSeconds <= 0 || preview.durationSeconds > data.creatorInfo.max_video_post_duration_sec) {
+          throw new Error('This video exceeds the current TikTok duration limit.');
+        }
+        const dialog = document.createElement('dialog');
+        dialog.style.cssText = 'max-width:620px;width:90%;max-height:90vh;overflow:auto;background:var(--surface,#fff);color:var(--text,#111);border-radius:16px;padding:24px';
+        dialog.innerHTML = tiktokConfirmationMarkup(data, preview);
+        document.body.appendChild(dialog);
+        const form = dialog.querySelector('form');
+        const field = (name) => form.querySelector('[name="' + name + '"]');
+        const consent = form.querySelector('[data-consent]');
+        const refresh = (event) => {
+          const commercial = field('commercialContent').checked;
+          const branded = commercial && field('brandContent').checked;
+          if (event && ['commercialContent', 'brandOrganic', 'brandContent'].includes(event.target.name)) field('musicUsageConfirmed').checked = false;
+          form.querySelector('[data-disclosures]').hidden = !commercial;
+          field('brandContent').disabled = field('privacyLevel').value === 'SELF_ONLY';
+          for (const option of field('privacyLevel').options) if (['SELF_ONLY', 'FOLLOWER_OF_CREATOR'].includes(option.value)) option.disabled = branded;
+          form.querySelector('[data-disclosure-label]').textContent = branded ? "Your video will be labeled as 'Paid partnership'" : commercial && field('brandOrganic').checked ? "Your video will be labeled as 'Promotional content'" : '';
+          consent.innerHTML = "By posting, you agree to TikTok's " + (branded ? '<a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" rel="noopener">Branded Content Policy</a> and ' : '') + '<a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" rel="noopener">Music Usage Confirmation</a>.';
+          const valid = !!tiktokFormOptions(form, data);
+          form.querySelector('[type="submit"]').disabled = !valid;
+          form.querySelector('[data-confirmation-help]').textContent = valid ? 'Ready to send this video with these choices.' : commercial && !field('brandOrganic').checked && !field('brandContent').checked ? 'You need to indicate if your content promotes yourself, a third party, or both.' : 'Choose privacy, review your caption and agree to the declaration to continue.';
+        };
+        refresh();
+        form.addEventListener('change', refresh);
+        form.addEventListener('input', refresh);
+        dialog.showModal();
+        return new Promise((resolve) => {
+          const finish = (value) => { dialog.close(); dialog.remove(); resolve(value); };
+          dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish(null); });
+          form.querySelector('[data-cancel]').addEventListener('click', () => finish(null));
+          form.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const options = tiktokFormOptions(form, data);
+            if (options) finish(options);
+          });
+        });
+      }
+
+      function snapchatProfileMarkup(data) {
+        return '<form><h2>Choose a Snapchat public profile</h2><p>This profile is used for Spotlight and public Stories. Changing it turns automatic posting off.</p><select name="profileId" required><option value="">Choose a public profile</option>' + data.profiles.map((profile) => '<option value="' + escapeHtml(profile.id) + '">' + escapeHtml(profile.name) + '</option>').join('') + '</select><p>Public Profile API access does not include private or friends Stories.</p><button type="button" data-cancel>Cancel</button> <button type="submit">Confirm public profile</button></form>';
+      }
+
+      async function selectSnapchatProfile(connectionId) {
+        const data = await api('/connections/snapchat/' + encodeURIComponent(connectionId) + '/profiles').catch(async (error) => {
+          await refreshAccount().catch(() => undefined);
+          throw error;
+        });
+        const dialog = document.createElement('dialog');
+        dialog.innerHTML = snapchatProfileMarkup(data);
+        document.body.appendChild(dialog);
+        const form = dialog.querySelector('form');
+        dialog.showModal();
+        const selected = await new Promise((resolve) => {
+          const finish = (value) => { dialog.close(); dialog.remove(); resolve(value); };
+          dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish(null); });
+          form.querySelector('[data-cancel]').addEventListener('click', () => finish(null));
+          form.addEventListener('submit', (event) => { event.preventDefault(); const value = form.querySelector('[name="profileId"]').value; if (data.profiles.some(profile => profile.id === value)) finish(value); });
+        });
+        if (!selected) return;
+        await api('/connections/snapchat/' + encodeURIComponent(connectionId) + '/profile', { method: 'POST', body: JSON.stringify({ profileId: selected, confirmed: true }) }).catch(async (error) => {
+          await refreshAccount().catch(() => undefined);
+          throw error;
+        });
+        await refreshAccount();
+        setStatus('Snapchat public profile confirmed. Crossposting is manual until you choose automatic.');
+      }
+
       async function triggerCrosspost(videoId, platform) {
+        let snapchatProfile;
+        let snapchatDestination;
+        if (platform === 'snapchat') {
+          const account = connections.find((item) => item.platform === 'snapchat' && item.status === 'connected');
+          snapchatProfile = { connectionId: account?.id, profileId: account?.externalAccountId };
+          snapchatDestination = snapchatVideoDestination(videoId);
+          const destination = snapchatDestination;
+          if (!window.confirm('Post this Divine video to ' + (account?.externalAccountName || 'your public profile') + ' as ' + (destination === 'story' ? 'a public Story? This shares a source link without text overlays.' : 'Spotlight? The first 160 characters of your Divine text and a source link are included. Snapchat must approve it before it is live.'))) { renderVideoRows(); return; }
+        }
+        let tiktokPostOptions;
+        if (platform === 'tiktok') {
+          tiktokPostOptions = await confirmTikTok(videoId).catch(async (error) => {
+            await refreshAccount().catch(() => undefined);
+            throw error;
+          });
+          if (!tiktokPostOptions) { renderVideoRows(); return; }
+        }
+        let youtubeChannel;
+        let youtubePrivacyStatus;
+        if (platform === 'youtube') {
+          const account = selectedYouTubeConnection();
+          if (!account) throw new Error('Reload and confirm your YouTube channel before uploading.');
+          youtubeChannel = { connectionId: account.id, channelId: account.externalAccountId };
+          youtubePrivacyStatus = youtubeVideoPrivacy(videoId);
+          if (!window.confirm('Upload this Divine video to ' + (account.externalAccountName || account.externalAccountId) + ' with ' + youtubePrivacyStatus + ' visibility?')) {
+            renderVideoRows();
+            return;
+          }
+        }
         const data = await api('/videos/' + videoId + '/crossposts', {
           method: 'POST',
-          body: JSON.stringify({ platforms: [platform], ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
+          body: JSON.stringify({ platforms: [platform], ...(platform === 'snapchat' ? { snapchatProfile, snapchatDestination } : {}), ...(platform === 'tiktok' ? { tiktokPostOptions } : {}), ...(platform === 'youtube' ? { youtubeChannel, youtubePrivacyStatus } : {}), ...(platform === 'instagram' && instagramVideoDestination(videoId) ? { instagramDestination: instagramVideoDestination(videoId) } : {}) }),
+        }).catch(async (error) => {
+          if (platform === 'snapchat' || platform === 'tiktok' || platform === 'youtube') await refreshAccount().catch(() => undefined);
+          throw error;
         });
         videoJobs[videoId] = data.jobs || [];
         renderVideoRows();
@@ -1245,10 +1453,10 @@ export function renderHome(env: Env): string {
         window.location.href = data.authorizationUrl;
       }
 
-      async function updatePreference(platform, mode, instagramDestination) {
+      async function updatePreference(platform, mode, instagramDestination, youtubePrivacyStatus, snapchatDestination) {
         await api('/preferences/' + platform, {
           method: 'PUT',
-          body: JSON.stringify({ mode, ...(instagramDestination ? { instagramDestination } : {}) }),
+          body: JSON.stringify({ mode, ...(snapchatDestination ? { snapchatDestination } : {}), ...(youtubePrivacyStatus ? { youtubePrivacyStatus } : {}), ...(instagramDestination ? { instagramDestination } : {}) }),
         });
         setStatus(platformName(platform) + ' crossposting set to ' + mode + '.');
         await refreshAccount();
@@ -1267,6 +1475,7 @@ export function renderHome(env: Env): string {
             renderPreferenceRows();
             renderVideoRows();
           }
+          if (target?.dataset?.snapchatProfile) { await selectSnapchatProfile(target.dataset.snapchatProfile); }
           if (target?.dataset?.connect) {
             await connectPlatform(target.dataset.connect);
           }
@@ -1302,14 +1511,26 @@ export function renderHome(env: Env): string {
           instagramVideoDestinations[target.dataset.instagramVideo] = target.value;
           return;
         }
-        if (!target?.dataset?.preference && !target?.dataset?.instagramDefault) return;
-        const platform = target.dataset.instagramDefault ? 'instagram' : target.dataset.preference;
+        if (target?.dataset?.snapchatVideo) { snapchatVideoDestinations[target.dataset.snapchatVideo] = target.value; return; }
+        if (target?.dataset?.youtubeVideo) {
+          youtubeVideoPrivacies[target.dataset.youtubeVideo] = target.value;
+          return;
+        }
+        if (!target?.dataset?.preference && !target?.dataset?.instagramDefault && !target?.dataset?.youtubeDefault && !target?.dataset?.snapchatDefault) return;
+        const platform = target.dataset.snapchatDefault ? 'snapchat' : target.dataset.youtubeDefault ? 'youtube' : target.dataset.instagramDefault ? 'instagram' : target.dataset.preference;
         const value = target.value;
         // Saves run one at a time so a destination save reads the mode the previous save stored.
         preferenceSaves = preferenceSaves.then(async () => {
           try {
-            if (target.dataset.instagramDefault) {
-              const mode = preferences.find((item) => item.platform === 'instagram')?.mode || 'disabled';
+            if (target.dataset.snapchatDefault) {
+              const mode = preferences.find((item) => item.platform === 'snapchat')?.mode || 'disabled';
+              await updatePreference('snapchat', mode, undefined, undefined, value);
+            } else if (target.dataset.youtubeDefault) {
+              const mode = preferences.find((item) => item.platform === 'youtube')?.mode || 'disabled';
+              await updatePreference('youtube', mode, undefined, value);
+            } else if (target.dataset.instagramDefault) {
+              const connected = connections.some((item) => item.platform === 'instagram' && item.status === 'connected');
+              const mode = connected ? (preferences.find((item) => item.platform === 'instagram')?.mode || 'disabled') : 'disabled';
               await updatePreference('instagram', mode, value);
             } else {
               await updatePreference(platform, value);

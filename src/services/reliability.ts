@@ -12,7 +12,7 @@ export type DiagnosticInput = {
 }
 export async function recordDiagnostic(env: Pick<Env, 'DB' | 'RELEASE_SHA'> & Partial<Env>, input: DiagnosticInput): Promise<void> {
   const diagnostic = { ...(providerErrorDiagnostics(input.error) ?? {}), ...(input.configuration ? { configuration: input.configuration } : {}) }
-  const secrets = [env.INSTAGRAM_CLIENT_SECRET, env.TWITTER_CLIENT_SECRET, env.TIKTOK_CLIENT_SECRET, env.GOOGLE_CLIENT_SECRET, env.TOKEN_ENCRYPTION_KEY].filter((value): value is string => Boolean(value))
+  const secrets = [env.INSTAGRAM_CLIENT_SECRET, env.TWITTER_CLIENT_SECRET, env.TIKTOK_CLIENT_SECRET, env.GOOGLE_CLIENT_SECRET, env.SNAPCHAT_CLIENT_SECRET, env.TOKEN_ENCRYPTION_KEY].filter((value): value is string => Boolean(value))
   function scrub(value: unknown): unknown {
     if (typeof value === 'string') return secrets.reduce((text, secret) => text.split(secret).join('[redacted]'), value)
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, scrub(entry)]))
@@ -51,7 +51,7 @@ export async function providerHealth(db: D1Database, now: number) {
        MAX(CASE WHEN outcome='succeeded' THEN created_at END) AS last_success
        FROM operation_diagnostics WHERE created_at >= ? AND outcome IN ('failed','succeeded')
        GROUP BY platform,operation,reference) GROUP BY platform,operation`, now - 86400)
-  const health = Object.fromEntries(['instagram','tiktok','x','youtube'].map(platform => [platform, {
+  const health = Object.fromEntries(['instagram','tiktok','x','youtube','snapchat'].map(platform => [platform, {
     connection: 'unknown' as ObservedHealth, publishing: 'unknown' as ObservedHealth,
     connectionFailures: 0, publishingFailures: 0, lastConnectionSuccess: null as number | null, lastPublishSuccess: null as number | null,
   }])) as Record<Platform, { connection: ObservedHealth; publishing: ObservedHealth; connectionFailures: number; publishingFailures: number; lastConnectionSuccess: number | null; lastPublishSuccess: number | null }>

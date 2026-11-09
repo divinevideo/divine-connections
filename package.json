@@ -10,7 +10,8 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "test:once": "vitest run"
+    "test:once": "vitest run",
+    "test:provider-setup": "node --test scripts/tests/provider-setup.cjs scripts/tests/production-health.cjs"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",

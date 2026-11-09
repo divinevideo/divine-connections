@@ -1,7 +1,9 @@
-import type { Env, Platform } from './types'
+// ABOUTME: Loads validated Worker configuration and provider feature flags.
+// ABOUTME: Keeps YouTube defaults private unless explicitly configured.
+import type { Env, Platform, YouTubePrivacyStatus } from './types'
 import { HttpError } from './utils/http'
 
-export type YouTubePrivacyStatus = 'private' | 'public' | 'unlisted'
+export type { YouTubePrivacyStatus } from './types'
 
 export const AUTO_RECONCILE_USER_BATCH_SIZE = 100
 export const AUTO_RECONCILE_MAX_USERS_PER_RUN = 500
@@ -64,6 +66,7 @@ export function loadConfig(env: Env): AppConfig {
       tiktok: isEnabled(env.ENABLE_TIKTOK),
       x: isEnabled(env.ENABLE_X),
       youtube: isEnabled(env.ENABLE_YOUTUBE),
+      snapchat: isEnabled(env.ENABLE_SNAPCHAT),
     },
   }
 }

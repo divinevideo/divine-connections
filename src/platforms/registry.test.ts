@@ -18,9 +18,10 @@ describe('platform registry', () => {
   it('returns disabled provider summaries for every supported platform', () => {
     expect(getProviderSummaries(env())).toEqual([
       { platform: 'instagram', enabled: false, supportsAutomatic: true },
-      { platform: 'tiktok', enabled: false, supportsAutomatic: true },
+      { platform: 'tiktok', enabled: false, supportsAutomatic: false },
       { platform: 'x', enabled: false, supportsAutomatic: true },
       { platform: 'youtube', enabled: false, supportsAutomatic: true },
+      { platform: 'snapchat', enabled: false, supportsAutomatic: true, readinessReason: 'credentials_missing' },
     ])
   })
 
@@ -53,7 +54,7 @@ describe('platform registry', () => {
           TIKTOK_CLIENT_SECRET: 'tiktok-secret',
         }),
       ),
-    ).toContainEqual({ platform: 'tiktok', enabled: true, supportsAutomatic: true })
+    ).toContainEqual({ platform: 'tiktok', enabled: true, supportsAutomatic: false })
   })
 
   it('constructs only the requested adapter without validating unrelated app configuration', () => {

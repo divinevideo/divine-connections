@@ -5,6 +5,7 @@ import { PlatformAdapterError } from '../platforms/adapter'
 // Provider error bodies are untrusted and can echo request values, so logs get
 // only these allowlisted fields, each capped and scrubbed of token-like runs.
 export type ProviderErrorDiagnostics = {
+  reason?: 'quotaExceeded' | 'uploadLimitExceeded'
   endpoint?: string
   type?: string
   code?: number
@@ -110,8 +111,13 @@ function extractFromBody(body: unknown): Omit<ProviderErrorDiagnostics, 'endpoin
 export function providerErrorDiagnostics(error: unknown): ProviderErrorDiagnostics | null {
   if (!(error instanceof PlatformAdapterError)) return null
 
+  const nestedErrors = asRecord(asRecord(error.providerResponse).error).errors
+  const documentedReason = error.platform === 'youtube' && Array.isArray(nestedErrors)
+    ? nestedErrors.map((item) => asRecord(item).reason).find((reason) => reason === 'quotaExceeded' || reason === 'uploadLimitExceeded')
+    : undefined
   const diagnostics: ProviderErrorDiagnostics = {
     endpoint: error.providerEndpoint,
+    ...(documentedReason ? { reason: documentedReason } : {}),
     ...extractFromBody(error.providerResponse),
   }
   const entries = Object.entries(diagnostics).filter(([, value]) => value !== undefined)

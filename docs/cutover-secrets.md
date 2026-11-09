@@ -22,12 +22,14 @@ worker and redirects to the verifier until the cutover finishes.
 | `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` | Meta's webhook subscription check on `/webhooks/instagram` | a value you choose and also enter in the Meta webhook settings |
 | `TIKTOK_CLIENT_KEY` / `_SECRET` | connecting TikTok | TikTok developer portal, Login Kit |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | connecting YouTube | Google Cloud console, a web application OAuth client |
+| `SNAPCHAT_CLIENT_ID` / `_SECRET` | connecting Snapchat | Snapchat developer portal, an app with Public Profile API access |
 | `OPS_ALERT_WEBHOOK_URL` | watchdog alerts; the CI deploy refuses to run without it | the ops alert receiver |
 | `OPS_OPERATOR_PUBKEYS` | the operator view at `/operations`; the CI deploy refuses to run without it | comma-separated 64-character hex pubkeys of the operators |
 
 `OAUTH_REDIRECT_BASE` and `INSTAGRAM_CLIENT_ID` are plain vars in
 `wrangler.toml`, not secrets. A provider shows as enabled only when its
-`ENABLE_*` var is `true` and its credentials are set.
+`ENABLE_*` var is `true` and its credentials are set. An API key does not
+authorize YouTube publishing; it needs the OAuth client above.
 
 ## Cloudflare secrets cannot be copied
 
@@ -46,6 +48,7 @@ them.
   skips any value you leave blank.
 - **If it is ever replaced**, every existing connection must be re-linked,
   because the stored tokens can no longer be decrypted.
+- **Never generate or replace it as part of provider setup.**
 
 Generating a key, only when one is truly needed:
 
@@ -61,9 +64,20 @@ refresh, and reads like the platform revoked access.
 `scripts/install-connections-secrets.sh` prompts for `TOKEN_ENCRYPTION_KEY`
 and the X, Instagram and TikTok secrets and installs each one, skipping
 anything you leave blank, so it can be run repeatedly as values turn up.
-Install the others with `npx wrangler secret put <NAME>`. Run either in your
-own terminal, and never paste a secret into an agent session or a shell that
-logs history.
+For YouTube, TikTok or Snapchat, follow
+[provider setup and activation gates](provider-rollout.md) and use
+`scripts/install-publishing-secrets.sh youtube|tiktok|snapchat`, which installs
+exactly one complete OAuth pair. Installing credentials neither enables a
+provider nor authorizes a deployment or live post. Install anything else with
+`npx wrangler secret put <NAME>`. Run these in your own terminal, and never
+paste a secret into an agent session or a shell that logs history.
 
 After installing, check `https://crossposter.divine.video/platforms`: each
 provider reports whether its flag and credentials are both set.
+
+## Acceptance testing
+
+A controlled acceptance deployment, if later authorized, needs a separate
+Worker and host, a separate D1, a separate test key and registered provider
+callbacks. Two Workers with different encryption keys must never share
+production D1.

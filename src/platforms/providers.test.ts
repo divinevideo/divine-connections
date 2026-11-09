@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetchVideoBytes, PlatformAdapterError } from './adapter'
 import { createInstagramAdapter } from './instagram'
+import { TIKTOK_CREATOR, tiktokOptions } from './tiktok.test-helpers'
 import { createTikTokAdapter } from './tiktok'
 import { createXAdapter } from './x'
 import { createYouTubeAdapter } from './youtube'
@@ -129,6 +130,29 @@ describe('provider adapters', () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain('https://graph.instagram.com/access_token')
     expect(String(fetchMock.mock.calls[1][0])).toContain('grant_type=ig_exchange_token')
     expect(String(fetchMock.mock.calls[1][0])).toContain('access_token=short-token')
+  })
+
+  it('exchanges the documented wrapped Instagram token response without losing account metadata', async () => {
+    const adapter = createInstagramAdapter({ clientId: 'client', clientSecret: 'secret' })
+    fetchMock.mockResolvedValueOnce(Response.json({ data: [{ access_token: 'wrapped-short-token', user_id: 'synthetic-ig-user', permissions: ['instagram_business_basic'] }] }))
+      .mockResolvedValueOnce(Response.json({ access_token: 'long-token', expires_in: 5184000 }))
+
+    const result = await adapter.exchangeCallback({ code: 'auth-code', redirectUri: 'https://crossposter.divine.video/connections/instagram/callback' })
+    expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('access_token')).toBe('wrapped-short-token')
+    expect(result).toMatchObject({ accessToken: 'long-token', metadata: { user_id: 'synthetic-ig-user', permissions: ['instagram_business_basic'] } })
+  })
+
+  it.each([
+    {}, { access_token: '' }, { access_token: 123 }, { data: [] },
+    { data: [{ access_token: 'first' }, { access_token: 'second' }] },
+    { access_token: 'flat', data: [{ access_token: 'wrapped' }] },
+  ])('rejects missing or ambiguous short-lived Instagram tokens before long-lived exchange: %j', async (response) => {
+    const adapter = createInstagramAdapter({ clientId: 'client', clientSecret: 'secret' })
+    fetchMock.mockResolvedValueOnce(Response.json(response))
+    await expect(adapter.exchangeCallback({ code: 'auth-code', redirectUri: 'https://crossposter.divine.video/connections/instagram/callback' })).rejects.toMatchObject({
+      platform: 'instagram', providerEndpoint: 'code_exchange', code: 'unknown_platform_error',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('refreshes a long-lived Instagram token with the ig_refresh_token grant', async () => {
@@ -321,14 +345,12 @@ describe('provider adapters', () => {
     fetchMock
       .mockResolvedValueOnce(
         Response.json({
-          data: {
-            privacy_level_options: ['PUBLIC_TO_EVERYONE', 'SELF_ONLY'],
-          },
+          data: TIKTOK_CREATOR,
         }),
       )
       .mockResolvedValueOnce(Response.json({ data: { publish_id: 'publish-id' } }))
 
-    await expect(adapter.publishVideo(publishInput())).resolves.toMatchObject({
+    await expect(adapter.publishVideo({ ...publishInput(), tiktokPostOptions: tiktokOptions() })).resolves.toMatchObject({
       status: 'processing',
       externalPostId: 'publish-id',
       providerResponse: {
@@ -370,7 +392,7 @@ describe('provider adapters', () => {
       }),
     )
 
-    await expect(adapter.publishVideo(publishInput())).rejects.toMatchObject({
+    await expect(adapter.publishVideo({ ...publishInput(), tiktokPostOptions: tiktokOptions() })).rejects.toMatchObject({
       code: 'needs_reauth',
       providerStatus: 200,
       platform: 'tiktok',
@@ -403,7 +425,7 @@ describe('provider adapters', () => {
     await expect(bodyAsJson(fetchMock.mock.calls[0])).resolves.toEqual({ publish_id: 'publish-id' })
   })
 
-  it('maps TikTok creator-info without private visibility support to platform review required', async () => {
+  it('rejects incomplete TikTok creator info instead of inventing missing restrictions', async () => {
     const adapter = createTikTokAdapter({ clientKey: 'client', clientSecret: 'secret' })
     fetchMock.mockResolvedValueOnce(
       Response.json({
@@ -413,7 +435,7 @@ describe('provider adapters', () => {
       }),
     )
 
-    await expect(adapter.publishVideo(publishInput())).rejects.toMatchObject({
+    await expect(adapter.publishVideo({ ...publishInput(), tiktokPostOptions: tiktokOptions() })).rejects.toMatchObject({
       code: 'platform_review_required',
       platform: 'tiktok',
     })
@@ -909,11 +931,11 @@ describe('provider adapters', () => {
     const adapter = createYouTubeAdapter({ clientId: 'client', clientSecret: 'secret', defaultPrivacyStatus: 'unlisted' })
     fetchMock
       .mockResolvedValueOnce(new Response(VIDEO_BYTES))
-      .mockResolvedValueOnce(new Response(null, { status: 200, headers: { location: 'https://upload.youtube/session' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200, headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic' } }))
       .mockResolvedValueOnce(Response.json({ id: 'youtube-id' }))
 
     await expect(adapter.publishVideo(publishInput())).resolves.toMatchObject({
-      status: 'posted',
+      status: 'processing',
       externalPostId: 'youtube-id',
     })
 
@@ -932,12 +954,12 @@ describe('provider adapters', () => {
       }),
     )
     await expect(bodyAsJson(fetchMock.mock.calls[1])).resolves.toMatchObject({
-      snippet: { title: 'caption', description: 'caption' },
+      snippet: { title: 'Divine video', description: 'caption' },
       status: { privacyStatus: 'unlisted' },
     })
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      'https://upload.youtube/session',
+      'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic',
       expect.objectContaining({
         method: 'PUT',
         headers: expect.objectContaining({
@@ -953,7 +975,7 @@ describe('provider adapters', () => {
     const adapter = createYouTubeAdapter({ clientId: 'client', clientSecret: 'secret' })
     fetchMock
       .mockResolvedValueOnce(new Response(VIDEO_BYTES))
-      .mockResolvedValueOnce(new Response(null, { status: 200, headers: { location: 'https://upload.youtube/session' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200, headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=synthetic' } }))
       .mockResolvedValueOnce(Response.json({ id: 'youtube-id' }))
 
     await adapter.publishVideo(publishInput())

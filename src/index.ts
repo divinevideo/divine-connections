@@ -3,7 +3,9 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { operations } from './routes/operations'
+import { snapchat } from './routes/snapchat'
 import { connections } from './routes/connections'
+import { tiktok } from './routes/tiktok'
 import { crossposts } from './routes/crossposts'
 import { health } from './routes/health'
 import { platforms } from './routes/platforms'
@@ -22,6 +24,8 @@ app.route('/', platforms)
 app.route('/', connections)
 app.route('/', preferences)
 app.route('/', crossposts)
+app.route('/', tiktok)
+app.route('/', snapchat)
 app.route('/', webhooks)
 
 export { app }

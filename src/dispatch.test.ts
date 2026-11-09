@@ -46,7 +46,7 @@ describe('every host', () => {
       const platformsRes = await hostRequest(`${CROSSPOSTER}/platforms?format=json`, {}, testEnv())
       const body = (await platformsRes.json()) as { platforms: Array<{ platform: string; enabled: boolean }> }
       expect(Array.isArray(body.platforms)).toBe(true)
-      expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube'])
+      expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube', 'snapchat'])
     })
 
     // CI's post-deploy check reads /api/providers.
@@ -54,7 +54,7 @@ describe('every host', () => {
       const providers = await hostRequest(`${CROSSPOSTER}/api/providers`, {}, testEnv())
       expect(providers.status).toBe(200)
       const body = (await providers.json()) as { platforms: Array<{ platform: string }> }
-      expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube'])
+      expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube', 'snapchat'])
     })
   })
 
