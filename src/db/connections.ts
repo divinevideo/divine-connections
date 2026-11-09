@@ -233,7 +233,8 @@ export function disconnectConnectionStatement(
 // platform by account name, lowercased) or this connection's id. Identity
 // catches a reconnect, which kept the original connection id while the row
 // recorded a fresh one; the id catches a handle renamed before a reconnect,
-// which updated the stored name but not the row.
+// which updated the stored name but not the row. Snapchat rows (written by
+// profile id) are matched by connection id.
 export function revokeVerificationForConnectionStatement(
   db: D1Database,
   input: { connection: ConnectionRecord; now: number },
