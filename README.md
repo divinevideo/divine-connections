@@ -1,10 +1,10 @@
 # Divine Connections
 
-Cloudflare Worker uniting Divine identity verification and opt-in video crossposting over one connections core. One set of OAuth accounts powers both: connecting an external account proves ownership (a durable, queryable `verifications` table backs public badges) and makes opt-in publishing available where supported. Host-based dispatch serves `verify.divine.video` (public verification API + self-service landing page) and `crossposter.divine.video` (publishing API). Design: `docs/plans/2026-07-28-divine-connections-design.md`; implementation plan: `docs/plans/2026-07-29-divine-connections-implementation.md`.
+Cloudflare Worker for opt-in Divine video crossposting, served at `crossposter.divine.video`. It was scaffolded from divine-crossposter: a creator connects a platform account, chooses manual or automatic posting, and the worker publishes their Divine videos there on their behalf. Nothing posts until the creator opts in.
 
-The publishing core below was scaffolded from divine-crossposter and remains accurate: a creator connects a platform account, chooses manual or automatic posting, and the worker publishes their Divine videos there on their behalf. Nothing posts until the creator opts in.
+Identity verification is not part of this Worker for now. It runs in the verifier service at `verifier.divine.video` ([divinevideo/divine-identify-verification-service](https://github.com/divinevideo/divine-identify-verification-service)). The July plans (`docs/plans/2026-07-28-divine-connections-design.md`, `docs/plans/2026-07-29-divine-connections-implementation.md`) brought a copy of verification into this repo; that copy has been removed, and how the verifier's code joins this repo is being worked out in [#2](https://github.com/divinevideo/divine-connections/issues/2). `verify.divine.video` still routes to this Worker and redirects to the verifier until the cutover finishes. The `verifications` table that copy created (migrations `0004` to `0006`) stays in D1; the Worker no longer reads it. Disconnecting an account marks its sign-in (OAuth) badge rows revoked: the row for its current handle, and any row recorded with the connection's id, such as one for a handle it had before a reconnect.
 
-The service owns publishing consent, OAuth publish grants, per-platform posting preferences, crosspost job state, retries, and external post IDs. Platform OAuth and publishing details stay server-side; public verify and badge routes read only the `verifications` projection, never token columns.
+The service owns publishing consent, OAuth publish grants, per-platform posting preferences, crosspost job state, retries, and external post IDs. Platform OAuth and publishing details stay server-side.
 
 The codebase is a TypeScript Worker built on [Hono](https://hono.dev), using D1 for service-owned state, Cloudflare Queues for publish work, and a Cron-triggered reconciler that catches missed automatic-crosspost triggers. License: MPL-2.0.
 
@@ -29,7 +29,7 @@ D1 is the source of truth for connection state, preferences, idempotent job crea
 
 ### How it fits Divine
 
-- **Auth** proves which Nostr pubkey is calling. The preferred credential is a [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) signed HTTP-auth event, verified locally, so any Nostr signer (local key, bunker, Amber, Keycast) works and the Worker never holds a credential that can sign on the user's behalf. The setup and landing pages and older app builds send a Keycast (`login.divine.video`) OAuth bearer token instead, which the Worker validates by calling Keycast `POST /api/nostr` with `{"method":"get_public_key","params":[]}`; that path stays supported. See [Authentication](#authentication).
+- **Auth** proves which Nostr pubkey is calling. The preferred credential is a [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) signed HTTP-auth event, verified locally, so any Nostr signer (local key, bunker, Amber, Keycast) works and the Worker never holds a credential that can sign on the user's behalf. The setup page, the operator `/operations` page, and older app builds send a Keycast (`login.divine.video`) OAuth bearer token instead, which the Worker validates by calling Keycast `POST /api/nostr` with `{"method":"get_public_key","params":[]}`; that path stays supported. See [Authentication](#authentication).
 - **Video ownership and eligibility** come from Funnelcake (`api.divine.video`). Crosspost creation verifies the Divine video event belongs to the authenticated pubkey and is eligible before queueing work.
 
 ## Getting started
@@ -79,20 +79,19 @@ The initial schema (`migrations/0001_initial.sql`) creates `oauth_states`, `conn
 
 ## Configuration
 
-The merged source deploys onto the historical Worker `divine-crossposter`, preserving its existing encryption key, shared D1 and queue/cron ownership. The configured domains are `crossposter.divine.video` and `verify.divine.video`; publishing stays isolated from verifier hosts. The legacy `verifier.divine.video` cutover remains separate and needs fresh operator verification. Do not replace this Worker or rotate its key during provider setup. See [provider setup and rollout](docs/provider-rollout.md) for disabled-provider credentials, approval gates, native-client limits and acceptance isolation.
+The Worker is deployed onto the Cloudflare worker named `divine-crossposter`, so it keeps the secrets attached to that name (the header of `wrangler.toml` explains why), along with its encryption key, shared D1 and queue/cron ownership. Its routes are the custom domains `crossposter.divine.video` and `verify.divine.video`; the second only redirects to the verifier until the cutover finishes. It serves the same app on any other host that reaches it. Do not replace this Worker or rotate its key during provider setup. See [provider setup and rollout](docs/provider-rollout.md) for disabled-provider credentials, approval gates and acceptance isolation.
 
-Bluesky OAuth is deliberately deferred to #1: Bluesky verifies via AT Protocol identity-link records and public proof posts, and gains OAuth when Bluesky crossposting exists.
+Bluesky crossposting does not exist yet. Bluesky OAuth is deferred to #1 and arrives with it.
 
 ### Bindings
 
 | Binding | Type | Purpose |
 | --- | --- | --- |
-| `DB` | D1 database | Service-owned state on the preserved historical Worker (`divine-crossposter`); shared legacy tables remain intact. |
-| `CACHE_KV` | KV namespace | Negative verify results, NIP-05 results, and rate-limit windows. D1 owns success state. |
+| `DB` | D1 database | Service-owned state in the `divine-crossposter` database; shared legacy tables remain intact. |
 | `CROSSPOST_QUEUE` | Queue producer | Enqueues publish jobs onto `divine-crossposter-jobs`. |
 | `CROSSPOST_DLQ` | Queue producer/metrics binding | Reads aggregate backlog metrics for `divine-crossposter-jobs-dlq`. |
 
-The queue consumer (`max_batch_size = 10`, `max_batch_timeout = 30`, five native retries, `divine-crossposter-jobs-dlq` as dead-letter queue) and reconciler/watchdog cron are active in the checked-in configuration. Preserve single consumer/cron ownership; do not create a competing Worker against the shared database.
+This Worker is the queue consumer (`max_batch_size = 10`, `max_batch_timeout = 30`, five native retries, `divine-crossposter-jobs-dlq` as dead-letter queue) and runs the reconciler/watchdog cron every minute, both configured in `wrangler.toml`. A queue allows exactly one consumer, so no other worker may consume `divine-crossposter-jobs`. Do not create a competing Worker against the shared database.
 
 ### Variables
 
@@ -120,13 +119,12 @@ npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put TIKTOK_CLIENT_KEY
 npx wrangler secret put TIKTOK_CLIENT_SECRET
+npx wrangler secret put INSTAGRAM_WEBHOOK_VERIFY_TOKEN
 npx wrangler secret put OPS_ALERT_WEBHOOK_URL
-npx wrangler secret put GITHUB_TOKEN
-npx wrangler secret put YOUTUBE_API_KEY
-npx wrangler secret put DISCORD_BOT_TOKEN
+npx wrangler secret put OPS_OPERATOR_PUBKEYS
 ```
 
-`GITHUB_TOKEN` (optional) raises the GitHub gist API rate limit for proof-post verification. `YOUTUBE_API_KEY` enables YouTube proof-post verification; without it YouTube still verifies via OAuth connection. `DISCORD_BOT_TOKEN` enables Discord message-link proofs (the proof channel is the non-secret `DISCORD_VERIFY_CHANNEL_ID` var).
+`docs/cutover-secrets.md` lists every secret the Worker reads and where each value comes from.
 
 `TOKEN_ENCRYPTION_KEY` must be at least 32 characters. It encrypts provider access and refresh tokens before they are stored in D1. Do not log OAuth codes, callback URLs containing codes, access tokens, refresh tokens, client secrets, or decrypted token values.
 
@@ -152,7 +150,7 @@ Provider notes:
 
 ## Authentication
 
-Every authenticated route, on both hosts, accepts either header. Both resolve to the caller's full hex pubkey.
+Every authenticated route accepts either header. Both resolve to the caller's full hex pubkey.
 
 ### NIP-98 (preferred)
 
@@ -178,40 +176,33 @@ Replay: there is no per-event-id replay store. A header is accepted while its `c
 Authorization: Bearer <Keycast access token>
 ```
 
-Validated by calling Keycast `POST /api/nostr` `get_public_key`. The setup and landing pages, and app builds that predate NIP-98 signing, still send it. New clients should send NIP-98 instead, because this token can sign arbitrary events for the user.
+Validated by calling Keycast `POST /api/nostr` `get_public_key`. The setup page, the operator `/operations` page, and app builds that predate NIP-98 signing, still send it. New clients should send NIP-98 instead, because this token can sign arbitrary events for the user.
 
 ## Routes
 
-The verifier surface (`verifier.divine.video`; fallback host) is public:
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/` | Self-service verification landing page (sign in, Quick Connect, proof posts, manage links). |
-| `GET` | `/health` | Liveness JSON: `{ "status": "ok", "service": "divine-connections", ... }`. |
-| `GET` | `/platforms` | Merged platform info: label, `supported` (OAuth-enabled or proof-capable), and `methods` per platform. |
-| `POST` | `/verify` | Batch proof-post verification (max 10 claims). |
-| `POST` | `/verify/single`, `POST /api/verify` | Single-claim verification (`/api/verify` is the divine-web alias). |
-| `GET` | `/verify/:platform/:identity/:proof?pubkey=<hex>` | URL-based verification; HTML result page for browsers, JSON otherwise. |
-| `GET` | `/verified/:pubkey` | All live verifications for a pubkey (badge rendering; empty list for unknown pubkeys). |
-| `GET` | `/verified?platform&identity` | Reverse lookup: which pubkey owns this platform identity. |
-| `GET` | `/nip05/verify?name&pubkey` | NIP-05 well-known verification. |
-
-The crossposter surface (`crossposter.divine.video`), public:
+Public routes:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/` | Self-contained setup UI: Divine login, connect platforms, set posting switches. |
-| `GET` | `/health` | Liveness JSON: `{ "ok": true, "service": "divine-connections" }`. |
+| `GET` | `/health` | Liveness JSON: `{ "ok": true, "service": "divine-connections", "release": "<deployed commit>" }`. |
 | `GET` | `/platforms` | Provider readiness. HTML by default; JSON via `?format=json` or `Accept: application/json`. |
-| `GET` | `/api/providers` | The provider-readiness JSON on any host (fallback alias). |
+| `GET` | `/api/providers` | The provider-readiness JSON, the same as `/platforms?format=json`. |
+| `GET` | `/provider-health` | The provider-readiness JSON plus each platform's observed `connection` and `publishing` health (`healthy`, `degraded`, or `unknown`) over the last 24 hours. |
+| `GET` | `/readiness` | Operational readiness JSON: `ok`, `service`, `release`, and `checks` for the database, a scheduler heartbeat within the last five minutes, the alert webhook, and at least one operator pubkey. `200` when every check passes, `503` otherwise. |
 
-Authenticated routes on both hosts require one of the credentials described under [Authentication](#authentication):
+OAuth callback (no credential; the request is authorised by the single-use OAuth `state` created at `/connections/:platform/start`):
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/connections/:platform/callback` | OAuth callback. Exchanges the provider code, stores encrypted tokens, and redirects to the stored return URL. |
+
+Authenticated routes require one of the credentials described under [Authentication](#authentication):
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/connections` | List connected external accounts for the authenticated Divine pubkey. |
 | `POST` | `/connections/:platform/start` | Create OAuth state and return an authorization URL. Body: `{ "returnUrl": "https://..." }`. |
-| `GET` | `/connections/:platform/callback` | OAuth callback. Exchanges the provider code, stores encrypted tokens, and redirects to the stored return URL. |
 | `DELETE` | `/connections/:platform/:connection_id` | Disconnect a platform account and stop future crossposts for it. |
 | `GET` | `/preferences` | List per-platform posting preferences. |
 | `PUT` | `/preferences/:platform` | Set `manual`, `automatic`, or `disabled` mode for a platform. |
@@ -219,6 +210,16 @@ Authenticated routes on both hosts require one of the credentials described unde
 | `POST` | `/videos/:event_id/auto-crosspost` | Client push path after a successful Divine publish; creates jobs for automatic-mode platforms. |
 | `GET` | `/videos/:event_id/crossposts` | Read crosspost jobs for a Divine video. |
 | `GET` | `/jobs/:job_id` | Read one job and its attempt history. |
+| `GET` | `/support/:reference` | For a support reference (an OAuth attempt or job) owned by the caller, its diagnostic stages, outcomes, and times; `404` otherwise. Provider error details stay operator-only. |
+
+Operator and webhook routes:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/operations` | Operator diagnostics page. The page itself is static; it loads data from `/operations/data` with an operator session token. |
+| `GET` | `/operations/data` | Authenticated, and the caller's pubkey must be listed in `OPS_OPERATOR_PUBKEYS` (`403` otherwise). Returns the release, whether alerts are configured, provider health, recent diagnostics (optionally filtered by `?reference=`), alert state, and connection counts by platform and status. |
+| `GET` | `/webhooks/instagram` | Meta's webhook subscription check: echoes `hub.challenge` when `hub.mode=subscribe` and `hub.verify_token` matches `INSTAGRAM_WEBHOOK_VERIFY_TOKEN`; `403` otherwise. |
+| `POST` | `/webhooks/instagram` | Meta webhook deliveries. Acknowledged with `200` but not consumed; crossposting does not depend on them. |
 
 Clients see connection summaries, preferences, job summaries, normalized statuses, and external post IDs/URLs after success; platform OAuth and publishing internals stay server-side.
 
@@ -236,7 +237,7 @@ Normalized error codes: `rate_limited`, `provider_payment_required`, `provider_q
 
 ## Queue operations and alerts
 
-The watchdog alerts on two independent signals: a nonempty DLQ and D1 jobs that have been runnable for at least 15 minutes. Primary queue `oldestMessageTimestamp` is deliberately not an alert threshold because delayed retry messages can be old while their D1 `next_retry_at` is still in the future. Alert payloads contain only `service`, `observedAt`, `issue`, `backlogCount`, `backlogBytes`, and `overdueJobCount`; they never include job IDs, URLs, tokens, pubkeys, provider responses, callback state, or verifier material.
+The watchdog alerts on two independent signals: a nonempty DLQ and D1 jobs that have been runnable for at least 15 minutes. Primary queue `oldestMessageTimestamp` is deliberately not an alert threshold because delayed retry messages can be old while their D1 `next_retry_at` is still in the future. Alert payloads contain only `service`, `observedAt`, `issue`, `backlogCount`, `backlogBytes`, and `overdueJobCount`; they never include job IDs, URLs, tokens, pubkeys, provider responses, callback state, or PKCE code verifiers.
 
 Inspect DLQ messages and the corresponding aggregate D1 state before deciding how to recover them. Do not purge the DLQ as a routine response: determine whether the failure is infrastructure-only, confirm the job's current status and external posting outcome, and re-enqueue only when that outcome is safe and known.
 
@@ -261,11 +262,10 @@ One-shot alert delivery is at-least-once. Overlapping scheduled runs, or a webho
 
 Merges to `main` deploy automatically through GitHub Actions (`.github/workflows/ci-deploy.yml`). Every pull request and push runs the `test` job on Node 24 (`npm ci`, `npm run typecheck`, `npm run test:once`). On push to `main`, the `deploy` job then:
 
-1. Applies remote D1 migrations to the shared `divine-crossposter` database with Wrangler.
-2. Deploys the Worker with `npm run deploy`.
-3. Smoke-tests the fallback host (`divine-connections.$WORKERS_DEV_SUBDOMAIN.workers.dev`): `/health` reports `"status":"ok"`, `/verified/<zero pubkey>` returns an empty list, `/platforms` returns the verifier shape, and `/api/providers` reports Instagram and X enabled.
-
-The smoke test needs the account's workers.dev subdomain set as the `WORKERS_DEV_SUBDOMAIN` GitHub Actions repository variable (not a secret; the hostname is public).
+1. Checks that the Cloudflare credentials and `OPS_ALERT_WEBHOOK_URL` Actions secrets are present, and that the Worker already has its `OPS_ALERT_WEBHOOK_URL` and `OPS_OPERATOR_PUBKEYS` secrets.
+2. Applies remote D1 migrations to the shared `divine-crossposter` database with Wrangler.
+3. Deploys the Worker with `npm run deploy`, recording the commit as `RELEASE_SHA`.
+4. Smoke-tests `https://crossposter.divine.video`: `/health` reports `"ok":true`, the `divine-connections` service, and the commit just deployed as its `release`; then the home page renders, `/readiness` reports `"ok":true`, `https://verify.divine.video/health` answers 308 to the same path on `verifier.divine.video`, and `/api/providers` reports Instagram and X enabled.
 
 The deploy job enters the `production` GitHub environment. `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` may therefore be repository secrets, production-environment secrets, or selected-organization secrets that include this repository. Keep the API token limited to the Divine account and these permissions: Account Settings Read, Workers Scripts Edit, D1 Edit, Queues Edit, and Workers Routes Edit for the `divine.video` zone only.
 
@@ -553,7 +553,7 @@ upload redirects are rejected before credentials can be forwarded elsewhere.
 
 YouTube remains disabled in checked-in configuration. OAuth credentials,
 provider review/access restrictions, and an explicitly authorized real upload
-are still rollout dependencies. A Google project or verifier API key does not
+are still rollout dependencies. A Google project or API key does not
 establish OAuth publishing readiness. No live upload was performed for this
 implementation.
 
@@ -576,9 +576,9 @@ Apply additive migration `0010_tiktok_options.sql` before deploying this code.
 expired connection token, and returns `{ connectionId, creatorInfo }` with safe
 current account/settings fields. `GET /videos/:event_id/tiktok-preview` returns
 owner-validated source caption, media URL and duration without enqueueing or
-uploading. Both routes exist only on the publishing surface, never on either
-verifier hostname. Missing source duration is an eligibility error, even if a
-client supplies its own duration.
+uploading. Both routes are part of the publishing API; `verify.divine.video`,
+which only redirects to the verifier, does not serve them. Missing source
+duration is an eligibility error, even if a client supplies its own duration.
 
 The hosted page fetches both resources when opening its Post to TikTok dialog.
 It shows the account nickname, playable preview, editable original Divine text,
@@ -675,10 +675,9 @@ On the authenticated publishing host:
   returns HTTP 409 and requires fresh confirmation. The profile, override and
   authoritative duration/dimensions are frozen in additive job-options storage.
   Duplicate requests retain the original destination. Invalid/foreign options
-  return HTTP 400. Profile selection routes are absent from verifier hosts.
-- Public `/verified` and `/verify` lookups accept Snapchat OAuth projections by
-  stable profile ID. Snapchat does not support proof-post verification. Discovery
-  permission loss marks only the matching connection for reconnection.
+  return HTTP 400. `verify.divine.video` does not serve profile selection routes.
+- Discovery permission loss marks only the matching connection for reconnection.
+  Confirming a profile writes no verification badge.
 
 Spotlight uses the first 160 Unicode code points of original Divine text, without
 adding attribution text; the separate supported `link` field always carries the

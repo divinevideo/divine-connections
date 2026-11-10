@@ -23,7 +23,7 @@ const base = 'https://crossposter.divine.video'
 test('passes correct release and non-degraded enabled providers', async () => {
   const result = await probe()
   assert.equal(result.code, 0)
-  assert.equal(result.requests.length, 4)
+  assert.equal(result.requests.length, 3)
 })
 for (const [name, replace, stage] of [
   ['HTTP rejection', { [base + '/health']: () => new Response('synthetic-private-token', { status: 403 }) }, /stage=http.*crossposter\.divine\.video/],

@@ -2,7 +2,9 @@
 // ABOUTME: Emits fixed hosts, stages and allowlisted states without response bodies.
 import { pathToFileURL } from 'node:url'
 
-const HOSTS = ['crossposter.divine.video', 'verify.divine.video']
+// verify.divine.video only redirects to the separate verifier, so it has no
+// release of this worker to report.
+const HOSTS = ['crossposter.divine.video']
 const PROVIDERS = ['instagram', 'x', 'youtube', 'tiktok', 'snapchat']
 const STATES = ['unknown', 'healthy', 'degraded']
 export async function checkProductionHealth({ expectedRelease, fetchImpl = fetch, log = console.log }) {

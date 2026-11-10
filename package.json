@@ -1,7 +1,7 @@
 {
   "name": "divine-connections",
   "version": "0.1.0",
-  "description": "Cloudflare Worker for Divine identity verification and opt-in video crossposting over one connections core",
+  "description": "Cloudflare Worker for opt-in Divine video crossposting",
   "main": "src/index.ts",
   "type": "commonjs",
   "scripts": {
@@ -11,12 +11,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:once": "vitest run",
-    "test:provider-setup": "node --test scripts/tests/provider-setup.cjs scripts/tests/production-health.cjs",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+    "test:provider-setup": "node --test scripts/tests/provider-setup.cjs scripts/tests/production-health.cjs"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",
-    "@scure/base": "^2.2.0",
     "hono": "^4.10.6"
   },
   "devDependencies": {

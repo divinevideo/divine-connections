@@ -15,11 +15,10 @@ are additive: migrations 0007/0008 retain Instagram and reliability repairs;
 0009/0010/0011 add YouTube, TikTok and Snapchat snapshots in order.
 
 The configured hosts are `https://crossposter.divine.video` and
-`https://verify.divine.video`. Host dispatch keeps publishing routes inaccessible
-from verifier hosts. The legacy `https://verifier.divine.video` migration is a
-separate operator responsibility; historical rollout notes are not current
-release verification. Do not infer a service outage or change security settings
-from a client's blocked HTTP probe.
+`https://verify.divine.video`. The second only redirects to the separate verifier
+service at `https://verifier.divine.video` and serves no publishing routes.
+Historical rollout notes are not current release verification. Do not infer a
+service outage or change security settings from a client's blocked HTTP probe.
 
 ## Credentials and provider access
 
@@ -52,7 +51,7 @@ an interrupted request made no change or print its payload while investigating.
 
 An existing Google project and API-key metadata have been verified separately;
 that does not verify a usable publishing OAuth client, consent setup or approval.
-`YOUTUBE_API_KEY` supports public proof lookup and cannot authorize uploads.
+An API key cannot authorize uploads.
 Operators must verify current credentials/access privately; this document records
 no private resource identifiers or credential values.
 
@@ -87,10 +86,10 @@ matching text-caption field. See [Snapchat media and rollout limits](snapchat-ro
    then register that host's exact provider callback. Never point another Worker
    with a different key at shared production D1. This source change provisions
    nothing. Test enablement/approval flags do not authorize production flags.
-4. Verify website flows and each intended consumer. The legacy native verifier
-   client consumes `oauth` rather than this service's `methods` capability array,
-   and its OAuth allowlist does not include Snapchat. It must be integrated and
-   tested separately; do not offer a proof-post fallback for OAuth-only Snapchat.
+4. Verify website flows and each intended consumer. This Worker serves no
+   verification, so connecting Snapchat here produces no verified badge; any
+   Snapchat verification belongs to the separate verifier service and must be
+   integrated and tested there.
 5. Only after credentials/access and an authorized real test are verified may an
    operator separately approve production activation. Inspect the deployed release,
    readiness and provider observations. Mocked CI is not live acceptance.

@@ -24,7 +24,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 function env(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
     DB: db,
-    CACHE_KV: {} as KVNamespace,    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
+    CROSSPOST_QUEUE: {} as Queue<{ jobId: string }>,
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video/oauth',

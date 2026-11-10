@@ -1,5 +1,7 @@
 # divine-connections Implementation Plan
 
+> **Note (2026-11).** The copy of identity verification this plan added to this repo has been removed for now. Verification runs in the verifier service at `verifier.divine.video` (`divinevideo/divine-identify-verification-service`), and how its code joins this repo is being worked out in divinevideo/divine-connections#2.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Build the `divine-connections` worker: crossposter's publishing core plus the verifier's public verification surface, with verified state as durable queryable D1 data.

@@ -100,11 +100,10 @@ export async function confirmSnapchatProfile(env: Env, pubkey: string, connectio
     env.DB.prepare(`INSERT INTO preferences (pubkey, platform, connection_id, mode, automatic_enabled_at, created_at, updated_at)
       SELECT ?, 'snapchat', ?, 'manual', NULL, ?, ? WHERE changes() = 1
       ON CONFLICT(pubkey, platform) DO UPDATE SET connection_id = excluded.connection_id, mode = 'manual', automatic_enabled_at = NULL, updated_at = excluded.updated_at`).bind(pubkey, selectedConnectionId, now, now),
+    // Selecting a profile writes no badge row: this worker ships crossposting
+    // only, so badges come from the separate verifier. A row left from an
+    // earlier selection is still revoked, as disconnecting does.
     env.DB.prepare(`UPDATE verifications SET revoked_at = ? WHERE connection_id IN (?, ?) AND pubkey = ? AND changes() = 1`).bind(now, connectionId, selectedConnectionId, pubkey),
-    env.DB.prepare(`INSERT INTO verifications (pubkey, platform, identity, identity_key, method, proof_url, connection_id, verified_at, revoked_at)
-      SELECT ?, 'snapchat', ?, ?, 'oauth', NULL, ?, ?, NULL WHERE EXISTS (SELECT 1 FROM connections WHERE id = ? AND pubkey = ? AND status = 'connected' AND metadata_json = ? AND external_account_id = ?)
-      ON CONFLICT(pubkey, platform, identity_key) DO UPDATE SET connection_id = excluded.connection_id, verified_at = excluded.verified_at, revoked_at = NULL`)
-      .bind(pubkey, selected.id, selected.id.toLowerCase(), selectedConnectionId, now, selectedConnectionId, pubkey, metadata, selected.id),
   )
   const results = await env.DB.batch(statements)
   const sourceChanged = results[0].meta.changes === 1
@@ -112,7 +111,6 @@ export async function confirmSnapchatProfile(env: Env, pubkey: string, connectio
   if (!sourceChanged || !selectedChanged) {
     throw new HttpError(409, 'connection_changed', 'Snapchat connection changed; reload and confirm again')
   }
-  // The OAuth projection uses the stable authorized profile ID, never its display label.
   await recordDiagnosticSafely(env, { reference: connectionId, platform: 'snapchat', operation: 'connect', stage: 'profile_confirmed', outcome: 'succeeded', now })
   return { connectionId: selectedConnectionId, profileId: selected.id, name: selected.name, confirmed: true }
 }

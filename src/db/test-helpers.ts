@@ -12,6 +12,14 @@ export async function applyMigrations(): Promise<D1Database> {
   return env.DB
 }
 
+// Badge rows this worker wrote while it carried the verification copy. Tests
+// that check what crossposting does to the table read it through this helper,
+// so retiring the table changes one place.
+export async function verificationRows(db: D1Database): Promise<Record<string, unknown>[]> {
+  const { results } = await db.prepare('SELECT * FROM verifications ORDER BY pubkey, platform, identity_key').all()
+  return results
+}
+
 export function connection(overrides: Partial<ConnectionRecord> = {}): ConnectionRecord {
   return {
     id: 'conn_1',

@@ -1,23 +1,26 @@
-// ABOUTME: Host-dispatch tests: verifier host isolation, crossposter host parity,
-// ABOUTME: and the fallback union where the verifier shape wins collision paths.
+// ABOUTME: Host tests: verify.divine.video redirects to the live verifier, every other
+// ABOUTME: host gets the crossposter app, and none reaches the removed verification routes.
 import { env } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import worker, { app } from './index'
-import { applyMigrations, connection, PUBKEY_A } from './db/test-helpers'
-import { upsertConnection } from './db/connections'
+import worker from './index'
+import { applyMigrations, PUBKEY_A } from './db/test-helpers'
 import type { Env } from './types'
 
-const VERIFIER = 'https://verifier.divine.video'
 const CROSSPOSTER = 'https://crossposter.divine.video'
+const VERIFY = 'https://verify.divine.video'
+const ANY_HOSTS = [
+  'crossposter.divine.video',
+  'verifier.divine.video',
+  'unknown.example',
+]
 
-function dispatchEnv(overrides: Partial<Env> = {}): Env {
+function testEnv(): Env {
   return {
     ...(env as Env),
     KEYCAST_URL: 'https://keycast.divine.video',
     FUNNELCAKE_URL: 'https://api.divine.video',
     OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video',
     TOKEN_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef',
-    ...overrides,
   }
 }
 
@@ -25,200 +28,157 @@ function hostRequest(url: string, init: RequestInit, env: Env): Promise<Response
   return Promise.resolve(worker.fetch!(new Request(url, init), env, {} as ExecutionContext))
 }
 
-function authResponse(): Response {
-  return Response.json({ result: PUBKEY_A })
-}
-
-describe('host dispatch', () => {
-  let fetchMock: ReturnType<typeof vi.fn>
-
+describe('every host', () => {
   beforeEach(async () => {
     await applyMigrations()
-    fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('fetch', vi.fn())
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
   })
 
-  describe('verifier.divine.video', () => {
-    it('serves the landing page, verifier health, and verifier platforms shape', async () => {
-      const landing = await hostRequest(`${VERIFIER}/`, {}, dispatchEnv())
-      expect(landing.status).toBe(200)
-
-      const healthRes = await hostRequest(`${VERIFIER}/health`, {}, dispatchEnv())
-      await expect(healthRes.json()).resolves.toMatchObject({ status: 'ok', service: 'divine-connections' })
-
-      const platformsRes = await hostRequest(`${VERIFIER}/platforms`, {}, dispatchEnv())
-      const body = (await platformsRes.json()) as { platforms: Record<string, { label: string; supported: boolean }> }
-      expect(body.platforms.github).toMatchObject({ label: 'GitHub', supported: true })
-      expect(body.platforms.x).toMatchObject({ label: 'Twitter / X' })
-    })
-
-    it('serves the public verify, verified, and nip05 routes', async () => {
-      fetchMock.mockResolvedValueOnce(Response.json({ owner: { login: 'octocat' }, files: { 'p.md': { content: 'junk' } } }))
-
-      const verifyRes = await hostRequest(`${VERIFIER}/verify/single`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pubkey: PUBKEY_A, platform: 'github', identity: 'octocat', proof: 'gist-dispatch' }),
-      }, dispatchEnv())
-      expect(verifyRes.status).toBe(200)
-
-      const verifiedRes = await hostRequest(`${VERIFIER}/verified/${PUBKEY_A}`, {}, dispatchEnv())
-      expect(verifiedRes.status).toBe(200)
-
-      const nip05Res = await hostRequest(`${VERIFIER}/nip05/verify`, {}, dispatchEnv())
-      expect(nip05Res.status).toBe(400)
-    })
-
-    it('serves the /api/verify alias', async () => {
-      fetchMock.mockResolvedValueOnce(Response.json({ owner: { login: 'octocat' }, files: { 'p.md': { content: 'junk' } } }))
-
-      const response = await hostRequest(`${VERIFIER}/api/verify`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pubkey: PUBKEY_A, platform: 'github', identity: 'octocat', proof: 'gist-alias-dispatch' }),
-      }, dispatchEnv())
-      expect(response.status).toBe(200)
-    })
-
-    it('serves keycast-authenticated connection routes', async () => {
-      fetchMock.mockResolvedValueOnce(authResponse())
-      const start = await hostRequest(`${VERIFIER}/connections/x/start`, {
-        method: 'POST',
-        headers: { authorization: 'Bearer keycast-token', 'content-type': 'application/json' },
-        body: JSON.stringify({ returnUrl: 'https://verifier.divine.video/' }),
-      }, dispatchEnv({ ENABLE_X: 'true', TWITTER_CLIENT_ID: 'x-client', TWITTER_CLIENT_SECRET: 'x-secret' }))
-      expect(start.status).toBe(200)
-
-      fetchMock.mockResolvedValueOnce(authResponse())
-      const list = await hostRequest(`${VERIFIER}/connections`, {
-        headers: { authorization: 'Bearer keycast-token' },
-      }, dispatchEnv())
-      expect(list.status).toBe(200)
-
-      await upsertConnection(dispatchEnv().DB, connection({ id: 'conn_v', platform: 'x' }))
-      fetchMock.mockResolvedValueOnce(authResponse())
-      const del = await hostRequest(`${VERIFIER}/connections/x/conn_v`, {
-        method: 'DELETE',
-        headers: { authorization: 'Bearer keycast-token' },
-      }, dispatchEnv())
-      expect(del.status).toBe(200)
-
-      const callback = await hostRequest(`${VERIFIER}/connections/x/callback?code=c&state=missing`, {}, dispatchEnv())
-      expect(callback.status).toBe(302)
-    })
-
-    it('never reaches publisher paths', async () => {
-      for (const [method, path] of [
-        ['POST', '/videos/abc/crossposts'],
-        ['GET', '/jobs/job_1'],
-        ['GET', '/preferences'],
-        ['POST', '/webhooks/instagram'],
-      ] as const) {
-        const response = await hostRequest(`${VERIFIER}${path}`, { method }, dispatchEnv())
-        expect(response.status).toBe(404)
-      }
-    })
-  })
-
   describe('crossposter.divine.video', () => {
-    it('serves its own home, health, and platforms shapes', async () => {
-      const home = await hostRequest(`${CROSSPOSTER}/`, {}, dispatchEnv())
-      const html = await home.text()
-      expect(html).toContain('<title>Divine Crossposter</title>')
-
-      const healthRes = await hostRequest(`${CROSSPOSTER}/health`, {}, dispatchEnv())
+    it('serves its own health and platforms shapes', async () => {
+      const healthRes = await hostRequest(`${CROSSPOSTER}/health`, {}, testEnv())
       await expect(healthRes.json()).resolves.toEqual({ ok: true, service: 'divine-connections', release: 'unknown' })
 
-      const platformsRes = await hostRequest(`${CROSSPOSTER}/platforms?format=json`, {}, dispatchEnv())
+      const platformsRes = await hostRequest(`${CROSSPOSTER}/platforms?format=json`, {}, testEnv())
       const body = (await platformsRes.json()) as { platforms: Array<{ platform: string; enabled: boolean }> }
       expect(Array.isArray(body.platforms)).toBe(true)
       expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube', 'snapchat'])
     })
 
-    it('does not serve the verifier-only surface', async () => {
-      const verifiedRes = await hostRequest(`${CROSSPOSTER}/verified/${PUBKEY_A}`, {}, dispatchEnv())
-      expect(verifiedRes.status).toBe(404)
-
-      const nip05Res = await hostRequest(`${CROSSPOSTER}/nip05/verify?name=a@b.co&pubkey=${PUBKEY_A}`, {}, dispatchEnv())
-      expect(nip05Res.status).toBe(404)
-    })
-  })
-
-  describe('fallback host', () => {
-    it('serves the union with the verifier shape winning collision paths', async () => {
-      const landing = await app.request('/', {}, dispatchEnv())
-      expect(landing.status).toBe(200)
-      await expect(landing.text()).resolves.not.toContain('<title>Divine Crossposter</title>')
-
-      const healthRes = await app.request('/health', {}, dispatchEnv())
-      await expect(healthRes.json()).resolves.toMatchObject({ status: 'ok', service: 'divine-connections' })
-
-      const platformsRes = await app.request('/platforms', {}, dispatchEnv())
-      const body = (await platformsRes.json()) as { platforms: Record<string, unknown> }
-      expect(body.platforms).toHaveProperty('github')
-    })
-
-    it('keeps crossposter provider JSON at /api/providers and crossposter routes reachable', async () => {
-      const providers = await app.request('/api/providers', {}, dispatchEnv())
+    // CI's post-deploy check reads /api/providers.
+    it('serves provider JSON at /api/providers', async () => {
+      const providers = await hostRequest(`${CROSSPOSTER}/api/providers`, {}, testEnv())
       expect(providers.status).toBe(200)
       const body = (await providers.json()) as { platforms: Array<{ platform: string }> }
       expect(body.platforms.map((p) => p.platform)).toEqual(['instagram', 'tiktok', 'x', 'youtube', 'snapchat'])
-
-      fetchMock.mockResolvedValueOnce(authResponse())
-      const prefs = await app.request('/preferences', { headers: { authorization: 'Bearer keycast-token' } }, dispatchEnv())
-      expect(prefs.status).toBe(200)
     })
   })
 
-  it('dispatches the default export fetch by hostname', async () => {
-    const response = await worker.fetch!(
-      new Request(`${VERIFIER}/health`),
-      dispatchEnv(),
-      {} as ExecutionContext,
-    )
-    await expect(response.json()).resolves.toMatchObject({ status: 'ok', service: 'divine-connections' })
+  // verify.divine.video served the verification copy this worker used to carry.
+  // Until the cutover finishes it only redirects to the live verifier.
+  describe('verify.divine.video', () => {
+    it('redirects / to the verifier with a 308', async () => {
+      const response = await hostRequest(`${VERIFY}/`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/')
+    })
+
+    it('keeps the path when redirecting', async () => {
+      const response = await hostRequest(`${VERIFY}/verified/${PUBKEY_A}`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe(`https://verifier.divine.video/verified/${PUBKEY_A}`)
+    })
+
+    // Sign-in codes arrive at / only; they must not be handed to another
+    // service.
+    it('drops the query string on /', async () => {
+      const response = await hostRequest(`${VERIFY}/?code=x&state=y`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/')
+    })
+
+    // GET calls elsewhere need their query to be answered at all.
+    it('keeps the query string on any other path', async () => {
+      const response = await hostRequest(`${VERIFY}/nip05/verify?name=alice&pubkey=${PUBKEY_A}`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe(
+        `https://verifier.divine.video/nip05/verify?name=alice&pubkey=${PUBKEY_A}`,
+      )
+    })
+
+    it('redirects a POST with 308 so the method and body are kept', async () => {
+      const response = await hostRequest(
+        `${VERIFY}/verify/single`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
+        testEnv(),
+      )
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/verify/single')
+    })
+
+    it('allows any origin on the redirect', async () => {
+      const response = await hostRequest(`${VERIFY}/health`, { headers: { origin: 'https://divine.video' } }, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('access-control-allow-origin')).toBe('*')
+    })
+
+    // Cloudflare keeps a trailing dot in the hostname when the request has one.
+    it('redirects the fully qualified host with a trailing dot', async () => {
+      const response = await hostRequest('https://verify.divine.video./', {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/')
+    })
+
+    // An open crossposting page on this host makes authenticated connection
+    // calls; they must not follow to the verifier.
+    it.each([
+      ['GET', '/connections'],
+      ['GET', '/connections/x/abc'],
+      ['DELETE', '/connections/x/abc'],
+      ['POST', '/connections/x/start'],
+    ] as const)('answers %s %s with 404 instead of redirecting', async (method, path) => {
+      const response = await hostRequest(
+        `${VERIFY}${path}`,
+        { method, headers: { authorization: 'Bearer keycast-token' } },
+        testEnv(),
+      )
+      expect(response.status).toBe(404)
+      expect(response.headers.get('location')).toBeNull()
+    })
+
+    it('still redirects paths that only start with "connections"', async () => {
+      const response = await hostRequest(`${VERIFY}/connectionsx`, {}, testEnv())
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://verifier.divine.video/connectionsx')
+    })
+
+    // The CORS preflight answer the verification copy sent on this host.
+    it('answers a CORS preflight with 204 and allows any origin', async () => {
+      const response = await hostRequest(
+        `${VERIFY}/verify/single`,
+        {
+          method: 'OPTIONS',
+          headers: {
+            origin: 'https://divine.video',
+            'access-control-request-method': 'POST',
+            'access-control-request-headers': 'content-type',
+          },
+        },
+        testEnv(),
+      )
+      expect(response.status).toBe(204)
+      expect(response.headers.get('access-control-allow-origin')).toBe('*')
+      expect(response.headers.get('access-control-allow-methods')).toBe('GET,HEAD,PUT,POST,DELETE,PATCH')
+      expect(response.headers.get('access-control-allow-headers')).toBe('content-type')
+      expect(response.headers.get('location')).toBeNull()
+    })
   })
-})
 
-// verify.divine.video is the second verifier hostname, and it is the one keycast
-// has registered as a redirect_uri alongside verifier.divine.video. Sign-in only
-// works from a hostname keycast will redirect back to, so this host has to reach
-// the verifier surface — not the union fallback, which would also expose the
-// crossposter publishing API on a public verification domain.
-describe('verify.divine.video', () => {
-  const VERIFY = 'https://verify.divine.video'
-
-  beforeEach(async () => {
-    await applyMigrations()
+  it.each(ANY_HOSTS)('serves the crossposter home page on %s', async (host) => {
+    const home = await hostRequest(`https://${host}/`, {}, testEnv())
+    expect(home.status).toBe(200)
+    await expect(home.text()).resolves.toContain('<title>Divine Crossposter</title>')
   })
 
-  it('serves the verifier surface', async () => {
-    const landing = await hostRequest(`${VERIFY}/`, {}, dispatchEnv())
-    expect(landing.status).toBe(200)
-    await expect(landing.text()).resolves.not.toContain('<title>Divine Crossposter</title>')
-
-    const healthRes = await hostRequest(`${VERIFY}/health`, {}, dispatchEnv())
-    await expect(healthRes.json()).resolves.toMatchObject({ status: 'ok', service: 'divine-connections' })
-
-    const verifiedRes = await hostRequest(`${VERIFY}/verified/${PUBKEY_A}`, {}, dispatchEnv())
-    expect(verifiedRes.status).toBe(200)
-  })
-
-  it('does not expose the crossposter publishing surface', async () => {
-    const providers = await hostRequest(`${VERIFY}/api/providers`, {}, dispatchEnv())
-    expect(providers.status).toBe(404)
-  })
-
-  it('builds its keycast redirect_uri from its own origin', async () => {
-    const landing = await hostRequest(`${VERIFY}/`, {}, dispatchEnv())
-    const html = await landing.text()
-
-    // getKeycastRedirectUrl() derives the redirect from window.location, so the
-    // page served here must not hardcode another host into the login link.
-    expect(html).toContain('return_url=https%3A%2F%2Fverify.divine.video%2F')
+  // Identity verification lives in the separate verifier service. These paths
+  // were served by the copy this worker used to carry, and must stay gone.
+  it.each(ANY_HOSTS)('does not serve the identity-verification routes on %s', async (host) => {
+    for (const [method, path] of [
+      ['POST', '/verify'],
+      ['POST', '/verify/single'],
+      ['GET', '/verify/github/x'],
+      ['GET', '/verified'],
+      ['GET', `/verified/${PUBKEY_A}`],
+      ['GET', `/nip05/verify?name=a@b.co&pubkey=${PUBKEY_A}`],
+      ['GET', '/docs'],
+      ['POST', '/api/verify'],
+    ] as const) {
+      const response = await hostRequest(`https://${host}${path}`, { method }, testEnv())
+      expect(response.status, `${method} ${path}`).toBe(404)
+    }
   })
 })

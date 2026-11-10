@@ -63,9 +63,10 @@ token-refresh pattern the current four use.
    sympathetic to open protocols. **Check `divine-sky` and `rsky` first.**
    Divine already runs ATProto infrastructure (`divine-atbridge`,
    `divine-handle-gateway`, a PDS at `pds.divine.video`). There may be
-   substantial reuse rather than a fresh integration. Note this repo already
-   has `src/verify/bluesky.ts` and `src/verify/atproto.ts` for identity
-   verification against the public AppView.
+   substantial reuse rather than a fresh integration. Identity verification
+   against the public AppView lives in the verifier service
+   (`divinevideo/divine-identify-verification-service`), not in this repo today
+   (see #2).
 2. **Mastodon / fediverse** — `divine-activity-pub` already projects Divine
    accounts as `@user@divine.video` actors that Mastodon and Pixelfed can
    follow. Coordinate rather than duplicate. Mastodon is multi-instance, so
@@ -109,4 +110,4 @@ is where intent is highest. That is a `divine-mobile` task.
   this is cheap to do — it is a product call, not a technical one.
 - **X connect has never worked** and is unrelated to this brief, but blocks
   crossposting to X entirely. It needs X developer portal configuration; see
-  the notes in `cutover-secrets.md` for what is missing elsewhere.
+  `cutover-secrets.md` for where each X value comes from.

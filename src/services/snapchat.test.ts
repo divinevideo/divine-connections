@@ -17,7 +17,7 @@ const key = '0123456789abcdef0123456789abcdef'
 let db: D1Database; let env: Env; let send: ReturnType<typeof vi.fn>
 beforeEach(async () => {
   db = await applyMigrations(); send = vi.fn()
-  env = { DB: db, CACHE_KV: {} as KVNamespace, CROSSPOST_QUEUE: { send } as unknown as Env['CROSSPOST_QUEUE'], KEYCAST_URL: 'https://login.divine.video', FUNNELCAKE_URL: 'https://api.divine.video', OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video', TOKEN_ENCRYPTION_KEY: key, ENABLE_SNAPCHAT: 'true', SNAPCHAT_CLIENT_ID: 'client', SNAPCHAT_CLIENT_SECRET: 'secret', SNAPCHAT_PUBLIC_PROFILE_APPROVED: 'true' }
+  env = { DB: db, CROSSPOST_QUEUE: { send } as unknown as Env['CROSSPOST_QUEUE'], KEYCAST_URL: 'https://login.divine.video', FUNNELCAKE_URL: 'https://api.divine.video', OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video', TOKEN_ENCRYPTION_KEY: key, ENABLE_SNAPCHAT: 'true', SNAPCHAT_CLIENT_ID: 'client', SNAPCHAT_CLIENT_SECRET: 'secret', SNAPCHAT_PUBLIC_PROFILE_APPROVED: 'true' }
   await upsertConnection(db, connection({ platform: 'snapchat', externalAccountId: profile, tokenExpiresAt: null, encryptedAccessToken: await encryptToken('access', key), metadataJson: JSON.stringify({ account: { profileConfirmed: true } }) }))
 })
 afterEach(() => vi.unstubAllGlobals())

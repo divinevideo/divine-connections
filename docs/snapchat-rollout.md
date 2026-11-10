@@ -41,11 +41,10 @@ where they modify external settings or publish content.
    delivery using an authorized test sink. Never paste raw provider bodies, source
    identity, tokens, keys, IVs or upload paths into public artifacts.
 9. Confirm hosted selectors, explicit profile confirmation, manual cancellation,
-   immutable job choices, automatic opt-in, disabled UI, and verifier host isolation.
+   immutable job choices, automatic opt-in, disabled UI, and old verification host isolation.
    Exercise two tabs selecting different profiles: stale manual consent must return
    409, and reselection during refresh or before dispatch must produce no publication.
-   A denial from old credentials must not invalidate a winning reconnect. Confirm
-   OAuth-only public verification lookup for the selected stable profile ID.
+   A denial from old credentials must not invalidate a winning reconnect.
    Inspect required CI and independent review before an authorized rollout change.
 
 ## Verified primary references (2026-11-05)

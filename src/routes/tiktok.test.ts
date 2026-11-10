@@ -44,8 +44,8 @@ describe('TikTok manual confirmation', () => {
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
-  it('fetches only the caller connection, returns safe fresh info, and isolates verifier hosts', async () => {
-    for (const host of ['verify.divine.video', 'verifier.divine.video']) expect((await request('/connections/tiktok/creator-info', undefined, host)).status).toBe(404)
+  it('fetches only the caller connection, returns safe fresh info, and isolates the old verification host', async () => {
+    expect((await request('/connections/tiktok/creator-info', undefined, 'verify.divine.video')).status).toBe(404)
     const res = await request('/connections/tiktok/creator-info')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ creatorInfo: creator, connectionId: 'conn_tiktok' })

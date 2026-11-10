@@ -2,7 +2,7 @@
 // ABOUTME: Keeps encrypted credentials bound to the owner and guards changes during refresh.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker, { app } from '../index'
-import { applyMigrations, connection, PUBKEY_A, PUBKEY_B } from '../db/test-helpers'
+import { applyMigrations, connection, PUBKEY_A, PUBKEY_B, verificationRows } from '../db/test-helpers'
 import { getConnection, upsertConnection } from '../db/connections'
 import { encryptToken, decryptToken } from '../utils/crypto'
 import type { Env } from '../types'
@@ -12,7 +12,7 @@ const key = '0123456789abcdef0123456789abcdef'
 let env: Env; let db: D1Database; let owner: string
 beforeEach(async () => {
   db = await applyMigrations(); owner = PUBKEY_A
-  env = { DB: db, CACHE_KV: {} as KVNamespace, CROSSPOST_QUEUE: {} as Env['CROSSPOST_QUEUE'], KEYCAST_URL: 'https://login.divine.video', FUNNELCAKE_URL: 'https://api.divine.video', OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video', TOKEN_ENCRYPTION_KEY: key, ENABLE_SNAPCHAT: 'true', SNAPCHAT_CLIENT_ID: 'client', SNAPCHAT_CLIENT_SECRET: 'secret', SNAPCHAT_PUBLIC_PROFILE_APPROVED: 'true' }
+  env = { DB: db, CROSSPOST_QUEUE: {} as Env['CROSSPOST_QUEUE'], KEYCAST_URL: 'https://login.divine.video', FUNNELCAKE_URL: 'https://api.divine.video', OAUTH_REDIRECT_BASE: 'https://crossposter.divine.video', TOKEN_ENCRYPTION_KEY: key, ENABLE_SNAPCHAT: 'true', SNAPCHAT_CLIENT_ID: 'client', SNAPCHAT_CLIENT_SECRET: 'secret', SNAPCHAT_PUBLIC_PROFILE_APPROVED: 'true' }
   await upsertConnection(db, connection({ platform: 'snapchat', externalAccountId: profile, tokenExpiresAt: null, encryptedAccessToken: await encryptToken('access', key), metadataJson: JSON.stringify({ account: { profileConfirmed: false } }) }))
   vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('login.divine.video') ? Response.json({ result: owner }) : String(url).endsWith('/my_profile') ? Response.json({ request_status: 'SUCCESS', public_profile: { id: profile, snap_user_name: 'creator', organization_id: other } }) : Response.json({ request_status: 'SUCCESS', public_profiles: [{ sub_request_status: 'SUCCESS', public_profile: { id: other, snap_user_name: 'second', display_name: 'Mutable name' } }] })))
 })
@@ -30,12 +30,12 @@ describe('Snapchat authorized profile selection', () => {
     expect(result.externalAccountId).toBe(other); expect(result.externalAccountName).toBe('second'); expect(JSON.parse(result.metadataJson).account.profileConfirmed).toBe(true)
     expect(await decryptToken(result.encryptedAccessToken, key)).toBe('access')
   })
-  it('rejects foreign ownership, forged profiles and verifier host', async () => {
+  it('rejects foreign ownership, forged profiles and the old verification host', async () => {
     owner = PUBKEY_B
     expect((await req('/connections/snapchat/conn_1/profiles')).status).toBe(404)
     owner = PUBKEY_A
     expect((await req('/connections/snapchat/conn_1/profile', { profileId: '33333333-3333-4333-8333-333333333333', confirmed: true })).status).toBe(400)
-    expect((await req('/connections/snapchat/conn_1/profile', { profileId: other, confirmed: true }, 'verifier.divine.video')).status).toBe(404)
+    expect((await req('/connections/snapchat/conn_1/profile', { profileId: other, confirmed: true }, 'verify.divine.video')).status).toBe(404)
   })
   it('does not revive a connection disconnected during provider discovery', async () => {
     vi.stubGlobal('fetch', vi.fn(async url => {
@@ -70,9 +70,9 @@ it('refreshes an expired profile-listing token and persists only encrypted crede
   expect(JSON.stringify(await response.json())).not.toContain('fresh-access')
 })
 
-it('OAuth callback records an unconfirmed profile with crossposting off', async () => {
+it('OAuth callback records an unconfirmed profile with crossposting off and writes no badge row', async () => {
   const { createOAuthState } = await import('../db/oauth-states')
-  const { completeConnectionCallback, verificationIdentityForConnection } = await import('../services/connections')
+  const { completeConnectionCallback } = await import('../services/connections')
   const now = Math.floor(Date.now()/1000)
   await createOAuthState(db, { stateId: 'state-snap', pubkey: PUBKEY_B, platform: 'snapchat', codeVerifier: null, returnUrl: 'https://crossposter.divine.video/', createdAt: now, expiresAt: now + 600, metadataJson: '{}' })
   vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('/access_token') ? Response.json({ access_token: 'callback-access', refresh_token: 'callback-refresh', expires_in: 3600 }) : Response.json({ request_status: 'SUCCESS', public_profile: { id: profile, display_name: 'Mutable display name' } })))
@@ -80,14 +80,18 @@ it('OAuth callback records an unconfirmed profile with crossposting off', async 
   const { listConnections } = await import('../db/connections'); const { getPreferences } = await import('../db/preferences')
   const saved = (await listConnections(db, PUBKEY_B))[0]
   expect(JSON.parse(saved.metadataJson).account.profileConfirmed).toBe(false)
-  expect(verificationIdentityForConnection(saved)).toBe(profile)
+  expect(await verificationRows(db)).toEqual([])
   expect((await getPreferences(db, PUBKEY_B))[0].mode).toBe('disabled')
 })
 
-it('updates the OAuth verification to the stable confirmed public-profile ID', async () => {
+it('confirming a profile writes no badge row and revokes one left from an earlier selection', async () => {
+  await db.prepare(`INSERT INTO verifications (pubkey, platform, identity, identity_key, method, proof_url, connection_id, verified_at, revoked_at)
+    VALUES (?, 'snapchat', ?, ?, 'oauth', NULL, 'conn_1', 1000, NULL)`).bind(PUBKEY_A, profile, profile).run()
   const response = await req('/connections/snapchat/conn_1/profile', { profileId: other, confirmed: true }); expect(response.status).toBe(200)
-  const row = await db.prepare("SELECT identity FROM verifications WHERE pubkey = ? AND platform = 'snapchat' AND revoked_at IS NULL").bind(PUBKEY_A).first<{ identity: string }>()
-  expect(row?.identity).toBe(other)
+  const rows = await verificationRows(db)
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ identity: profile, connection_id: 'conn_1' })
+  expect(rows[0].revoked_at).not.toBeNull()
 })
 
 it('reselects an existing organization profile after reconnecting the OAuth owner without a unique-key collision', async () => {
@@ -118,24 +122,6 @@ it('rejects stale manual profile consent after another tab selects a different a
   const fresh = await req('/videos/' + VIDEO_EVENT_ID + '/crossposts', { platforms: ['snapchat'], snapchatDestination: 'story', snapchatProfile: { connectionId: 'conn_1', profileId: other } })
   expect(fresh.status).toBe(200)
   expect(await fresh.json()).toMatchObject({ jobs: [{ connectionId: 'conn_1', externalAccountId: other, snapchatDestination: 'story' }] })
-})
-
-it('serves the confirmed Snapchat OAuth projection through public lookup and verify routes without proof posts', async () => {
-  await req('/connections/snapchat/conn_1/profile', { profileId: other, confirmed: true })
-  const lookup = await req('/verified?platform=snapchat&identity=' + other, undefined, 'verifier.divine.video')
-  expect(lookup.status).toBe(200)
-  expect(await lookup.json()).toMatchObject({ platform: 'snapchat', identity: other, pubkey: PUBKEY_A, method: 'oauth' })
-  const claim = await req('/verify/single', { platform: 'snapchat', identity: other, pubkey: PUBKEY_A }, 'verifier.divine.video')
-  expect(claim.status).toBe(200)
-  expect(await claim.json()).toMatchObject({ verified: true, method: 'oauth' })
-  const batch = await req('/verify', { claims: [{ platform: 'snapchat', identity: other, pubkey: PUBKEY_A }] }, 'verifier.divine.video')
-  expect(batch.status).toBe(200)
-  expect(await batch.json()).toMatchObject({ results: [{ verified: true, method: 'oauth' }] })
-  const unsupported = await req('/verify/single', { platform: 'snapchat', identity: profile, pubkey: PUBKEY_B, proof: 'invented-proof-post' }, 'verifier.divine.video')
-  expect(unsupported.status).toBe(200)
-  expect(await unsupported.json()).toMatchObject({ verified: false, error: expect.stringContaining('account connection') })
-  const platforms = await req('/platforms', undefined, 'verifier.divine.video')
-  expect(await platforms.json()).toMatchObject({ platforms: { snapchat: { methods: ['oauth'] } } })
 })
 
 it.each(['no winner', 'reconnected winner', 'reselected winner'])('persists discovery permission loss only for the matching credentials and profile (%s)', async winner => {

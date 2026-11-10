@@ -136,17 +136,14 @@ results influence work.
 
 ## What This Service Is
 
-One Cloudflare Worker owning Divine users' relationships to external platform accounts: OAuth connection, identity verification (badges), and opt-in video crossposting. Design and implementation plan live in `docs/plans/`.
+One Cloudflare Worker for opt-in video crossposting: OAuth connection to external platform accounts, per-platform posting preferences, and crosspost jobs. It serves `crossposter.divine.video` (setup UI and publishing API), and `src/index.ts` serves the same app on every host except `verify.divine.video`.
 
-- `verifier.divine.video` → public verification API + self-service landing page
-- `crossposter.divine.video` → publishing API
-
-Host-based dispatch in `src/index.ts` separates the two surfaces; publishing paths (jobs, preferences, webhooks) must never be reachable from the verifier host.
+Identity verification is not part of this Worker for now. It runs in the verifier service at `verifier.divine.video` (`divinevideo/divine-identify-verification-service`). The 2026-07-28 design and 2026-07-29 implementation plan in `docs/plans/` brought a copy of verification into this repo; that copy has been removed, and how the verifier's code joins this repo is being worked out in divinevideo/divine-connections#2. `verify.divine.video` still routes to this Worker and redirects to the verifier until the cutover finishes.
 
 ## Project Structure & Module Organization
 
-- Worker source and co-located tests live in `src/`: `platforms/` (OAuth+publish adapters), `verify/` (stateless proof-post verifiers), `services/` (state machines), `routes/` (Hono routers), `db/` (D1 access), `utils/`.
-- D1 migrations in `migrations/`. The D1 binding is shared with the legacy crossposter worker — never drop or alter existing tables.
+- Worker source and co-located tests live in `src/`: `platforms/` (OAuth+publish adapters), `services/` (state machines), `routes/` (Hono routers), `db/` (D1 access), `utils/`.
+- D1 migrations in `migrations/`. The D1 database (`divine-crossposter`) holds live production state, so never drop or alter existing tables. That includes the `verifications` table (migrations 0004 to 0006), which the Worker no longer reads; disconnect only marks the account's sign-in (OAuth) badge rows revoked (its current handle's row, and any row recorded with the connection's id, such as an older handle's).
 - Product and rollout context lives in `docs/plans/` and `README.md`.
 
 ## Build, Test, and Development Commands
@@ -160,7 +157,7 @@ Host-based dispatch in `src/index.ts` separates the two surfaces; publishing pat
 ## Coding Style & Naming Conventions
 
 - TypeScript throughout, Hono 4 routers, explicit request/response/error shapes.
-- Tests run in the real workerd pool (`@cloudflare/vitest-pool-workers`) with real miniflare D1/KV. Stub upstream provider HTTP at the `fetch` boundary only; never mock internal modules.
+- Tests run in the real workerd pool (`@cloudflare/vitest-pool-workers`) with real miniflare D1. Stub upstream provider HTTP at the `fetch` boundary only; never mock internal modules.
 - All code files start with a 2-line `ABOUTME: ` comment.
 - Keep PRs tightly scoped. Temporary or transitional code must include `TODO(#issue):` with the tracking issue.
 
@@ -169,10 +166,10 @@ Host-based dispatch in `src/index.ts` separates the two surfaces; publishing pat
 - PR titles must use Conventional Commit format: `type(scope): summary` or `type: summary`.
 - Set the correct PR title when opening the PR. Do not rely on fixing it afterward.
 - PR descriptions must include a short summary, motivation, linked issue, and manual test plan.
-- Behavior changes to verification or publishing logic should include representative request or response examples when that helps reviewers validate the change.
+- Behavior changes to publishing logic should include representative request or response examples when that helps reviewers validate the change.
 
 ## Security & Sensitive Information
 
 - Do not commit secrets, API tokens, platform credentials, or private user data. Use Wrangler secrets for anything sensitive.
-- Publish tokens are only touched by authenticated `/connections/*` routes and the publisher/queue paths. Public verify/lookup routes read only the `verifications` projection — never `connections` token columns.
+- Publish tokens are only touched by authenticated `/connections/*` routes and the publisher/queue paths.
 - Public issues, PRs, branch names, screenshots, and descriptions must not mention corporate partners, customers, brands, campaign names, or other sensitive external identities unless a maintainer explicitly approves it. Use generic descriptors instead.

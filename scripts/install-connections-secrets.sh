@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ABOUTME: Installs the secrets divine-connections needs, prompting for each value.
+# ABOUTME: Installs the crossposter secrets on the divine-crossposter worker, prompting for each.
 # ABOUTME: Cloudflare secrets are write-only, so nothing here can be copied automatically.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ if [ ! -f wrangler.toml ]; then
   exit 1
 fi
 
-echo "Installing secrets on divine-connections."
+echo "Installing secrets on the divine-crossposter worker."
 echo "Press Enter to skip any secret you do not have yet — rerun this later for the rest."
 echo "See docs/cutover-secrets.md for where each value comes from."
 echo
@@ -47,25 +47,26 @@ put_secret() {
 # Ordered by how much each unlocks. TOKEN_ENCRYPTION_KEY gates every OAuth
 # path, so nothing else matters until it is set.
 put_secret TOKEN_ENCRYPTION_KEY \
-  "MUST match the crossposter worker's while both run against the shared D1. See docs/cutover-secrets.md."
-put_secret TWITTER_CLIENT_ID       "X developer portal, OAuth 2.0 app. Unlocks X Quick Connect."
+  "Leave blank to keep the current key. A different key makes every stored OAuth token unreadable. See docs/cutover-secrets.md."
+put_secret TWITTER_CLIENT_ID       "X developer portal, OAuth 2.0 app. Unlocks connecting X."
 put_secret TWITTER_CLIENT_SECRET   "X developer portal, OAuth 2.0 app."
 put_secret INSTAGRAM_CLIENT_SECRET "Meta app dashboard. The client id is already a var in wrangler.toml."
-put_secret DISCORD_BOT_TOKEN       "Discord developer portal — reset it, nobody holds a copy. Unlocks Discord verification."
-put_secret TIKTOK_CLIENT_KEY       "TikTok developer portal, Login Kit. Unlocks TikTok Quick Connect."
+put_secret TIKTOK_CLIENT_KEY       "TikTok developer portal, Login Kit. Unlocks connecting TikTok."
 put_secret TIKTOK_CLIENT_SECRET    "TikTok developer portal, Login Kit."
-put_secret YOUTUBE_API_KEY         "Google Cloud console. Unlocks YouTube proof verification."
 
 echo "Installed ${installed}, skipped ${skipped}."
 echo
-echo "Currently set on divine-connections:"
+echo "Currently set on the divine-crossposter worker:"
 npx wrangler secret list
 
 cat <<'NEXT'
 
 Next:
-  npx wrangler deploy       # ENABLE_TIKTOK / ENABLE_YOUTUBE in wrangler.toml
-                            # still gate those two providers
-  npm run test:e2e          # capability + Quick Connect assertions name any
-                            # secret still missing
+  Each secret installed above deployed a new Worker version on its own.
+  Releases still go through CI on merge to main; do not run wrangler deploy
+  for production. ENABLE_TIKTOK / ENABLE_YOUTUBE in wrangler.toml still gate
+  those two providers.
+
+  Then visit https://crossposter.divine.video/platforms: each provider reports
+  whether its flag and credentials are both set.
 NEXT
